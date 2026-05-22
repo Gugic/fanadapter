@@ -1,0 +1,8 @@
+.antigravitycli/
+.antigravity-cli/
+.gemini/
+*.hex
+*.elf
+*.bin
+build/
+.vscode/
