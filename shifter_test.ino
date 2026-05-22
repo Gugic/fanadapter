@@ -13,7 +13,7 @@
 //
 //   Handbrake (same combo PID C278, second device):
 //     Z axis (analog) and button 3 (digital) → PWM on pin 8 via RC filter
-//                       → Handbrake RJ12 pin 2
+//                       → Handbrake RJ12 pin 5
 //
 // The two C278 devices report identically; we aggregate buttons (OR) and Z
 // (max) across all connected C278 instances, so whichever device is in
