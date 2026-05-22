@@ -24,6 +24,7 @@
 
 #include <Arduino.h>
 #include <USBHost_t36.h>
+#include "pedals.h"
 
 // ---------------- Pin & PWM configuration ----------------
 
@@ -504,6 +505,9 @@ void printHelp() {
   Serial.println("  c                   cycle through all H-pattern gears once");
   Serial.println("  t                   print current gear table");
   Serial.println("  u                   print USB host status");
+  Serial.println("  q / w               decrease / increase pedal Throttle by 1%");
+  Serial.println("  a / s               decrease / increase pedal Brake by 1%");
+  Serial.println("  z / x               decrease / increase pedal Clutch by 1%");
   Serial.println("  ?                   this help");
   Serial.println();
 }
@@ -539,6 +543,16 @@ void printUsbStatus() {
   Serial.print(g_hb.zMax);
   Serial.print(" samples=");
   Serial.println(g_hb.samples);
+  
+  Serial.print("Pedals (Serial3): ");
+  Serial.print(getPedalsStateName());
+  Serial.print(" | Throttle=");
+  Serial.print(((uint32_t)getPedalThrottle() * 100) / 65535);
+  Serial.print("% Brake=");
+  Serial.print(((uint32_t)getPedalBrake() * 100) / 65535);
+  Serial.print("% Clutch=");
+  Serial.print(((uint32_t)getPedalClutch() * 100) / 65535);
+  Serial.println("%");
   Serial.println();
 }
 
@@ -593,6 +607,9 @@ void setup() {
   // Start in H-pattern neutral so the wheelbase sees a sane state during boot.
   setGear(GEAR_N);
 
+  // Initialize pedal emulator
+  pedalsInit();
+
   g_usb.begin();
 
   printBanner();
@@ -609,6 +626,7 @@ bool sleepOrAbort(uint32_t ms) {
     updateHPattern();
     updateSequential();
     updateHandbrake();
+    pedalsUpdate();
     if (Serial.available()) { Serial.read(); return false; }
   }
   return true;
@@ -632,6 +650,7 @@ void loop() {
   updateHPattern();
   updateSequential();
   updateHandbrake();
+  pedalsUpdate();
 
   if (!Serial.available()) return;
 
@@ -657,6 +676,48 @@ void loop() {
     printTable();
   } else if (c == 'u' || c == 'U') {
     printUsbStatus();
+  } else if (c == 'q' || c == 'Q') {
+    int32_t val = (int32_t)getPedalThrottle() - 655; // ~1%
+    if (val < 0) val = 0;
+    setPedalThrottle(val);
+    Serial.print("[Pedals] Throttle: ");
+    Serial.print((val * 100) / 65535);
+    Serial.println("%");
+  } else if (c == 'w' || c == 'W') {
+    int32_t val = (int32_t)getPedalThrottle() + 655; // ~1%
+    if (val > 65535) val = 65535;
+    setPedalThrottle(val);
+    Serial.print("[Pedals] Throttle: ");
+    Serial.print((val * 100) / 65535);
+    Serial.println("%");
+  } else if (c == 'a' || c == 'A') {
+    int32_t val = (int32_t)getPedalBrake() - 655; // ~1%
+    if (val < 0) val = 0;
+    setPedalBrake(val);
+    Serial.print("[Pedals] Brake: ");
+    Serial.print((val * 100) / 65535);
+    Serial.println("%");
+  } else if (c == 's' || c == 'S') {
+    int32_t val = (int32_t)getPedalBrake() + 655; // ~1%
+    if (val > 65535) val = 65535;
+    setPedalBrake(val);
+    Serial.print("[Pedals] Brake: ");
+    Serial.print((val * 100) / 65535);
+    Serial.println("%");
+  } else if (c == 'z' || c == 'Z') {
+    int32_t val = (int32_t)getPedalClutch() - 655; // ~1%
+    if (val < 0) val = 0;
+    setPedalClutch(val);
+    Serial.print("[Pedals] Clutch: ");
+    Serial.print((val * 100) / 65535);
+    Serial.println("%");
+  } else if (c == 'x' || c == 'X') {
+    int32_t val = (int32_t)getPedalClutch() + 655; // ~1%
+    if (val > 65535) val = 65535;
+    setPedalClutch(val);
+    Serial.print("[Pedals] Clutch: ");
+    Serial.print((val * 100) / 65535);
+    Serial.println("%");
   } else if (c == '?' || c == 'h' || c == 'H') {
     printHelp();
   } else {
