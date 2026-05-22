@@ -6,3 +6,6 @@
 *.bin
 build/
 .vscode/
+
+# Local reference clone (upstream: https://github.com/GeekyDeaks/fanatec-pedal-emulator)
+fanatec-pedal-emulator/

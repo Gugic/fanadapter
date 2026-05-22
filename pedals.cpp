@@ -14,20 +14,42 @@ static PedalsState g_state = STATE_INIT;
 static uint32_t g_lastActivityTime = 0;
 static uint32_t g_lastStreamTime = 0;
 
-// Step 2 query sequence (36 bytes total: 3 x 12-byte packets)
-static const uint8_t STEP2_RX[] = {
-  0x7B, 0x02, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x26, 0x7D,
-  0x7B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAA, 0x7D,
-  0x7B, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5F, 0x7D
-};
-static uint8_t g_step2Index = 0;
+// Step 2 handshake — lenient any-order packet collector.
+//
+// The DD+ wheelbase sends three 12-byte framed query packets (cmd 0x00,
+// 0x02, 0x03) at 115200 baud, but in arbitrary order and repeatedly until
+// it gets a response. Observed empirically on a real DD+: the wheelbase
+// emits cmd 0x00 and cmd 0x03 several times each before finally sending
+// cmd 0x02, and the 0x02 payload differs from the proxy.go reference
+// (0x00 0xFF vs. 0xFF 0x00 — likely a firmware revision difference; CRC
+// always validates for the packet as sent). Strict linear matching
+// against the proxy.go expected sequence fails on this base.
+//
+// We collect 12-byte framed packets (0x7B…0x7D), tally which command IDs
+// have arrived, and fire the identity response once all three have been
+// seen at least once.
+static uint8_t g_step2Buf[12];
+static uint8_t g_step2BufIdx = 0;
+static bool    g_step2Got00 = false;
+static bool    g_step2Got02 = false;
+static bool    g_step2Got03 = false;
 
-// Step 2 response sequence (36 bytes total: 3 x 12-byte packets)
-static const uint8_t STEP2_TX[] = {
-  0x7B, 0x05, 0x06, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6D, 0x7D,
-  0x7B, 0x07, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x7D,
-  0x7B, 0x08, 0x01, 0x06, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0xBF, 0x7D
-};
+// Step 2 response packets — sent INDIVIDUALLY per matching query, not bulk.
+// Per the community sketch in GeekyDeaks/fanatec-pedal-emulator#4, the
+// wheelbase expects an interactive ack per command packet. Sending all 36
+// bytes only after collecting all 3 queries (as proxy.go does) misses a
+// tight per-packet timeout on at least some firmware revisions.
+//
+// Response → query mapping (same bytes as proxy.go's bulk STEP2_TX):
+//   cmd 0x02 (config query)  → STEP2_TX_CMD_02
+//   cmd 0x00 (ping/null)     → STEP2_TX_CMD_00
+//   cmd 0x03 (version query) → STEP2_TX_CMD_03
+static const uint8_t STEP2_TX_CMD_02[12] =
+  { 0x7B, 0x05, 0x06, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6D, 0x7D };
+static const uint8_t STEP2_TX_CMD_00[12] =
+  { 0x7B, 0x07, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x7D };
+static const uint8_t STEP2_TX_CMD_03[12] =
+  { 0x7B, 0x08, 0x01, 0x06, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0xBF, 0x7D };
 
 // Pedal position values (0..65535)
 static uint16_t g_throttle = 0;
@@ -66,16 +88,28 @@ static void reinitSerial(uint32_t baud) {
   Serial3.begin(baud);
 }
 
+static void resetStep2State() {
+  g_step2BufIdx = 0;
+  g_step2Got00  = false;
+  g_step2Got02  = false;
+  g_step2Got03  = false;
+}
+
 static void resetToStep0() {
   Serial.println("[Pedal] Transitioning to STATE_STEP0 (250000 baud)...");
   reinitSerial(250000);
   g_state = STATE_STEP0;
-  g_step2Index = 0;
+  resetStep2State();
   g_lastActivityTime = millis();
 }
 
 void pedalsInit() {
   initCrcTable();
+  resetToStep0();
+}
+
+void pedalsForceReset() {
+  Serial.println("[Pedal] Manual reset requested.");
   resetToStep0();
 }
 
@@ -141,7 +175,7 @@ void pedalsUpdate() {
           
           Serial.println("[Pedal] Switching to 115200 baud (STATE_STEP2)...");
           reinitSerial(115200);
-          g_step2Index = 0;
+          resetStep2State();
           g_state = STATE_STEP2;
         } else {
           Serial.print("[Pedal] Step 1 error: expected 0x05, got 0x");
@@ -151,29 +185,85 @@ void pedalsUpdate() {
         }
         break;
 
-      case STATE_STEP2:
-        if (b == STEP2_RX[g_step2Index]) {
-          g_step2Index++;
-          if (g_step2Index == 36) {
-            Serial.println("[Pedal] Step 2: Handshake queries match. Sending 36-byte identity response.");
-            Serial3.write(STEP2_TX, 36);
-            Serial3.flush();
-            
-            Serial.println("[Pedal] Handshake complete! Transitioning to STATE_STREAMING.");
-            g_state = STATE_STREAMING;
-            g_lastStreamTime = millis();
+      case STATE_STEP2: {
+        // Wait for start-of-frame marker before accumulating.
+        if (g_step2BufIdx == 0) {
+          if (b == 0x7B) {
+            g_step2Buf[0] = b;
+            g_step2BufIdx = 1;
           }
-        } else {
-          Serial.print("[Pedal] Step 2 mismatch at index ");
-          Serial.print(g_step2Index);
-          Serial.print(": expected 0x");
-          Serial.print(STEP2_RX[g_step2Index], HEX);
-          Serial.print(", got 0x");
-          Serial.print(b, HEX);
-          Serial.println(". Resetting to Step 0.");
-          resetToStep0();
+          // Silently ignore anything before the next 0x7B. Baud-rate
+          // drift garbage gets dropped here without spamming Serial.
+          break;
+        }
+
+        g_step2Buf[g_step2BufIdx++] = b;
+        if (g_step2BufIdx < 12) break;
+
+        // Got a full 12-byte packet — validate framing + CRC, tag command.
+        g_step2BufIdx = 0;
+        if (g_step2Buf[11] != 0x7D) {
+          Serial.println("[Pedal] Step 2: bad end marker, skipping packet.");
+          break;
+        }
+        const uint8_t rxCrc   = g_step2Buf[10];
+        const uint8_t calcCrc = generateCrc(&g_step2Buf[1], 9);
+        if (rxCrc != calcCrc) {
+          Serial.print("[Pedal] Step 2: CRC fail (got 0x");
+          if (rxCrc < 0x10) Serial.print('0');
+          Serial.print(rxCrc, HEX);
+          Serial.print(" expected 0x");
+          if (calcCrc < 0x10) Serial.print('0');
+          Serial.print(calcCrc, HEX);
+          Serial.println("), skipping packet.");
+          break;
+        }
+
+        const uint8_t cmd = g_step2Buf[1];
+        switch (cmd) {
+          case 0x00:
+            if (!g_step2Got00) {
+              Serial.println("[Pedal] Step 2: ack cmd 0x00");
+              Serial3.write(STEP2_TX_CMD_00, sizeof(STEP2_TX_CMD_00));
+              g_step2Got00 = true;
+            }
+            break;
+          case 0x02:
+            if (!g_step2Got02) {
+              Serial.println("[Pedal] Step 2: ack cmd 0x02");
+              Serial3.write(STEP2_TX_CMD_02, sizeof(STEP2_TX_CMD_02));
+              g_step2Got02 = true;
+            }
+            break;
+          case 0x03:
+            if (!g_step2Got03) {
+              Serial.println("[Pedal] Step 2: ack cmd 0x03");
+              Serial3.write(STEP2_TX_CMD_03, sizeof(STEP2_TX_CMD_03));
+              g_step2Got03 = true;
+            }
+            break;
+          default:
+            Serial.print("[Pedal] Step 2: unexpected cmd 0x");
+            if (cmd < 0x10) Serial.print('0');
+            Serial.println(cmd, HEX);
+            break;
+        }
+
+        // The 0x03 ack is the version-identity packet (its payload tells the
+        // wheelbase we're CS Pedals V3). Once that's acked, the wheelbase
+        // expects streaming data immediately — if we don't send any, the
+        // app drops the pedals after a few seconds. The 0x00 and 0x02
+        // queries on our DD+ firmware arrive less reliably (sometimes never
+        // before we'd transition), so we don't gate on them. Matches the
+        // sketch in GeekyDeaks/fanatec-pedal-emulator#4.
+        if (g_step2Got03) {
+          Serial3.flush();
+          Serial.println("[Pedal] Handshake complete (cmd 0x03 acked). → STREAMING.");
+          g_state = STATE_STREAMING;
+          g_lastStreamTime = millis();
         }
         break;
+      }
 
       case STATE_STREAMING:
         // In streaming mode, we don't expect any unsolicited commands.

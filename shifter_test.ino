@@ -191,18 +191,15 @@ public:
   static constexpr uint32_t TOPUSAGE_JOYSTICK = 0x10004;
 
   hidclaim_t claim_collection(USBHIDParser* /*driver*/, Device_t* dev, uint32_t topusage) override {
-    // Only the Joystick collection carries the buttons + Z we care about.
-    // The C278 also exposes vendor-defined collections (FF000001/FF000002)
-    // for force-feedback / RGB control — declining them avoids a Combo#
-    // instance wasting itself on a useless collection on device 1 and
-    // starving device 2's Joystick collection.
-    if (topusage != TOPUSAGE_JOYSTICK)             return CLAIM_NO;
-    if (m_claimed)                                  return CLAIM_NO;
-    if (dev->idVendor  != m_vid)                    return CLAIM_NO;
-    if (dev->idProduct != m_pid)                    return CLAIM_NO;
+    if (topusage != TOPUSAGE_JOYSTICK) return CLAIM_NO;
+    if (m_claimed)                     return CLAIM_NO;
+    if (dev->idVendor  != m_vid)       return CLAIM_NO;
+    if (dev->idProduct != m_pid)       return CLAIM_NO;
 
     m_claimed = true;
     m_buttons = 0;
+    m_xAxis   = 0;
+    m_yAxis   = 0;
     m_zAxis   = 0;
     m_hubPort = dev->hub_port;
 
@@ -223,6 +220,8 @@ public:
     Serial.println(" disconnected");
     m_claimed = false;
     m_buttons = 0;
+    m_xAxis   = 0;
+    m_yAxis   = 0;
     m_zAxis   = 0;
   }
 
@@ -234,10 +233,18 @@ public:
       // Button page
       const uint32_t mask = (1u << (id - 1));
       m_buttons = value ? (m_buttons | mask) : (m_buttons & ~mask);
-    } else if (page == 0x01 && id == 0x32) {
-      // Generic Desktop > Z axis
-      m_zAxis = (uint16_t)value;
+    } else if (page == 0x01) {
+      // Generic Desktop axes
+      switch (id) {
+        case 0x30: m_xAxis = (uint16_t)value; break;  // X
+        case 0x31: m_yAxis = (uint16_t)value; break;  // Y
+        case 0x32: m_zAxis = (uint16_t)value; break;  // Z
+        default: break;
+      }
     }
+    // Vendor-defined pages (FF00, FF01, ...) ignored — see SP Pro report
+    // descriptor: 18 bytes of FF00:0001 after the axes, plus a tower of
+    // feature reports. Not relevant for pedal position.
   }
 
   // Required overrides — no per-report-boundary work.
@@ -248,7 +255,19 @@ public:
 
   bool        connected() const { return m_claimed; }
   uint32_t    buttons()   const { return m_buttons; }
+  uint16_t    xAxis()     const { return m_xAxis; }
+  uint16_t    yAxis()     const { return m_yAxis; }
   uint16_t    zAxis()     const { return m_zAxis; }
+
+  // Selector by index: 0=X, 1=Y, 2=Z. Returns 0 for any other value.
+  uint16_t    axisByIndex(uint8_t i) const {
+    switch (i) {
+      case 0:  return m_xAxis;
+      case 1:  return m_yAxis;
+      case 2:  return m_zAxis;
+      default: return 0;
+    }
+  }
   uint8_t     hubPort()   const { return m_hubPort; }
   const char* name()      const { return m_name; }
 
@@ -258,6 +277,8 @@ private:
   const char* m_name;
   bool        m_claimed = false;
   uint32_t    m_buttons = 0;
+  uint16_t    m_xAxis   = 0;
+  uint16_t    m_yAxis   = 0;
   uint16_t    m_zAxis   = 0;
   uint8_t     m_hubPort = 0;
 };
@@ -269,8 +290,25 @@ GenericJoystickHID g_hPattern(0x046D, 0xC26B, "H-Pattern");
 GenericJoystickHID g_combo1  (0x046D, 0xC278, "Combo#1");
 GenericJoystickHID g_combo2  (0x046D, 0xC278, "Combo#2");
 
+// Simnet SP Pro Pedals (VID 0xCAFE PID 0xA301). Three 12-bit axes:
+//   Generic Desktop > X → throttle (default mapping, can swap below)
+//   Generic Desktop > Y → brake
+//   Generic Desktop > Z → clutch
+// 18 bytes of vendor-defined data and 13 feature reports are ignored.
+GenericJoystickHID g_spPedals(0xCAFE, 0xA301, "SP-Pro");
+
 GenericJoystickHID* const g_combos[] = { &g_combo1, &g_combo2 };
 constexpr uint8_t g_comboCount = sizeof(g_combos) / sizeof(g_combos[0]);
+
+// ---- Pedal axis mapping (edit if a pedal moves the wrong slider) ----
+// AXIS values: 0 = X, 1 = Y, 2 = Z. Set INVERT to true if the device
+// reports 4095 at rest and drops when pressed.
+constexpr uint8_t PEDAL_AXIS_THROTTLE   = 0;
+constexpr uint8_t PEDAL_AXIS_BRAKE      = 1;
+constexpr uint8_t PEDAL_AXIS_CLUTCH     = 2;
+constexpr bool    PEDAL_INVERT_THROTTLE = false;
+constexpr bool    PEDAL_INVERT_BRAKE    = false;
+constexpr bool    PEDAL_INVERT_CLUTCH   = false;
 
 USBDriver* g_usbDrivers[] = {
   &g_hub1, &g_hub2,
@@ -324,6 +362,21 @@ void pollUsbDriverStatus() {
       Serial.println(" detached");
     }
   }
+}
+
+// ---------------- Manual CPU soft-reset ----------------
+// USB host hot-plug behavior with USBHost_t36 is unreliable on some hubs
+// (notably the Sabrent 4-port USB 2.0, VID 0x5E3 PID 0x610 — see
+// https://forum.pjrc.com/threads/68145 and README "Compatibility" section).
+// We don't try to auto-recover anymore; tests showed that CPU reset alone
+// can't clear hub-side wedge states, and the symptom doesn't recur with a
+// known-good hub. Manual 'X' command kept for general debug convenience.
+
+static inline void cpuSoftReset() {
+  Serial.flush();
+  delay(50);
+  (*((volatile uint32_t*)0xE000ED0C)) = 0x5FA0004;
+  while (true) {}  // never reached
 }
 
 // ---------------- Role: H-pattern shifter ----------------
@@ -438,6 +491,7 @@ void updateHandbrake() {
 
   if (!anyConnected) {
     analogWrite(PIN_HANDBRAKE, 0);
+    setPedalHandbrake(0);
     return;
   }
 
@@ -458,9 +512,19 @@ void updateHandbrake() {
   const uint16_t output = digital ? 4095 : analogOut;
   analogWrite(PIN_HANDBRAKE, output);
 
-  // Periodic debug.
+  // Also feed handbrake into the CSL Elite V2 pedal stream's Handbrake
+  // channel. Newer Fanatec firmware treats the digital pedal protocol as
+  // the canonical handbrake source when present, ignoring the dedicated
+  // handbrake RJ12 port. We send to both channels so the system works
+  // regardless of which the wheelbase listens to. 12→16-bit with bit
+  // replication so 4095 maps cleanly to 65535.
+  const uint16_t pedalHandbrake = (uint16_t)((output << 4) | (output >> 8));
+  setPedalHandbrake(pedalHandbrake);
+
+  // Periodic debug — only while handbrake is actually engaged. Avoids
+  // spamming the serial log when the lever is at idle.
   static uint32_t lastPrint = 0;
-  if (millis() - lastPrint >= HB_DEBUG_INTERVAL_MS) {
+  if (output > 0 && millis() - lastPrint >= HB_DEBUG_INTERVAL_MS) {
     lastPrint = millis();
     Serial.print("[HB] raw=");
     Serial.print(maxZ);
@@ -474,6 +538,51 @@ void updateHandbrake() {
     Serial.print(output);
     if (digital) Serial.print(" (digital)");
     Serial.println();
+  }
+}
+
+// ---------------- Role: USB pedals → Fanatec pedal stream ----------------
+// Reads X/Y/Z from g_spPedals (or any future generic HID pedal device) and
+// pushes the values into the pedal module so the UART streaming layer can
+// forward them to the wheelbase. Each axis is mapped to one Fanatec pedal
+// channel via the PEDAL_AXIS_* constants at the top of the USB host block.
+
+// 12-bit (0..4095) → 16-bit (0..65535) with bit replication so the top
+// hits 0xFFFF exactly, not 0xFFF0. Optionally invert.
+static uint16_t scalePedal(uint16_t raw12, bool invert) {
+  if (invert) raw12 = (raw12 > 4095) ? 0 : (uint16_t)(4095 - raw12);
+  if (raw12 > 4095) raw12 = 4095;
+  return (uint16_t)((raw12 << 4) | (raw12 >> 8));
+}
+
+void updatePedalsFromHID() {
+  if (!g_spPedals.connected()) return;
+
+  const uint16_t t = scalePedal(g_spPedals.axisByIndex(PEDAL_AXIS_THROTTLE), PEDAL_INVERT_THROTTLE);
+  const uint16_t b = scalePedal(g_spPedals.axisByIndex(PEDAL_AXIS_BRAKE),    PEDAL_INVERT_BRAKE);
+  const uint16_t c = scalePedal(g_spPedals.axisByIndex(PEDAL_AXIS_CLUTCH),   PEDAL_INVERT_CLUTCH);
+
+  setPedalThrottle(t);
+  setPedalBrake(b);
+  setPedalClutch(c);
+
+  // Light periodic debug, only when something is non-zero.
+  static uint32_t lastPrint = 0;
+  if ((t || b || c) && millis() - lastPrint >= 500) {
+    lastPrint = millis();
+    Serial.print("[Pedals/HID] x=");
+    Serial.print(g_spPedals.xAxis());
+    Serial.print(" y=");
+    Serial.print(g_spPedals.yAxis());
+    Serial.print(" z=");
+    Serial.print(g_spPedals.zAxis());
+    Serial.print("  → T=");
+    Serial.print((uint32_t)t * 100 / 65535);
+    Serial.print("% B=");
+    Serial.print((uint32_t)b * 100 / 65535);
+    Serial.print("% C=");
+    Serial.print((uint32_t)c * 100 / 65535);
+    Serial.println("%");
   }
 }
 
@@ -505,6 +614,8 @@ void printHelp() {
   Serial.println("  c                   cycle through all H-pattern gears once");
   Serial.println("  t                   print current gear table");
   Serial.println("  u                   print USB host status");
+  Serial.println("  p                   force pedal handshake reset (to Step 0)");
+  Serial.println("  X                   force CPU soft-reset (full restart)");
   Serial.println("  q / w               decrease / increase pedal Throttle by 1%");
   Serial.println("  a / s               decrease / increase pedal Brake by 1%");
   Serial.println("  z / x               decrease / increase pedal Clutch by 1%");
@@ -543,7 +654,53 @@ void printUsbStatus() {
   Serial.print(g_hb.zMax);
   Serial.print(" samples=");
   Serial.println(g_hb.samples);
-  
+
+  Serial.print("SP-Pro pedals: ");
+  if (g_spPedals.connected()) {
+    Serial.print("yes  X=");
+    Serial.print(g_spPedals.xAxis());
+    Serial.print("  Y=");
+    Serial.print(g_spPedals.yAxis());
+    Serial.print("  Z=");
+    Serial.print(g_spPedals.zAxis());
+    Serial.print("  hub_port=");
+    Serial.println(g_spPedals.hubPort());
+  } else {
+    Serial.println("no");
+  }
+
+  // Per-driver bus state — shows whether USBHub / USBHIDParser slots are
+  // currently bound to physical devices. Useful when a HID consumer (above)
+  // reports "no" — if the parser slot IS claimed, the device enumerated but
+  // no consumer wanted it; if the slot is empty, the device didn't enumerate
+  // at all (cable / power / hub issue).
+  Serial.println("USB drivers:");
+  for (uint8_t i = 0; i < g_usbDriverCount; ++i) {
+    const bool active = (*g_usbDrivers[i]);
+    const char* name =
+      (g_usbDrivers[i] == &g_hub1) ? "Hub1" :
+      (g_usbDrivers[i] == &g_hub2) ? "Hub2" :
+      (g_usbDrivers[i] == &g_hid1) ? "HID1" :
+      (g_usbDrivers[i] == &g_hid2) ? "HID2" :
+      (g_usbDrivers[i] == &g_hid3) ? "HID3" :
+      (g_usbDrivers[i] == &g_hid4) ? "HID4" :
+      (g_usbDrivers[i] == &g_hid5) ? "HID5" :
+      (g_usbDrivers[i] == &g_hid6) ? "HID6" :
+      (g_usbDrivers[i] == &g_hid7) ? "HID7" :
+      (g_usbDrivers[i] == &g_hid8) ? "HID8" : "?";
+    Serial.print("  ");
+    Serial.print(name);
+    Serial.print(": ");
+    if (active) {
+      Serial.print("VID=0x");
+      Serial.print(g_usbDrivers[i]->idVendor(), HEX);
+      Serial.print(" PID=0x");
+      Serial.println(g_usbDrivers[i]->idProduct(), HEX);
+    } else {
+      Serial.println("idle");
+    }
+  }
+
   Serial.print("Pedals (Serial3): ");
   Serial.print(getPedalsStateName());
   Serial.print(" | Throttle=");
@@ -626,6 +783,7 @@ bool sleepOrAbort(uint32_t ms) {
     updateHPattern();
     updateSequential();
     updateHandbrake();
+    updatePedalsFromHID();
     pedalsUpdate();
     if (Serial.available()) { Serial.read(); return false; }
   }
@@ -650,6 +808,7 @@ void loop() {
   updateHPattern();
   updateSequential();
   updateHandbrake();
+  updatePedalsFromHID();
   pedalsUpdate();
 
   if (!Serial.available()) return;
@@ -676,48 +835,53 @@ void loop() {
     printTable();
   } else if (c == 'u' || c == 'U') {
     printUsbStatus();
-  } else if (c == 'q' || c == 'Q') {
+  } else if (c == 'q') {
     int32_t val = (int32_t)getPedalThrottle() - 655; // ~1%
     if (val < 0) val = 0;
     setPedalThrottle(val);
     Serial.print("[Pedals] Throttle: ");
     Serial.print((val * 100) / 65535);
     Serial.println("%");
-  } else if (c == 'w' || c == 'W') {
+  } else if (c == 'w') {
     int32_t val = (int32_t)getPedalThrottle() + 655; // ~1%
     if (val > 65535) val = 65535;
     setPedalThrottle(val);
     Serial.print("[Pedals] Throttle: ");
     Serial.print((val * 100) / 65535);
     Serial.println("%");
-  } else if (c == 'a' || c == 'A') {
+  } else if (c == 'a') {
     int32_t val = (int32_t)getPedalBrake() - 655; // ~1%
     if (val < 0) val = 0;
     setPedalBrake(val);
     Serial.print("[Pedals] Brake: ");
     Serial.print((val * 100) / 65535);
     Serial.println("%");
-  } else if (c == 's' || c == 'S') {
+  } else if (c == 's') {
     int32_t val = (int32_t)getPedalBrake() + 655; // ~1%
     if (val > 65535) val = 65535;
     setPedalBrake(val);
     Serial.print("[Pedals] Brake: ");
     Serial.print((val * 100) / 65535);
     Serial.println("%");
-  } else if (c == 'z' || c == 'Z') {
+  } else if (c == 'z') {
     int32_t val = (int32_t)getPedalClutch() - 655; // ~1%
     if (val < 0) val = 0;
     setPedalClutch(val);
     Serial.print("[Pedals] Clutch: ");
     Serial.print((val * 100) / 65535);
     Serial.println("%");
-  } else if (c == 'x' || c == 'X') {
+  } else if (c == 'x') {
     int32_t val = (int32_t)getPedalClutch() + 655; // ~1%
     if (val > 65535) val = 65535;
     setPedalClutch(val);
     Serial.print("[Pedals] Clutch: ");
     Serial.print((val * 100) / 65535);
     Serial.println("%");
+  } else if (c == 'X') {
+    Serial.println("[CPU] Manual soft-reset.");
+    cpuSoftReset();
+  } else if (c == 'p' || c == 'P') {
+    pedalsForceReset();
   } else if (c == '?' || c == 'h' || c == 'H') {
     printHelp();
   } else {

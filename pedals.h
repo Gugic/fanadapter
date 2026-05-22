@@ -9,6 +9,11 @@ void pedalsInit();
 // Non-blocking update to be called in loop()
 void pedalsUpdate();
 
+// Force the pedal handshake state machine back to Step 0 (250000 baud).
+// Useful for re-syncing without a Teensy reset when the wheelbase end of
+// the protocol has been desynced (e.g. by a prior debug session).
+void pedalsForceReset();
+
 // Set pedal values in range 0..65535 (16-bit resolution)
 void setPedalThrottle(uint16_t val);
 void setPedalBrake(uint16_t val);
