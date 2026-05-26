@@ -1,3 +1,4 @@
+#include <avr/pgmspace.h>
 #include <usb_names.h>
 
 #define MANUFACTURER_NAME {'f','a','n','a','d','a','p','t','e','r'}
@@ -7,13 +8,13 @@
 #define PRODUCT_NAME_LEN 17
 
 // Override the default weak structures in the Teensyduino core
-struct usb_string_descriptor_struct usb_string_manufacturer_name = {
+PROGMEM struct usb_string_descriptor_struct usb_string_manufacturer_name = {
   2 + MANUFACTURER_NAME_LEN * 2,
   3,
   MANUFACTURER_NAME
 };
 
-struct usb_string_descriptor_struct usb_string_product_name = {
+PROGMEM struct usb_string_descriptor_struct usb_string_product_name = {
   2 + PRODUCT_NAME_LEN * 2,
   3,
   PRODUCT_NAME
