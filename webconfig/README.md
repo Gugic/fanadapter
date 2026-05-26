@@ -1,69 +1,141 @@
 # fanadapter webconfig
 
-Browser-based WebSerial configuration UI for the [fanadapter firmware](../firmware/). Built with Vite + React + TypeScript + Tailwind + shadcn/ui. Talks to the Teensy over WebSerial; no native helper required.
+The browser-based configuration interface for the [fanadapter firmware](../firmware/). Built with Vite, React 19, TypeScript, Tailwind, and shadcn/ui. 
 
-## Live
+The webapp communicates with the Teensy 4.1 over WebSerial using a line-based JSON protocol. No native helper application or local daemon is required.
 
-When this repo is published to GitHub Pages, the app is served at the URL configured in your Pages settings (typically `https://<owner>.github.io/fanadapter/`).
+---
 
-WebSerial only works in Chromium-based browsers (Chrome, Edge, Brave, Opera) on desktop.
+## Live Deployment
 
-## Local dev
+When this repository is pushed to `main`, a GitHub Actions workflow automatically builds and publishes the production build to GitHub Pages:
+* **Canonical URL:** `https://<username>.github.io/fanadapter/`
 
-Requires Node 20+ (any LTS works).
+> [!NOTE]
+> **Browser Compatibility:** WebSerial is currently only supported in desktop Chromium-based browsers (Google Chrome, Microsoft Edge, Brave, Opera). It will not work on mobile browsers or on desktop Firefox/Safari.
+
+---
+
+## Local Development & Commands
+
+### Prerequisites
+* **Node.js:** version 20 or higher (LTS recommended)
+* **Package Manager:** `npm` (comes bundled with Node)
+
+### Workflow Commands
+Execute all commands from the `webconfig/` subdirectory:
 
 ```sh
-cd webconfig
+# 1. Install dependencies
 npm install
+
+# 2. Start the local Vite development server
 npm run dev
-```
 
-Vite will print a URL like `http://localhost:5173/fanadapter/`. Open it in Chrome/Edge/Brave, click **Connect**, pick the Teensy CDC port.
-
-## Build
-
-```sh
+# 3. Create a optimized static production build
 npm run build
+
+# 4. Run ESLint rules check
+npm run lint
 ```
 
-Produces a static bundle in `dist/`. Default base path is `/fanadapter/` (matches the repo name); override with `VITE_BASE=/whatever/ npm run build` for custom hosting.
+When running `npm run dev`, Vite will serve the application at `http://localhost:5173/fanadapter/`. Open this URL in Chrome, Edge, or Brave, click **Connect**, and choose the Teensy USB Serial CDC device from the browser permission pop-up.
 
-## Deploy to GitHub Pages
+### Custom Subfolder Deployment
+By default, the Vite config maps assets to the base path `/fanadapter/`. If you are hosting the configurator elsewhere, override this base path during building:
+```sh
+VITE_BASE=/custom-path/ npm run build
+```
 
-The repo includes [.github/workflows/pages.yml](../.github/workflows/pages.yml) which builds `webconfig/` and publishes `dist/` to Pages on every push to `main`. To turn it on:
+---
 
-1. Push the workflow file to `main` (it lives at the repo root).
-2. In repository settings → **Pages**, set **Source** to **GitHub Actions**.
-3. The first push to `main` after that triggers a deploy; the URL appears under Settings → Pages.
-
-If you fork or rename the repo, update the `base` default in [vite.config.ts](vite.config.ts) to match the new path.
-
-## Project layout
+## Project Structure
 
 ```
 webconfig/
   src/
-    App.tsx               Top-level state, connection lifecycle, tab routing
-    components/ui/        shadcn-style primitives (button, card, slider, …)
+    App.tsx               # Entry point, top-level state, connection lifecycle, and tab routing
+    components/ui/        # UI primitives (buttons, cards, sliders, inputs) via shadcn/ui
     lib/
-      serial.ts           WebSerial client + JSON request/response queue
-      types.ts            TypeScript mirror of the firmware Config schema
-      scaleAxis.ts        Client-side mirror of firmware scaleAxis() for live preview
-      crc32.ts            CRC-32/ISO-HDLC (matches firmware) for future preset validation
-      utils.ts            cn() helper for class merging
+      serial.ts           # WebSerial client containing the FIFO request/response queue
+      types.ts            # TypeScript mirror of the firmware's Config schema
+      scaleAxis.ts        # Client-side replica of the firmware's scaleAxis() math
+      crc32.ts            # Client-side CRC-32/ISO-HDLC encoder (matches firmware)
+      utils.ts            # Tailwind CSS class merging helper
   public/
-    presets/              Bundled JSON presets (loaded via fetch)
-  tailwind.config.js
-  vite.config.ts
-  tsconfig*.json
+    presets/              # Pre-bundled JSON configurations loaded via fetch
+  tailwind.config.js      # Styling design tokens and theme settings
+  vite.config.ts          # Vite build config
 ```
 
-## Presets
+---
 
-`public/presets/` holds JSON files matching the firmware's `get_config` response shape, so the same payload can be replayed against any fanadapter to recreate a known-good setup.
+## Technical Design & Internal Invariants
 
-Each channel is an array of up to `MAX_BINDINGS_PER_CHANNEL` bindings (currently 4). Empty slots have `type: "none"`. Multiple bindings on the same channel are aggregated — buttons OR together, axes MAX together — so e.g. you can set Reverse to *either* a paddle button *or* a stick position.
+To keep the web configurator aligned with the microcontroller's operation, three critical design architectures are enforced:
 
-Bundled today:
+### 1. In-App Capture Flow State Machine
+`webconfig/src/App.tsx` coordinates a three-phase "Listen" process for capture-mapping button or axis inputs:
 
-- `rs-shifter-rs-combo-spu-spro.json` — the original hardcoded firmware behavior (Logitech RS H-Shifter `046D:C26B` + 1–2× RS Shifter+Handbrake `046D:C278` + Simnet SP Pro `CAFE:A301`). Same gear DAC voltages as the pre-refactor `GEARS[]` table; pedal `rawMax` set to `4095` (matching the SP Pro's 12-bit reports) and a 2 % low deadzone on brake to absorb the noise floor.
+1. **`baseline` (Duration: ~400 ms):**  
+   Samples active button bits and axis ranges to establish the sensor noise floor.  
+   *Implementation detail:* To avoid trigger-heavy React component re-renders on 50 Hz serial updates, this baseline data accumulates in a React `useRef` rather than state.
+   
+2. **`active`:**  
+   Waits for input activity that crosses the noise floor.  
+   * Buttons: Commit immediately when any button bit toggles.  
+   * Axes: Latch and advance to Phase 3 when an axis value deviates from its baseline midpoint by more than `max(noise × 5, 500)`.
+   
+3. **`tracking`:**  
+   Tracks high/low peaks on the latched axis. The configuration commits when the user releases the axis and it returns to within `max(noise × 2, 200)` of the baseline. The axis direction (rising vs falling) is determined by which peak traveled further; descending axes automatically check the `invert: true` configuration flag.
+
+---
+
+### 2. FIFO Serial Request/Response Queue
+Because multiple UI modules can request details from the Teensy simultaneously, `SerialClient` (`webconfig/src/lib/serial.ts`) implements a FIFO queue over WebSerial:
+* Commands (non-event JSON strings) are pushed to the queue and executed sequentially. When a JSON reply is returned, it is matched with the oldest pending promise.
+* Event packages (`{"event":"..."}`) are intercepted, bypassed, and fanned out to active UI subscribers.
+* Non-JSON text lines are transformed into virtual log events (`{type: "log"}`) and rendered inside the configurator's **Logs** console.
+
+---
+
+### 3. Cross-File Code Invariants
+The web app shares four strict boundaries with the Teensy 4.1 C++ code. If a change is made to one, its twin file must be updated in the same commit:
+
+| Webconfig Component | Firmware Code | Matching Requirement |
+|---|---|---|
+| `src/lib/types.ts` | `mapping.h` | Must mirror exact property naming, field types, and channel lists. |
+| `src/lib/scaleAxis.ts` | `mapping.cpp` (`scaleAxis`) | Must replicate identical threshold, deadzone, and math operations. |
+| `src/lib/crc32.ts` | `mapping.cpp` (CRC-32) | Same ISO-HDLC CRC polynomial. |
+| `src/lib/serial.ts` | `protocol.cpp` | JSON commands, channel keys, and async events must match. |
+
+> [!IMPORTANT]
+> **Backward Compatibility:** `types.ts` is designed defensively to handle both the v2 schema (channels mapped as array slots) and the legacy v1 schema (single bindings) so the interface continues rendering when connected to older firmware versions. Keep this fallback structure intact.
+
+---
+
+## Presets Config Layout
+
+Pre-bundled JSON configurations are saved under `public/presets/`. Their layout mirrors the JSON schema emitted by the Teensy's `get_config` command:
+* Each output channel carries a array containing up to 4 input binding slots.
+* Unmapped slots are designated as `{"type": "none"}`.
+
+### Standard Presets
+* **`rs-shifter-rs-combo-spu-spro.json`**  
+  Restores standard behavior for:
+  * Logitech RS H-Pattern Shifter (`046D:C26B`)
+  * Logitech RS Combo Shifter/Handbrake (`046D:C278`)
+  * Simnet SP Pro Pedals (`CAFE:A301`)
+  It configures default gear DAC target voltages, defines a 12-bit max range (4095) for the SP Pro pedals, and adds a 2% low brake deadzone to absorb initial sensor noise.
+
+---
+
+## Front-End Troubleshooting
+
+### Configurator refuses to connect
+* Ensure you are running Chrome, Edge, or Brave. Safari and Firefox are incompatible.
+* Ensure the Teensy's serial port is not occupied by another utility, such as a serial monitor, `arduino-cli upload`, or another open WebSerial browser tab.
+
+### The preview bars move in the UI, but the wheelbase does not react
+* Verify that you clicked **Save to EEPROM** after completing mappings. Mappings in React are active temporarily on the Teensy's RAM but will revert or fail to handshake unless committed.
+* Verify that your hardware cables match the pinouts described in the [Hardware & Schematics Reference](../schematics/README.md).
