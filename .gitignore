@@ -1,8 +1,9 @@
 # Portable Node install used during local dev — see webconfig/README.md
 .tools/
 
-# Local Claude Code session artifacts
+# Local AI-agent session artifacts
 .claude/
+.antigravitycli/
 
 # OS junk
 .DS_Store
