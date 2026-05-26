@@ -70,3 +70,6 @@ uint8_t devicePoolSize();
 // Returns the slot pointer (always non-null for i < devicePoolSize()).
 // Caller checks .connected() before reading state.
 GenericJoystickHID* devicePoolSlot(uint8_t i);
+
+// Safely fetches and clears logged HID collections
+uint8_t devicePoolGetLoggedCollections(uint16_t* vids, uint16_t* pids, uint32_t* topusages, uint8_t maxCount);

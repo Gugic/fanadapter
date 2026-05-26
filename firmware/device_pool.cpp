@@ -4,12 +4,41 @@ GenericJoystickHID::GenericJoystickHID() {
   USBHIDParser::driver_ready_for_hid_collection(this);
 }
 
+struct LoggedCollection {
+  uint16_t vid;
+  uint16_t pid;
+  uint32_t topusage;
+};
+#define MAX_LOGGED_COLLECTIONS 16
+static LoggedCollection g_loggedCollections[MAX_LOGGED_COLLECTIONS];
+static volatile uint8_t g_loggedCollectionsCount = 0;
+
 hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
                                                 Device_t* dev,
                                                 uint32_t  topusage) {
+  // Log this collection if not already logged
+  bool foundLog = false;
+  for (uint8_t i = 0; i < g_loggedCollectionsCount; ++i) {
+    if (g_loggedCollections[i].vid == dev->idVendor &&
+        g_loggedCollections[i].pid == dev->idProduct &&
+        g_loggedCollections[i].topusage == topusage) {
+      foundLog = true;
+      break;
+    }
+  }
+  if (!foundLog && g_loggedCollectionsCount < MAX_LOGGED_COLLECTIONS) {
+    g_loggedCollections[g_loggedCollectionsCount++] = {
+      dev->idVendor,
+      dev->idProduct,
+      topusage
+    };
+  }
+
   if (topusage != TOPUSAGE_JOYSTICK &&
       topusage != TOPUSAGE_GAMEPAD &&
-      topusage != TOPUSAGE_MULTIAXIS) return CLAIM_NO;
+      topusage != TOPUSAGE_MULTIAXIS) {
+    return CLAIM_NO;
+  }
   if (m_claimed)                     return CLAIM_NO;
 
   m_claimed     = true;
@@ -89,4 +118,22 @@ uint8_t devicePoolSize() {
 GenericJoystickHID* devicePoolSlot(uint8_t i) {
   if (i >= DEVICE_POOL_SIZE) return nullptr;
   return &g_devicePool[i];
+}
+
+uint8_t devicePoolGetLoggedCollections(uint16_t* vids, uint16_t* pids, uint32_t* topusages, uint8_t maxCount) {
+  uint8_t count = g_loggedCollectionsCount;
+  if (count > maxCount) count = maxCount;
+  for (uint8_t i = 0; i < count; ++i) {
+    if (vids)      vids[i]      = g_loggedCollections[i].vid;
+    if (pids)      pids[i]      = g_loggedCollections[i].pid;
+    if (topusages) topusages[i] = g_loggedCollections[i].topusage;
+  }
+  // Shift remaining
+  if (count < g_loggedCollectionsCount) {
+    memmove(g_loggedCollections, &g_loggedCollections[count], (g_loggedCollectionsCount - count) * sizeof(LoggedCollection));
+    g_loggedCollectionsCount -= count;
+  } else {
+    g_loggedCollectionsCount = 0;
+  }
+  return count;
 }

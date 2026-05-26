@@ -379,6 +379,20 @@ void protocolTick() {
     return;
   }
 
+  // Safely check and print any newly detected USB HID collections
+  uint16_t vids[8];
+  uint16_t pids[8];
+  uint32_t topusages[8];
+  uint8_t count = devicePoolGetLoggedCollections(vids, pids, topusages, 8);
+  for (uint8_t i = 0; i < count; ++i) {
+    Serial.print("[USB/Info] HID Collection: VID=0x");
+    Serial.print(vids[i], HEX);
+    Serial.print(" PID=0x");
+    Serial.print(pids[i], HEX);
+    Serial.print(" topusage=0x");
+    Serial.println(topusages[i], HEX);
+  }
+
   // 1) Drain Serial bytes
   while (Serial.available()) {
     const char c = (char)Serial.read();
