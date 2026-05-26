@@ -69,15 +69,15 @@ static void writeChannelTo(JsonArray arr, const ChannelBindings& cb) {
 }
 
 static void readBindingFrom(JsonVariantConst v, InputBinding& b) {
-  if (v["vid"].is<uint16_t>())          b.vid          = v["vid"].as<uint16_t>();
-  if (v["pid"].is<uint16_t>())          b.pid          = v["pid"].as<uint16_t>();
+  if (v["vid"].is<int>())          b.vid          = v["vid"].as<uint16_t>();
+  if (v["pid"].is<int>())          b.pid          = v["pid"].as<uint16_t>();
   if (v["type"].is<const char*>())      b.type         = inputTypeFromName(v["type"]);
-  if (v["index"].is<uint8_t>())         b.index        = v["index"].as<uint8_t>();
-  if (v["threshold"].is<uint16_t>())    b.threshold    = v["threshold"].as<uint16_t>();
-  if (v["rawMin"].is<uint16_t>())       b.rawMin       = v["rawMin"].as<uint16_t>();
-  if (v["rawMax"].is<uint16_t>())       b.rawMax       = v["rawMax"].as<uint16_t>();
-  if (v["deadzoneLow"].is<uint16_t>())  b.deadzoneLow  = v["deadzoneLow"].as<uint16_t>();
-  if (v["deadzoneHigh"].is<uint16_t>()) b.deadzoneHigh = v["deadzoneHigh"].as<uint16_t>();
+  if (v["index"].is<int>())         b.index        = v["index"].as<uint8_t>();
+  if (v["threshold"].is<int>())    b.threshold    = v["threshold"].as<uint16_t>();
+  if (v["rawMin"].is<int>())       b.rawMin       = v["rawMin"].as<uint16_t>();
+  if (v["rawMax"].is<int>())       b.rawMax       = v["rawMax"].as<uint16_t>();
+  if (v["deadzoneLow"].is<int>())  b.deadzoneLow  = v["deadzoneLow"].as<uint16_t>();
+  if (v["deadzoneHigh"].is<int>()) b.deadzoneHigh = v["deadzoneHigh"].as<uint16_t>();
   if (v["invert"].is<bool>())           b.invert       = v["invert"].as<bool>() ? 1 : 0;
 }
 
@@ -161,7 +161,7 @@ static void cmdSetBinding(const JsonDocument& doc) {
   const char* chName = doc["channel"] | (const char*)nullptr;
   ChannelId ch = mappingChannelByName(chName);
   // `slot` is optional, defaults to 0 — preserves single-binding ergonomics.
-  const uint8_t slot = doc["slot"].is<uint8_t>() ? doc["slot"].as<uint8_t>() : 0;
+  const uint8_t slot = doc["slot"].is<int>() ? doc["slot"].as<uint8_t>() : 0;
   InputBinding* b = mappingBindingSlot(ch, slot);
   if (!b) { sendErr("unknown_channel_or_slot"); return; }
   JsonVariantConst bind = doc["binding"];
@@ -176,14 +176,14 @@ static void cmdSetGearDac(const JsonDocument& doc) {
   ChannelId ch = mappingChannelByName(chName);
   GearOutputCalibration* g = mappingGearOutFor(ch);
   if (!g) { sendErr("not_a_gear_channel"); return; }
-  if (doc["x"].is<uint16_t>()) g->x = doc["x"].as<uint16_t>();
-  if (doc["y"].is<uint16_t>()) g->y = doc["y"].as<uint16_t>();
+  if (doc["x"].is<int>()) g->x = doc["x"].as<uint16_t>();
+  if (doc["y"].is<int>()) g->y = doc["y"].as<uint16_t>();
   mappingRecomputeCrc();
   sendOk();
 }
 
 static void cmdSetPulseMs(const JsonDocument& doc) {
-  if (!doc["value"].is<uint16_t>()) { sendErr("missing_value"); return; }
+  if (!doc["value"].is<int>()) { sendErr("missing_value"); return; }
   mappingConfigMutable().pulseMs = doc["value"].as<uint16_t>();
   mappingRecomputeCrc();
   sendOk();
@@ -216,7 +216,7 @@ static void cmdTestAxis(const JsonDocument& doc) {
     sendErr("not_an_axis_channel"); return;
   }
   uint16_t v = 0;
-  if (doc["value"].is<uint16_t>()) v = doc["value"].as<uint16_t>();
+  if (doc["value"].is<int>()) v = doc["value"].as<uint16_t>();
   mappingTestAxis(ch, v);
   sendOk();
 }
