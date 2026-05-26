@@ -22,7 +22,9 @@ class GenericJoystickHID : public USBHIDInput {
 public:
   GenericJoystickHID();
 
-  static constexpr uint32_t TOPUSAGE_JOYSTICK = 0x10004;
+  static constexpr uint32_t TOPUSAGE_JOYSTICK  = 0x10004;
+  static constexpr uint32_t TOPUSAGE_GAMEPAD   = 0x10005;
+  static constexpr uint32_t TOPUSAGE_MULTIAXIS = 0x10008;
 
   // USBHIDInput overrides
   hidclaim_t claim_collection(USBHIDParser* driver, Device_t* dev, uint32_t topusage) override;

@@ -6,7 +6,7 @@ This file provides guidance for AI coding agents working in this repository.
 
 `fanadapter` is a USB HID → Fanatec wheelbase adapter (Teensy 4.1) plus a browser-based WebSerial UI for configuring it. Two halves that ship together:
 
-- **`firmware/`** — Arduino sketch (Teensyduino) that runs on the Teensy 4.1. Enumerates USB HID joystick devices via the native USB host port and drives Fanatec RJ12 ports (H-pattern PWM, sequential open-drain, handbrake PWM, pedal-port UART).
+- **`firmware/`** — Arduino sketch (Teensyduino) that runs on the Teensy 4.1. Enumerates USB HID joysticks, gamepads, and multi-axis controllers via the native USB host port and drives Fanatec RJ12 ports (H-pattern PWM, sequential open-drain, handbrake PWM, pedal-port UART).
 - **`webconfig/`** — Vite + React 19 + TypeScript + Tailwind + shadcn/ui app that talks to the firmware over WebSerial (line-based JSON). Deployed to GitHub Pages by `.github/workflows/pages.yml` on push to `main`.
 
 Detailed hardware docs, port pinouts, protocol references, calibration guides: `firmware/README.md`. Webconfig deploy + dev: `webconfig/README.md`. This file only covers the parts that need cross-file context.
@@ -53,7 +53,7 @@ Five translation units, loop-dispatched in `firmware.ino` in this order — orde
 g_usb.Task() → pollUsbDriverStatus() → protocolTick() → mappingTick() → pedalsUpdate()
 ```
 
-- `device_pool.{h,cpp}` — 8-slot pool of `GenericJoystickHID` consumers. Claims any joystick HID collection (any VID/PID), first-come-first-served. Axis/button counts are discovered lazily from observed reports — they start at 0 and grow.
+- `device_pool.{h,cpp}` — 8-slot pool of `GenericJoystickHID` consumers. Claims any joystick, gamepad, or multi-axis controller HID collection (any VID/PID), first-come-first-served. Axis/button counts are discovered lazily from observed reports — they start at 0 and grow.
 - `mapping.{h,cpp}` — `Config` schema, EEPROM I/O, `evalAxis` / `evalButton` evaluators, per-channel updaters that drive PWM pins and the pedal stream. **`Config` is 1060 bytes with `static_assert`-locked layout**; any field change without a matching size update is a compile error. Bump `CONFIG_VERSION` (`mapping.h`) on schema changes — EEPROMs from older versions are rejected and the firmware boots with defaults.
 - `protocol.{h,cpp}` — Line-based JSON command dispatcher over USB CDC Serial (`ArduinoJson v7`). Lines starting with `{` are JSON commands; other characters go to the CLI callback. Emits async events (`device_attached`, `device_detached`, `live`, `outputs`) — rate-limited to ~50 Hz inputs / ~30 Hz outputs.
 - `pedals.{h,cpp}` — CSL Elite V2 UART emulator on Serial3 (pins 14/15). State machine: STEP0 (250000 baud, expects `0x0A` → sends `0x1A`) → STEP1 (`0x05` → `0x15`) → STEP2 (switches to 115200, 12-byte framed query/response) → STREAMING (100 Hz pedal packets). **Boot warmup**: on startup we silently drain Serial3 for 2 s before engaging the handshake — gives the wheelbase a clean silence window to reset its end after a Teensy reboot (otherwise it hangs sending `0x0A` without following with `0x05`).

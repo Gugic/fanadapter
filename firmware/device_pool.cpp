@@ -7,7 +7,9 @@ GenericJoystickHID::GenericJoystickHID() {
 hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
                                                 Device_t* dev,
                                                 uint32_t  topusage) {
-  if (topusage != TOPUSAGE_JOYSTICK) return CLAIM_NO;
+  if (topusage != TOPUSAGE_JOYSTICK &&
+      topusage != TOPUSAGE_GAMEPAD &&
+      topusage != TOPUSAGE_MULTIAXIS) return CLAIM_NO;
   if (m_claimed)                     return CLAIM_NO;
 
   m_claimed     = true;

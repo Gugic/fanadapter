@@ -6,7 +6,7 @@ This is a fixed-function adapter targeting one H-pattern shifter, one sequential
 
 Shifter, pedal, and handbrake output stages are all verified working on a Fanatec ClubSport DD+. The pedal port speaks the CSL Elite V2 UART protocol (see [Pedal port section](#pedal-port-uart-csl-elite-v2-protocol)) and is the canonical handbrake source on current Fanatec firmware — the dedicated handbrake RJ12 port becomes optional/unused when the pedal port is connected.
 
-> **Status:** All four signal paths (H-pattern, sequential, handbrake, pedals) verified end-to-end on a Fanatec ClubSport DD+. Firmware accepts any USB HID joystick device — bindings between device buttons/axes and the wheelbase output channels are configured at runtime via the WebSerial UI in [webconfig/](../webconfig/) and persisted to EEPROM. PCB design and 3D-printed enclosure are still future work.
+> **Status:** All four signal paths (H-pattern, sequential, handbrake, pedals) verified end-to-end on a Fanatec ClubSport DD+. Firmware accepts any USB HID joystick, gamepad, or multi-axis controller — bindings between device buttons/axes and the wheelbase output channels are configured at runtime via the WebSerial UI in [webconfig/](../webconfig/) and persisted to EEPROM. PCB design and 3D-printed enclosure are still future work.
 
 ---
 
@@ -421,7 +421,7 @@ USB Hub ──────┤ USB host port                        │
 The firmware is a standard Arduino sketch in this folder. Six translation units, separated by concern:
 
 - `firmware.ino` — orchestrator: USB host bring-up, pin / PWM setup, minimal debug CLI, loop dispatch.
-- `device_pool.h` / `device_pool.cpp` — 8-slot pool of `GenericJoystickHID` consumers. Each slot claims the next unowned Joystick HID collection (any VID/PID) and tracks live buttons + axes. Axis and button counts are discovered lazily from observed reports.
+- `device_pool.h` / `device_pool.cpp` — 8-slot pool of `GenericJoystickHID` consumers. Each slot claims the next unowned Joystick, Gamepad, or Multi-axis Controller HID collection (any VID/PID) and tracks live buttons + axes. Axis and button counts are discovered lazily from observed reports.
 - `mapping.h` / `mapping.cpp` — `Config` schema (1060 bytes, layout locked with `static_assert` — each output channel carries up to `MAX_BINDINGS_PER_CHANNEL`=4 `InputBinding`s, OR'd for buttons / MAX'd for axes), EEPROM load/save with CRC-32/ISO-HDLC, `evalAxis` / `evalButton` evaluators (cross-type aware: button↔axis, with deadzones / threshold / invert), per-channel updaters that drive PWM pins and the pedal stream.
 - `protocol.h` / `protocol.cpp` — line-based JSON command dispatcher (ArduinoJson v7). Reads from USB CDC Serial; non-`{` bytes go to a CLI callback. Emits async events for device attach/detach and rate-limited `live` / `outputs` streams.
 - `pedals.h` / `pedals.cpp` — CSL Elite V2 UART protocol emulator (unchanged). Handshake state machine, CRC table, response packets, 100 Hz streaming.
@@ -430,7 +430,7 @@ The firmware is a standard Arduino sketch in this folder. Six translation units,
 ### Core architecture
 
 1. **PWM & GPIO setup**: Pins 4, 5, 8 as 12-bit PWM @ 36 kHz; pins 6, 7 as `OUTPUT_OPENDRAIN`; Serial3 on 14/15 for the pedal UART.
-2. **USB host (`USBHost_t36`)**: USBHIDParser × 8 + USBHub × 2 instances. Joystick HID collections (`topusage 0x10004`) are claimed by the pool's `GenericJoystickHID` slots first-come-first-served, regardless of VID/PID.
+2. **USB host (`USBHost_t36`)**: USBHIDParser × 8 + USBHub × 2 instances. Joystick, Gamepad, or Multi-axis Controller HID collections are claimed by the pool's `GenericJoystickHID` slots first-come-first-served, regardless of VID/PID.
 3. **Runtime mapping**: Each output channel (H-pattern shifter, sequential up/down, handbrake, throttle, brake, clutch) has an `InputBinding` slot keyed by source-device VID/PID + input type + index. Multiple devices with the same VID/PID are aggregated (buttons OR'd, axes MAX'd) — preserves the prior 2× RS Combo behavior. Bindings are configured at runtime via the WebSerial JSON protocol and persisted to EEPROM.
 4. **H-pattern shifter**: 8 gear-position bindings (gear_R, gear_1..gear_7). The firmware picks the single binding whose `evalButton` is true; 0 active → neutral, 2+ active → neutral (defensive). A `NEUTRAL_TRANSIT_MS` (50 ms) delay is inserted between non-neutral transitions so the wheelbase sees a release before the latch.
 5. **Sequential shifter**: rising-edge detection on `shift_up` / `shift_down` bindings emits an `OUTPUT_OPENDRAIN` LOW pulse (default 50 ms, runtime-configurable via `pulseMs`).
