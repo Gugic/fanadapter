@@ -1,6 +1,6 @@
 # fanadapter webconfig
 
-Browser-based WebSerial configuration UI for the [fanadapter firmware](../shifter_test/). Built with Vite + React + TypeScript + Tailwind + shadcn/ui. Talks to the Teensy over WebSerial; no native helper required.
+Browser-based WebSerial configuration UI for the [fanadapter firmware](../firmware/). Built with Vite + React + TypeScript + Tailwind + shadcn/ui. Talks to the Teensy over WebSerial; no native helper required.
 
 ## Live
 

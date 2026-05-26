@@ -420,7 +420,7 @@ USB Hub ──────┤ USB host port                        │
 
 The firmware is a standard Arduino sketch in this folder. Five translation units, separated by concern:
 
-- `shifter_test.ino` — orchestrator: USB host bring-up, pin / PWM setup, minimal debug CLI, loop dispatch.
+- `firmware.ino` — orchestrator: USB host bring-up, pin / PWM setup, minimal debug CLI, loop dispatch.
 - `device_pool.h` / `device_pool.cpp` — 8-slot pool of `GenericJoystickHID` consumers. Each slot claims the next unowned Joystick HID collection (any VID/PID) and tracks live buttons + axes. Axis and button counts are discovered lazily from observed reports.
 - `mapping.h` / `mapping.cpp` — `Config` schema (1060 bytes, layout locked with `static_assert` — each output channel carries up to `MAX_BINDINGS_PER_CHANNEL`=4 `InputBinding`s, OR'd for buttons / MAX'd for axes), EEPROM load/save with CRC-32/ISO-HDLC, `evalAxis` / `evalButton` evaluators (cross-type aware: button↔axis, with deadzones / threshold / invert), per-channel updaters that drive PWM pins and the pedal stream.
 - `protocol.h` / `protocol.cpp` — line-based JSON command dispatcher (ArduinoJson v7). Reads from USB CDC Serial; non-`{` bytes go to a CLI callback. Emits async events for device attach/detach and rate-limited `live` / `outputs` streams.
