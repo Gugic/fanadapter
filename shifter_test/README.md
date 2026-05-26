@@ -6,7 +6,7 @@ This is a fixed-function adapter targeting one H-pattern shifter, one sequential
 
 Shifter, pedal, and handbrake output stages are all verified working on a Fanatec ClubSport DD+. The pedal port speaks the CSL Elite V2 UART protocol (see [Pedal port section](#pedal-port-uart-csl-elite-v2-protocol)) and is the canonical handbrake source on current Fanatec firmware — the dedicated handbrake RJ12 port becomes optional/unused when the pedal port is connected.
 
-> **Status:** All four signal paths (H-pattern, sequential, handbrake, pedals) verified end-to-end on a Fanatec ClubSport DD+. Calibration wizard accepts the adapter; all H-pattern gears, sequential shifts, throttle/brake/clutch, and handbrake register correctly. Pedals show up to the Fanatec app as ClubSport Pedals V3. PCB design, 3D-printed enclosure, and WebSerial configuration UI are future work.
+> **Status:** All four signal paths (H-pattern, sequential, handbrake, pedals) verified end-to-end on a Fanatec ClubSport DD+. Firmware accepts any USB HID joystick device — bindings between device buttons/axes and the wheelbase output channels are configured at runtime via the WebSerial UI in [webconfig/](../webconfig/) and persisted to EEPROM. PCB design and 3D-printed enclosure are still future work.
 
 ---
 
@@ -363,9 +363,9 @@ All checks passing = harness is safe to plug into the wheelbase.
 
 ### Step 6 — Verify output voltages
 
-Before adding any HID complexity, you can run the test commands from our integrated firmware (see [Firmware](#firmware)) that cycles through gear positions or sweeps the handbrake. With the wheelbase still disconnected, measure each filter output with a DC voltmeter:
+Before adding any HID complexity, flash the firmware ([Firmware](#firmware)) and open the [WebSerial config UI](#configuration-via-webserial). On the **Outputs** tab, the H-pattern DAC table has a **Test** button next to each gear that drives the X/Y DACs to that gear's calibrated voltages for 500 ms.
 
-For each gear position, verify the X and Y outputs match the [voltage table](#shifter-1-port-h-pattern-analog) within ±50 mV.
+With the wheelbase still disconnected, measure each filter output with a DC voltmeter. For each gear position, verify the X and Y outputs match the [voltage table](#shifter-1-port-h-pattern-analog) within ±50 mV. (Equivalent if you'd rather not open the UI: send `{"cmd":"test_gear","channel":"gear_3"}` over the Serial port — see the [JSON command reference](#json-command-reference).)
 
 If voltages match, you can confidently plug into the wheelbase.
 
@@ -418,81 +418,116 @@ USB Hub ──────┤ USB host port                        │
 
 ## Firmware
 
-The firmware lives in the root of this repository as a standard Arduino sketch:
+The firmware is a standard Arduino sketch in this folder. Five translation units, separated by concern:
 
-- `shifter_test.ino` — top-level: USB host setup, HID consumer classes, role-specific update functions (H-pattern, sequential, handbrake, pedals-from-HID), serial CLI, manual soft-reset.
-- `pedals.h` / `pedals.cpp` — CSL Elite V2 UART protocol emulator. Handshake state machine, CRC table, response packets, 100 Hz streaming.
+- `shifter_test.ino` — orchestrator: USB host bring-up, pin / PWM setup, minimal debug CLI, loop dispatch.
+- `device_pool.h` / `device_pool.cpp` — 8-slot pool of `GenericJoystickHID` consumers. Each slot claims the next unowned Joystick HID collection (any VID/PID) and tracks live buttons + axes. Axis and button counts are discovered lazily from observed reports.
+- `mapping.h` / `mapping.cpp` — `Config` schema (1060 bytes, layout locked with `static_assert` — each output channel carries up to `MAX_BINDINGS_PER_CHANNEL`=4 `InputBinding`s, OR'd for buttons / MAX'd for axes), EEPROM load/save with CRC-32/ISO-HDLC, `evalAxis` / `evalButton` evaluators (cross-type aware: button↔axis, with deadzones / threshold / invert), per-channel updaters that drive PWM pins and the pedal stream.
+- `protocol.h` / `protocol.cpp` — line-based JSON command dispatcher (ArduinoJson v7). Reads from USB CDC Serial; non-`{` bytes go to a CLI callback. Emits async events for device attach/detach and rate-limited `live` / `outputs` streams.
+- `pedals.h` / `pedals.cpp` — CSL Elite V2 UART protocol emulator (unchanged). Handshake state machine, CRC table, response packets, 100 Hz streaming.
 
-### Core Features
+### Core architecture
 
-1. **PWM & GPIO setup**: Configures pins 4, 5, and 8 as 12-bit PWM at 36 kHz (`analogWriteResolution(12)` & `analogWriteFrequency()`). Configures pins 6 and 7 as open-drain digital pins (`OUTPUT_OPENDRAIN`). Configures Serial3 on pins 14/15 for the pedal port UART.
-2. **USB Host Driver (`USBHost_t36`)**: Enumerates USB HID devices through the hub, matching them by their PID/VID signatures:
-   - **Logitech RS H-Shifter (VID `0x046D` PID `0xC26B`)**: Parses 8 H-pattern buttons, maps them to a gear index, and drives the corresponding X and Y PWM duty cycles.
-   - **Logitech RS Shifter & Handbrake combo (VID `0x046D` PID `0xC278`)**: Supports two identical devices on the same bus (one used as sequential shifter, one as handbrake — the user picks via the physical mode switch on the device, firmware aggregates inputs across both regardless). Buttons 1/2 generate sequential up/down pulses on Pins 6/7. Z axis (and button 3 in digital mode) drive the handbrake, routed both to the dedicated PWM pin and into the pedal stream's Handbrake field.
-   - **Simnet SP Pro Pedal (VID `0xCAFE` PID `0xA301`)**: X/Y/Z axes mapped to throttle/brake/clutch with configurable axis selection and inversion (constants at the top of the USB host section in `shifter_test.ino`).
-3. **CSL Elite V2 pedal protocol emulator (`pedals.cpp`)**: Drives the wheelbase's pedal port over Serial3 at 250000→115200 baud, completing the three-step handshake (`0x0A`/`0x1A`, `0x05`/`0x15`, then per-query 12-byte responses on the Joystick collection) and streaming pedal positions at 100 Hz.
-4. **Calibration & Smoothing**:
-   - **H-pattern**: Uses a `NEUTRAL_TRANSIT_MS` (50 ms) switch delay so the wheelbase sees a neutral transit between gears (otherwise same-row shifts like 1→R get dropped).
-   - **Handbrake**: Auto-calibrates the Z-axis range over the session, scales output smoothly.
-5. **Serial Commands**: Manual diagnostic and control CLI over USB Serial (115200 baud).
+1. **PWM & GPIO setup**: Pins 4, 5, 8 as 12-bit PWM @ 36 kHz; pins 6, 7 as `OUTPUT_OPENDRAIN`; Serial3 on 14/15 for the pedal UART.
+2. **USB host (`USBHost_t36`)**: USBHIDParser × 8 + USBHub × 2 instances. Joystick HID collections (`topusage 0x10004`) are claimed by the pool's `GenericJoystickHID` slots first-come-first-served, regardless of VID/PID.
+3. **Runtime mapping**: Each output channel (H-pattern shifter, sequential up/down, handbrake, throttle, brake, clutch) has an `InputBinding` slot keyed by source-device VID/PID + input type + index. Multiple devices with the same VID/PID are aggregated (buttons OR'd, axes MAX'd) — preserves the prior 2× RS Combo behavior. Bindings are configured at runtime via the WebSerial JSON protocol and persisted to EEPROM.
+4. **H-pattern shifter**: 8 gear-position bindings (gear_R, gear_1..gear_7). The firmware picks the single binding whose `evalButton` is true; 0 active → neutral, 2+ active → neutral (defensive). A `NEUTRAL_TRANSIT_MS` (50 ms) delay is inserted between non-neutral transitions so the wheelbase sees a release before the latch.
+5. **Sequential shifter**: rising-edge detection on `shift_up` / `shift_down` bindings emits an `OUTPUT_OPENDRAIN` LOW pulse (default 50 ms, runtime-configurable via `pulseMs`).
+6. **Axis channels**: `evalAxis` linearly remaps raw axis values from `[rawMin, rawMax]` to `[0, 65535]`, applies invert, then snaps low/high values inside the deadzone bands. The brake-jitter case is fixed by raising `deadzoneLow` to a couple percent. Threshold and deadzone fields are compared against the post-scale value, so 32768 = 50% works regardless of the source device's native bit depth.
+7. **Handbrake routing**: `evalAxis(handbrake)` is written verbatim into the pedal stream (`setPedalHandbrake`, 0–65535) and downscaled to 12-bit for `PIN_HANDBRAKE` PWM (`>> 4`). On current Fanatec firmware the pedal stream is the canonical handbrake source; the dedicated handbrake RJ12 is typically left disconnected.
+8. **EEPROM**: Magic `'FANA'` + version + CRC-32/ISO-HDLC. On magic/CRC/version mismatch the firmware boots with all bindings unmapped but pre-fills `gearOut[]` from compile-time defaults so the H-pattern DACs sit at the neutral X/Y voltages (not 0 V) on a fresh chip.
+9. **CSL Elite V2 pedal protocol** (`pedals.cpp`): 250000→115200 baud handshake, per-query 12-byte responses, 100 Hz streaming at 115200.
 
-### Serial Diagnostic CLI Commands
+### Serial diagnostic CLI
 
-Open the Serial Monitor and type any of the following characters to interact with or debug the adapter:
-* `R`, `1`–`7`, `N` : Manually set H-pattern gear (case-insensitive)
-* `+` / `-` : Emit manual sequential UP / DOWN pulse
-* `k` : Reset handbrake calibration
-* `c` : Cycle through all H-pattern gears once (helps verify output voltages)
-* `t` : Print the gear → DAC value lookup table
-* `u` : Print USB host driver state + handbrake calibration + pedal state
-* `p` : Force pedal handshake reset (back to Step 0)
-* `q` / `w` : Decrease / increase pedal Throttle by ~1% (lowercase only)
-* `a` / `s` : Decrease / increase pedal Brake by ~1%
-* `z` / `x` : Decrease / increase pedal Clutch by ~1%
-* `X` : Force CPU soft-reset (full restart)
-* `?` : Show help menu
+Most configuration happens over the JSON protocol (see [Configuration via WebSerial](#configuration-via-webserial)). The Serial port also accepts a tiny set of single-char debug commands that don't require a JSON client:
+
+* `u` — print USB driver / device pool state, current pedal stream values
+* `p` — force pedal handshake reset (back to Step 0)
+* `X` — CPU soft-reset
+* `?` / `h` — help
+
+Any line starting with `{` is parsed as a JSON command instead.
+
+### JSON command reference
+
+Send one JSON object per line over the same USB CDC Serial port. Responses arrive on subsequent lines.
+
+| Command | Notes |
+|---|---|
+| `{"cmd":"version"}` | → `{"fw":"fanadapter","ver":"0.3.0","protocol":2,"max_bindings_per_channel":4}` |
+| `{"cmd":"list_devices"}` | → device pool snapshot. `axis_count` / `button_count` are 0 until the device sends its first report. |
+| `{"cmd":"get_config"}` | → full Config encoded as JSON. Each channel is an **array** of up to `max_bindings_per_channel` `InputBinding` entries (buttons OR together, axes MAX together — empty slots have `type:"none"`). |
+| `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Channel keys: `gear_R`, `gear_1`..`gear_7`, `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, `clutch`. `slot` is optional (defaults to 0) and selects which binding within the channel's array to write. Binding fields match the `InputBinding` struct. |
+| `{"cmd":"set_gear_dac","channel":"gear_3","x":2163,"y":3430}` | Adjust per-gear X/Y DAC output. `gear_N` is allowed (sets neutral voltages). |
+| `{"cmd":"set_pulse_ms","value":50}` | Sequential pulse width. |
+| `{"cmd":"save_config"}` | Persist current Config to EEPROM. |
+| `{"cmd":"reset_config"}` | Wipe bindings in RAM and reload compile-time output defaults. Does not touch EEPROM until `save_config`. |
+| `{"cmd":"live_inputs","on":true}` | Stream `{"event":"live",...}` events for any slot whose buttons/axes changed. Rate-limited to ~50 Hz per slot. |
+| `{"cmd":"live_outputs","on":true}` | Stream `{"event":"outputs",...}` snapshots at ~30 Hz. |
+| `{"cmd":"test_axis","channel":"throttle","value":12345}` | Force an axis-channel output for 500 ms then revert. |
+| `{"cmd":"test_pulse","direction":"up"}` | Fire one sequential pulse without an HID input. |
+| `{"cmd":"test_gear","channel":"gear_3"}` | Set H-pattern DACs to a specific gear for 500 ms then revert. |
+
+Asynchronous events the firmware emits without prompting:
+
+* `{"event":"device_attached","slot":...,"vid":...,"pid":...,"axis_count":...,"button_count":...}`
+* `{"event":"device_detached","slot":...}`
+* `{"event":"live","slot":...,"buttons":...,"axes":[...]}`
+* `{"event":"outputs","gear":"gear_3","shift_up":false,...}`
+
+Live streams stop on either `{"cmd":"live_inputs","on":false}` or when the USB CDC host closes the port (detected via `bool(Serial)`).
+
+### Configuration via WebSerial
+
+The `webconfig/` folder in this repo contains a small React app that talks to the firmware over WebSerial. Open it in Chrome, Edge, or Brave, click **Connect**, and it walks through device discovery, mapping capture (press a button or move an axis to bind it), axis calibration with live raw + processed bars, and EEPROM save. The app is also published to GitHub Pages — see [webconfig/README.md](../webconfig/README.md) for the URL and local-dev instructions.
+
+The protocol is plain JSON, so other tools (SimHub, custom scripts) can drive the same firmware. See the [JSON command reference](#json-command-reference) above.
 
 ### Toolchain
 
-Built using **Arduino IDE** with **Teensyduino**.
-* **Board**: Teensy 4.1
-* **USB Type**: Serial
+Built with **arduino-cli** (or **Arduino IDE** with **Teensyduino**).
+
+* Board: Teensy 4.1
+* USB type: Serial
+* Required library: **ArduinoJson** ≥ 7.0 (`arduino-cli lib install ArduinoJson`)
 
 ---
 
 ## Calibration
 
-After flashing the main firmware:
+Calibration happens in two places:
+
+- **In the WebSerial config UI** (`webconfig/`) — which HID input drives which output channel, axis min/max/deadzone/invert, H-pattern DAC voltages, sequential pulse width. Persisted to the Teensy's EEPROM. This is where you fix things like a noisy brake pedal or remap inputs.
+- **In the Fanatec Control Panel on a PC** — the wheelbase's per-game gear voltage mapping, pedal min/max, and handbrake range. The webconfig UI calibrates the *adapter's* output range; the Control Panel calibrates the *wheelbase's* interpretation of it.
 
 ### H-pattern shifter
 
-1. Open the Fanatec Control Panel
-2. Navigate to the shifter calibration wizard
-3. Follow the on-screen prompts: Neutral → Reverse → 1 → 2 → 3 → 4 → 5 → 6 → 7
-4. For each position, move your USB shifter into that gear and click the corresponding button in the wizard
-5. The wheelbase records the voltage levels and maps them to gears
+1. Open the [WebSerial config UI](#configuration-via-webserial) → **Mappings** → **H-Pattern Shifter**. For each gear (R, 1..7), click **Listen** and press the corresponding button on your shifter.
+2. Save to EEPROM.
+3. On the PC, open the Fanatec Control Panel → shifter calibration wizard. Follow the prompts (Neutral → Reverse → 1 → 2 → 3 → 4 → 5 → 6 → 7); for each position, move your USB shifter into that gear and click the wizard button. The wheelbase records the X/Y voltages and maps them to gears.
+4. If a gear drops or maps to the wrong cell, open the webconfig UI → **Outputs** → H-pattern DAC table and tweak the per-gear X/Y values, then re-run the wheelbase wizard.
 
 ### Sequential shifter
 
-No calibration required — purely digital, the wheelbase recognizes the switch closures directly.
+1. In the webconfig UI → **Mappings** → **Sequential Shifter**: bind **Shift Up** and **Shift Down** to the appropriate paddle / lever buttons via the Listen flow. Optionally tune the **Pulse width** (default 50 ms) under **Outputs** → **Sequential** if your wheelbase misses or doubles shifts.
+2. No PC-side calibration needed — sequential is purely digital, the wheelbase recognizes the switch closures directly.
 
 ### Handbrake
 
-If the dedicated handbrake RJ12 is wired to the wheelbase (no-pedal-port build):
-
-1. In Fanatec Control Panel, navigate to the handbrake calibration screen
-2. Release the handbrake fully → click "Set Min"
-3. Pull the handbrake to maximum → click "Set Max"
-4. The wheelbase normalizes the range to 0-100%
-
-If the pedal port is wired and the dedicated handbrake is left unplugged from the wheelbase (recommended), the handbrake calibration happens through the Pedals V3 page instead — see Pedals below.
+1. In the webconfig UI → **Mappings** → **Handbrake**: bind to your handbrake's axis (or button) via Listen.
+2. With the binding live, the panel shows a **raw** live bar and a **processed output** bar. Pull the lever fully — click **Capture min/max** to let the UI watch the live raw value for a few seconds and set `rawMin` / `rawMax` to the observed extremes.
+3. If the bar wobbles at rest (noise floor above zero), raise **Deadzone low** to ~2 % until the processed bar sits flat at 0 with the lever released.
+4. Save to EEPROM.
+5. Reminder: on current Fanatec firmware the dedicated handbrake RJ12 cable on the wheelbase side should be **unplugged** when the pedal port is in use — the wheelbase listens to the pedal-stream handbrake field, which the adapter routes for you. See the [Handbrake port warning](#handbrake-port-analog).
 
 ### Pedals (CSL Elite V2 emulation)
 
-1. Open Fanatec Control Panel → **Pedals** section. The adapter shows up as **ClubSport Pedals V3**.
-2. Press each pedal individually and watch the corresponding bar move in the app. Mappings (which of X/Y/Z drives Throttle/Brake/Clutch) and inversion are configurable via constants at the top of `shifter_test.ino` — edit and re-flash if needed.
-3. Manual calibration: enable the "Manual Calibration" toggle in the app, press each pedal fully and click "Set Max", release fully and click "Set Min" for each axis.
-4. The Handbrake field of the pedal stream is driven by the USB handbrake's analog output via `updateHandbrake()`. It shows up as the **Handbrake** bar on the Pedals V3 screen.
+1. Open Fanatec Control Panel → **Pedals**. The adapter enumerates as **ClubSport Pedals V3**.
+2. Press each pedal individually and watch the corresponding bar move. If a pedal moves the wrong slider (e.g. brake moves the throttle bar), open the webconfig UI → **Mappings** → **Pedals**, click **Listen** on the affected channel, and re-press the correct pedal. To flip a pedal that reports inverted (max at rest, 0 when pressed), toggle **Invert** in the same row's calibration panel.
+3. To kill jitter at rest (the brake-jitter-at-1% case), pull each pedal fully → click **Capture min/max**, then raise **Deadzone low** until the processed bar reads exactly 0 at rest. Save.
+4. On the wheelbase side, enable Manual Calibration in the Control Panel, press each pedal fully and click "Set Max", release fully and click "Set Min" for each axis.
+5. The Handbrake field of the pedal stream is driven by the adapter's handbrake channel — it shows up as the **Handbrake** bar on the Pedals V3 screen and is what the wheelbase actually reads.
 
 ---
 
@@ -553,8 +588,7 @@ Things explicitly *not* in the current scope, but planned or proposed for the fu
 - **PCB design** — replace breadboard with a small custom PCB (KiCad/JLCPCB)
 - **3D-printed enclosure** — panel-mount RJ12 jacks, USB-A inputs, micro-USB power
 - **OLED display + buttons** — on-device status and configuration UI
-- **WebSerial configuration interface** — browser-based device-to-role assignment for arbitrary HID devices
-- **Universal HID mode** — accept any USB HID joystick, map buttons/axes to gear roles via the config UI
+- **SimHub integration** — drive the same JSON protocol from SimHub for cross-tool config
 - **0-5V handbrake output** — add an op-amp scaler (MCP6001 with gain ~1.52) for native handbrake voltage range
 - **Mode switching on Shifter 1** — software toggle between H-pattern and sequential mode (one-wire hardware change: Pin 2 from hardwired GND to a Teensy GPIO)
 - **Cheaper MCU port** — RP2040 or ESP32-S3 alternative for community accessibility ($5 BoM vs $32)

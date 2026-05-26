@@ -14,6 +14,18 @@ static PedalsState g_state = STATE_INIT;
 static uint32_t g_lastActivityTime = 0;
 static uint32_t g_lastStreamTime = 0;
 
+// Warmup window. On boot we silently drain Serial3 for ~2 seconds before
+// engaging the handshake state machine. The wheelbase often still has
+// state from the previous Teensy session — partway through its own
+// retry loop, or with stale TX buffers — and any half-finished 0x0A /
+// 0x05 we'd act on lands us in an out-of-sync STEP1 that the wheelbase
+// won't follow through. Giving the line ~2 s of silence lets the
+// wheelbase's retry timer fire fresh and re-initiate cleanly.
+//
+// 0 once warmup has completed (set by pedalsUpdate).
+static uint32_t g_warmupUntil = 0;
+constexpr uint32_t WARMUP_MS = 2000;
+
 // Step 2 handshake — lenient any-order packet collector.
 //
 // The DD+ wheelbase sends three 12-byte framed query packets (cmd 0x00,
@@ -105,11 +117,18 @@ static void resetToStep0() {
 
 void pedalsInit() {
   initCrcTable();
+  g_warmupUntil = millis() + WARMUP_MS;
+  Serial.print("[Pedal] Warmup: draining Serial3 for ");
+  Serial.print(WARMUP_MS);
+  Serial.println(" ms before engaging handshake.");
   resetToStep0();
 }
 
 void pedalsForceReset() {
+  // Manual reset (from the JSON `reset_pedals` command). Skip the warmup
+  // — the user explicitly asked us to re-arm right now, not in 2 s.
   Serial.println("[Pedal] Manual reset requested.");
+  g_warmupUntil = 0;
   resetToStep0();
 }
 
@@ -144,7 +163,25 @@ static void sendPedalPacket() {
 }
 
 void pedalsUpdate() {
-  // Check for handshake timeouts
+  // Warmup: silently drop any bytes the wheelbase is still sending from
+  // a stale prior session. Once the window closes the line should be
+  // quiet and the wheelbase's next 0x0A retry catches us in a clean
+  // STEP0. See WARMUP_MS comment up top for rationale.
+  if (g_warmupUntil != 0) {
+    if (millis() < g_warmupUntil) {
+      while (Serial3.available() > 0) Serial3.read();
+      return;
+    }
+    Serial.println("[Pedal] Warmup complete — engaging handshake state machine.");
+    g_warmupUntil      = 0;
+    g_lastActivityTime = millis(); // fresh baseline for the STEP1/2 timeout
+  }
+
+  // Check for handshake timeouts. STEP0 is exempt because we wait
+  // indefinitely there for the wheelbase to initiate. STREAMING is
+  // exempt because steady streaming has no expected return traffic
+  // — the wheelbase keeps sending stale 0x7B-framed queries even
+  // after STEP2 completes (documented quirk; we ignore them).
   if (g_state != STATE_STEP0 && g_state != STATE_STREAMING) {
     if (millis() - g_lastActivityTime > 2000) {
       Serial.println("[Pedal] Handshake timeout. Restarting from Step 0.");
@@ -266,9 +303,13 @@ void pedalsUpdate() {
       }
 
       case STATE_STREAMING:
-        // In streaming mode, we don't expect any unsolicited commands.
-        // If the wheelbase suddenly sends 0x0A at 250000 baud, it would trigger a mismatch or timeout.
-        // If it sends anything here, we can ignore it or log it for diagnostics.
+        // The wheelbase keeps emitting 12-byte 0x7B-framed query packets
+        // (cmd 0x00 / 0x02 / 0x03) even after STEP2 completes — observed
+        // on real DD+ firmware. They're ignored: re-acking them isn't
+        // needed and bouncing back to STEP0 on every one would flap the
+        // handshake. If the wheelbase truly wants to re-handshake, the
+        // stream stops being received and the wheelbase drops pedals;
+        // the user can then hit "Re-arm pedals handshake" in the UI.
         break;
 
       default:

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schemas.fanadapter.dev/preset-v1.json",
+  "name": "RS H-Shifter + 2× RS Combo + Simnet SP Pro",
+  "description": "Recreates the original hardcoded firmware behavior: Logitech RS H-Shifter (8 gear buttons), one or two RS Shifter & Handbrake combo devices (sequential + analog handbrake), Simnet SP Pro pedals.",
+  "version": 2,
+  "pulseMs": 50,
+  "max_bindings_per_channel": 4,
+  "gear": {
+    "gear_R": [{ "vid": 1133, "pid": 49771, "type": "button", "index": 7, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+    "gear_1": [{ "vid": 1133, "pid": 49771, "type": "button", "index": 0, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+    "gear_2": [{ "vid": 1133, "pid": 49771, "type": "button", "index": 1, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+    "gear_3": [{ "vid": 1133, "pid": 49771, "type": "button", "index": 2, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+    "gear_4": [{ "vid": 1133, "pid": 49771, "type": "button", "index": 3, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+    "gear_5": [{ "vid": 1133, "pid": 49771, "type": "button", "index": 4, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+    "gear_6": [{ "vid": 1133, "pid": 49771, "type": "button", "index": 5, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+    "gear_7": [{ "vid": 1133, "pid": 49771, "type": "button", "index": 6, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }]
+  },
+  "gearOut": {
+    "gear_R": { "x": 4095, "y": 3430 },
+    "gear_1": { "x": 2790, "y": 3430 },
+    "gear_2": { "x": 2790, "y": 779 },
+    "gear_3": { "x": 2163, "y": 3430 },
+    "gear_4": { "x": 2163, "y": 779 },
+    "gear_5": { "x": 1766, "y": 3430 },
+    "gear_6": { "x": 1766, "y": 779 },
+    "gear_7": { "x": 1310, "y": 3430 },
+    "gear_N": { "x": 2163, "y": 2048 }
+  },
+  "shift_up":   [{ "vid": 1133, "pid": 49784, "type": "button", "index": 0, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+  "shift_down": [{ "vid": 1133, "pid": 49784, "type": "button", "index": 1, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+  "handbrake":  [{ "vid": 1133, "pid": 49784, "type": "axis",   "index": 2, "threshold": 32768, "rawMin": 0, "rawMax": 65535, "deadzoneLow": 1500, "deadzoneHigh": 64000, "invert": false }],
+  "throttle":   [{ "vid": 51966, "pid": 41729, "type": "axis",  "index": 0, "threshold": 32768, "rawMin": 0, "rawMax": 4095,  "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }],
+  "brake":      [{ "vid": 51966, "pid": 41729, "type": "axis",  "index": 1, "threshold": 32768, "rawMin": 0, "rawMax": 4095,  "deadzoneLow": 1500, "deadzoneHigh": 65535, "invert": false }],
+  "clutch":     [{ "vid": 51966, "pid": 41729, "type": "axis",  "index": 2, "threshold": 32768, "rawMin": 0, "rawMax": 4095,  "deadzoneLow": 0, "deadzoneHigh": 65535, "invert": false }]
+}

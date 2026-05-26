@@ -1,11 +1,9 @@
-.antigravitycli/
-.antigravity-cli/
-.gemini/
-*.hex
-*.elf
-*.bin
-build/
-.vscode/
+# Portable Node install used during local dev — see webconfig/README.md
+.tools/
 
-# Local reference clone (upstream: https://github.com/GeekyDeaks/fanatec-pedal-emulator)
-fanatec-pedal-emulator/
+# Local Claude Code session artifacts
+.claude/
+
+# OS junk
+.DS_Store
+Thumbs.db
