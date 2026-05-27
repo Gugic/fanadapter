@@ -87,11 +87,7 @@ This project relies on the incredible reverse-engineering efforts of the sim rac
 
 ## License
 
-**Software** (firmware, sketches, configuration utilities): [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
-
-**Hardware design** (schematics, BoM, PCB layouts, enclosure STLs as they get added): [CERN Open Hardware Licence Version 2 — Permissive (CERN-OHL-P v2)](https://ohwr.org/project/cernohl/wikis/Documents/CERN-OHL-version-2)
-
-Both licenses are deliberately permissive. This project was built from scratch — the protocol documentation, pinouts, and voltage tables cited in [References and acknowledgments](#references-and-acknowledgments) informed the design, but no code or schematic files were copied from prior projects. Attribution to those projects (and to this one if you build on it) is the only obligation; no copyleft inheritance applies.
+`fanadapter` is **dual-licensed**, and both licenses are deliberately permissive: the software (firmware + webconfig) under **Apache 2.0**, the hardware design under **CERN-OHL-P v2**. They were chosen to make building on, modifying, and *commercializing* this project as frictionless as possible — attribution is the only obligation and no copyleft applies. Full terms, SPDX identifiers, and the build-from-scratch provenance note are in **[LICENSE.md](LICENSE.md)**.
 
 ### Manufacturing and commercial reuse — explicitly welcome
 
