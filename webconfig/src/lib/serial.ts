@@ -15,7 +15,7 @@ const TEENSY_VID = 0x16c0;
 
 export type ProtocolEvent =
   | { type: "log"; line: string }
-  | { type: "device_attached"; slot: number; vid: number; pid: number; axis_count: number; button_count: number; has_hat?: boolean; has_keyboard?: boolean }
+  | { type: "device_attached"; slot: number; vid: number; pid: number; manufacturer?: string; product?: string; axis_count: number; button_count: number; has_hat?: boolean; has_keyboard?: boolean }
   | { type: "device_detached"; slot: number }
   | { type: "live"; slot: number; buttons: number; axes: number[]; hat?: number | null; keys?: number[] }
   | { type: "outputs"; outputs: OutputsEvent };
@@ -174,6 +174,8 @@ export class SerialClient {
           slot: msg.slot as number,
           vid: msg.vid as number,
           pid: msg.pid as number,
+          manufacturer: msg.manufacturer as string | undefined,
+          product: msg.product as string | undefined,
           axis_count: msg.axis_count as number,
           button_count: msg.button_count as number,
           has_hat: msg.has_hat as boolean | undefined,
