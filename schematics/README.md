@@ -115,6 +115,11 @@ Expects an analog voltage. The wheelbase normalizes this range in calibration, b
 > 
 > *However*, if the wheelbase detects a cable plugged into the dedicated handbrake port (by sensing Pin 1 + Pin 2 tied to ground), **it will override the pedal-stream values** and lock the handbrake to whatever is measured on that physical port. Therefore, **if you are using the pedal port emulation, leave the dedicated handbrake RJ12 cable unplugged from the wheelbase.** The handbrake will route digitally and perfectly over the pedal stream.
 
+**Output level (this build):** the Teensy drives 0–3.3 V (PWM + RC filter), not the native 0–5 V. After handbrake calibration the wheelbase normalizes that reduced swing to full range; until you recalibrate, the Fanatec app may cap the handbrake at ~65% (3.3 V / 5 V ≈ 66% of the rail). For a native 0–5 V swing without recalibration, add an op-amp scaler stage (see the root [Roadmap](../README.md#project-roadmap)).
+
+> [!NOTE]
+> **Oakheart guide pin numbering.** This pinout was verified empirically — a potentiometer on the port while watching the Fanatec app's handbrake indicator move. The Oakheart handbrake guide in [References](../README.md#references-and-acknowledgments) describes the same wiring correctly in its text but uses an **inverted** pin-numbering convention vs. this README (and the Fanashifter / DIY-Sim / Yin Zhong sources): their "Pin 1" is our Pin 6, etc. The physical wire mapping is identical — only the labels differ.
+
 ---
 
 ### 4. Pedal Port (UART, CSL Elite V2 Emulation)
@@ -124,6 +129,7 @@ Speaks a digital UART protocol to emulate a Fanatec **CSL Elite V2 pedal control
 * **Simple Hardware:** Requires only 3 wires (TX, RX, GND) directly connected to Teensy pins. No DAC, level-shifter, or RC filters needed. (The wheelbase data lines operate at 3.3V TTL logic, matching the Teensy).
 * **Load Cell Features:** Enriches the software interface by unlocking load-cell specific calibration settings in the Fanatec Control Panel.
 * **No EMI Noise:** Immunity to motor EMI, thermal drift, and PWM ripple.
+* **Full Bit Depth:** The digital protocol carries full per-axis resolution end-to-end — no ADC quantization loss (the analog path is limited by the wheelbase's ~10–12 effective bits).
 
 **RJ12 Pinout:**
 | Pin | Function (Control Board PoV) | Teensy 4.1 Connection | Notes |
@@ -137,6 +143,12 @@ Speaks a digital UART protocol to emulate a Fanatec **CSL Elite V2 pedal control
 
 > [!IMPORTANT]
 > **Grounding:** Pins 1, 2, and 3 on the RJ12 breakout must all be connected to the common GND rail. If Pin 2 or Pin 3 is left floating, the digital UART handshake will fail silently.
+
+> [!NOTE]
+> **DD+ handshake ordering quirk.** The [GeekyDeaks Go reference](https://github.com/GeekyDeaks/fanatec-pedal-emulator) expects the wheelbase to send three Step-2 query packets in a strict `0x02 → 0x00 → 0x03` order and replies once after collecting all three. The DD+ firmware tested here (base FW `2.11.0.2`, Fanatec Control Panel `1.4.2.3`) does **not** behave that way — it sends `0x00` and `0x03` repeatedly (sometimes 30+ times each) before `0x02`, so strict-linear matching never completes. This firmware instead follows the [community sketch in GeekyDeaks#4](https://github.com/GeekyDeaks/fanatec-pedal-emulator/issues/4): collect 12-byte framed packets in any order, validate CRC, and reply per query immediately; the handshake completes on the `0x03` ack regardless of whether `0x00` / `0x02` have been seen yet.
+
+> [!NOTE]
+> **Analog pedal mode (not used here).** The DD+ also supports an older analog pedal identity ("CSL Pedals with Clutch Kit") that some third-party control boxes (e.g. the Simsonn SP Pro) drive. In that mode the pedal RJ12 carries three analog signals — **Pin 3 = Clutch, Pin 4 = Brake, Pin 5 = Throttle**, each idling ~4.1 V and dropping when pressed. This adapter targets the UART path instead; an analog output stage is future work (see the root [Roadmap](../README.md#project-roadmap)).
 
 ---
 
@@ -213,6 +225,38 @@ If everything checks out, it is safe to plug the cables into the Fanatec wheelba
 
 ---
 
+## Troubleshooting
+
+> Firmware-level symptoms (pedals enumerate but read 0%, sequential shifts dropping) are covered in [firmware/README.md](../firmware/README.md#troubleshooting). The entries below are wiring / hardware.
+
+**Wheelbase doesn't recognize the H-pattern shifter:**
+* Verify Shifter 1 Pin 2 and Pin 3 are both pulled to GND (continuity) — the wheelbase needs Select and Detect to match.
+* Verify the RJ12 cable is 6-conductor (6P6C), not 4-conductor.
+* Verify cable orientation — Pin 1 on the cable reaches Pin 1 on the wheelbase.
+
+**Gear changes are erratic / the wheelbase reports the wrong gear:**
+* Measure each gear's X/Y output voltages (per-gear **Test** button, or `{"cmd":"test_gear","channel":"gear_3"}`) against the [Shifter 1 target table](#1-shifter-1-port-h-pattern-analog).
+* Off by more than ±100 mV? Tune the per-gear DAC values in the webconfig **Outputs** tab.
+* Voltages correct but gears still wrong? Re-run the wheelbase's shifter calibration wizard.
+
+**Handbrake doesn't respond at all (Fanatec app bar static):**
+* The signal wire must be on **Pin 5**, not Pin 2 — Pin 2 is a second ground, not the signal.
+* **Both** Pin 1 and Pin 2 must be tied to ground; the wheelbase requires both.
+* Once wiring is correct, run handbrake calibration in the Fanatec Control Panel.
+
+**Handbrake works on the Pedals page but does nothing in-game (or the app's handbrake page reads zero):**
+* The dedicated handbrake RJ12 is almost certainly still plugged into the wheelbase. Current firmware prefers that physical port over the pedal-stream handbrake field and locks it at "released". Unplug the dedicated handbrake cable from the wheelbase (see the Handbrake routing warning above).
+
+**USB devices don't enumerate, or some attach and others don't:**
+* Confirm the hub is **powered** (own supply), not bus-powered — inrush spikes make bus-powered hubs fail intermittently.
+* Plug each device directly into the Teensy host cable to isolate which one fails.
+* Check the hub against the [compatibility list](../README.md#usb-hubs-important) — known-bad hubs cause partial enumeration and detach cascades.
+
+**Devices were working, then mass-detached:**
+* The hub is likely wedged. Unplug it from the Teensy, plug it into a PC for ~5 s to renegotiate its state, then reconnect. A Teensy reset alone won't fix it — the hub keeps its state across the reboot.
+
+---
+
 ## License
 
-This hardware design is licensed under the CERN Open Hardware Licence Version 2 — Permissive (CERN-OHL-P v2). See the root [README.md](../README.md#license) for full terms, commercial manufacturing guidelines, and maintainer info.
+The hardware design is licensed under the **CERN Open Hardware Licence Version 2 — Permissive (CERN-OHL-P v2)**. Full terms and the project's dual-license details are in [LICENSE.md](../LICENSE.md); the root [README](../README.md#license) covers the commercial-reuse invitation.

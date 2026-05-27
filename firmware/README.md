@@ -32,7 +32,7 @@ arduino-cli upload -p COM11 --fqbn teensy:avr:teensy41 .
 
 ## Module Layout & Loop Dispatch
 
-The firmware is broken down into five translation units. They are dispatched sequentially inside `firmware.ino`'s main `loop()`. **The order of dispatch is critical for maintaining the 100 Hz pedal UART streaming cadence:**
+The firmware is broken down into six translation units. The runtime work is dispatched sequentially inside `firmware.ino`'s main `loop()`. **The order of dispatch is critical for maintaining the 100 Hz pedal UART streaming cadence:**
 
 ```
 g_usb.Task() → pollUsbDriverStatus() → protocolTick() → mappingTick() → pedalsUpdate()
@@ -97,12 +97,16 @@ When switching between non-neutral gears, the firmware inserts a `NEUTRAL_TRANSI
 ### 3. Sequential Pulse Handling
 A successful upshift or downshift triggers a brief pull-to-ground pulse (using `OUTPUT_OPENDRAIN` mode to avoid fighting the wheelbase's 3.3V internal pull-ups). The duration is defined by `pulseMs` (default 50 ms).
 
-### 4. EEPROM Versioning
+### 4. Axis Channels
+`evalAxis` linearly remaps a raw axis from its captured `[rawMin, rawMax]` to `[0, 65535]`, applies `invert`, then snaps values inside the deadzone bands flat. Threshold and deadzone are compared against the **post-scale** value, so `32768` always means 50% regardless of the source device's native bit depth. Raising `deadzoneLow` a couple percent is what kills the at-rest brake jitter.
+
+### 5. EEPROM Versioning
 The configuration layout in EEPROM is locked by a static assert to exactly **1132 bytes** (current schema `CONFIG_VERSION` 3).
 ```cpp
 static_assert(sizeof(Config) == 1132, "Config layout locked — bump CONFIG_VERSION on change");
 ```
 * **IMPORTANT:** If you change any fields in the `Config` struct (`mapping.h`), you must adjust the layout validation and bump `CONFIG_VERSION`. Version mismatches will wipe user EEPROMs on startup, reverting to defaults.
+* The stored blob is guarded by a magic tag (`'FANA'` / `0x46414E41`), the version, and a CRC-32/ISO-HDLC. On any magic / version / CRC mismatch the firmware boots with all bindings unmapped but pre-seeds `gearOut[]` from compile-time defaults, so the H-pattern DACs rest at the neutral X/Y voltages (not 0 V) on a fresh chip.
 
 ---
 
@@ -194,4 +198,4 @@ Calibration coordinates the adapter's input mappings (configured on the Teensy v
 
 ## License
 
-This software firmware is licensed under the Apache License 2.0. See the root [README.md](../README.md#license) for full terms, commercial manufacturing guidelines, and maintainer info.
+The firmware is licensed under the **Apache License 2.0**. Full terms and the project's dual-license details are in [LICENSE.md](../LICENSE.md); the root [README](../README.md#license) covers the commercial-reuse invitation.
