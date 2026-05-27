@@ -66,7 +66,7 @@ g_usb.Task() → pollUsbDriverStatus() → protocolTick() → mappingTick() → 
   CSL Elite V2 digital UART emulating driver. Runs on `Serial3` (RX=Pin 15, TX=Pin 14). Operates as a handshake and query state machine.
   
 * **`name.c`**  
-  Custom USB descriptor overrides (`usb_names.h`). Defines the board's USB Manufacturer Name as `"fanadapter"` and Product Name as `"Fanadapter v0.3.0"` to distinguish it from a generic serial interface.
+  Custom USB descriptor overrides (`usb_names.h`). Defines the board's USB Manufacturer Name as `"fanadapter"` and Product Name as `"Fanadapter v0.6.0"` (matching the firmware version) to distinguish it from a generic serial interface.
 
 ---
 
