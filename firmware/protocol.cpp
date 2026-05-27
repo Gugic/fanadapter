@@ -37,6 +37,8 @@ static const char* inputTypeName(uint8_t t) {
   switch (t) {
     case INPUT_BUTTON: return "button";
     case INPUT_AXIS:   return "axis";
+    case INPUT_HAT:    return "hat";
+    case INPUT_KEY:    return "key";
     default:           return "none";
   }
 }
@@ -45,6 +47,8 @@ static uint8_t inputTypeFromName(const char* s) {
   if (!s) return INPUT_NONE;
   if (strcmp(s, "button") == 0) return INPUT_BUTTON;
   if (strcmp(s, "axis")   == 0) return INPUT_AXIS;
+  if (strcmp(s, "hat")    == 0) return INPUT_HAT;
+  if (strcmp(s, "key")    == 0) return INPUT_KEY;
   return INPUT_NONE;
 }
 
@@ -103,8 +107,8 @@ static void sendErr(const char* msg) {
 static void cmdVersion() {
   JsonDocument doc;
   doc["fw"]                       = "fanadapter";
-  doc["ver"]                      = "0.3.0";
-  doc["protocol"]                 = 2;
+  doc["ver"]                      = "0.6.0";
+  doc["protocol"]                 = 5;
   doc["max_bindings_per_channel"] = MAX_BINDINGS_PER_CHANNEL;
   emit(doc);
 }
@@ -121,8 +125,19 @@ static void cmdListDevices() {
     row["pid"]          = d->pid();
     row["axis_count"]   = d->axisCount();
     row["button_count"] = d->buttonCount();
+    row["has_hat"]      = d->hasHat();
+    row["has_keyboard"] = d->hasKeyboard();
   }
   emit(doc);
+}
+
+static const char* gearModeName(uint8_t m) {
+  return (m == GEAR_MODE_LATCH) ? "latch" : "hold";
+}
+
+static uint8_t gearModeFromName(const char* s) {
+  if (s && strcmp(s, "latch") == 0) return GEAR_MODE_LATCH;
+  return GEAR_MODE_HOLD;
 }
 
 static void cmdGetConfig() {
@@ -130,6 +145,7 @@ static void cmdGetConfig() {
   JsonDocument doc;
   doc["version"]            = c.version;
   doc["pulseMs"]            = c.pulseMs;
+  doc["gearMode"]           = gearModeName(c.gearMode);
   doc["max_bindings_per_channel"] = MAX_BINDINGS_PER_CHANNEL;
 
   JsonObject gear = doc["gear"].to<JsonObject>();
@@ -185,6 +201,14 @@ static void cmdSetGearDac(const JsonDocument& doc) {
 static void cmdSetPulseMs(const JsonDocument& doc) {
   if (!doc["value"].is<int>()) { sendErr("missing_value"); return; }
   mappingConfigMutable().pulseMs = doc["value"].as<uint16_t>();
+  mappingRecomputeCrc();
+  sendOk();
+}
+
+static void cmdSetGearMode(const JsonDocument& doc) {
+  const char* v = doc["value"] | (const char*)nullptr;
+  if (!v) { sendErr("missing_value"); return; }
+  mappingConfigMutable().gearMode = gearModeFromName(v);
   mappingRecomputeCrc();
   sendOk();
 }
@@ -290,6 +314,7 @@ static void handleJsonLine(const char* line) {
   else if (strcmp(cmd, "set_binding")  == 0) cmdSetBinding(doc);
   else if (strcmp(cmd, "set_gear_dac") == 0) cmdSetGearDac(doc);
   else if (strcmp(cmd, "set_pulse_ms") == 0) cmdSetPulseMs(doc);
+  else if (strcmp(cmd, "set_gear_mode")== 0) cmdSetGearMode(doc);
   else if (strcmp(cmd, "save_config")  == 0) cmdSaveConfig();
   else if (strcmp(cmd, "reset_config") == 0) cmdResetConfig();
   else if (strcmp(cmd, "live_inputs")  == 0) cmdLiveInputs(doc);
@@ -313,6 +338,8 @@ static void emitDeviceAttached(uint8_t slot, GenericJoystickHID* d) {
   doc["pid"]          = d->pid();
   doc["axis_count"]   = d->axisCount();
   doc["button_count"] = d->buttonCount();
+  doc["has_hat"]      = d->hasHat();
+  doc["has_keyboard"] = d->hasKeyboard();
   emit(doc);
 }
 
@@ -332,6 +359,26 @@ static void emitLiveSlot(uint8_t slot, GenericJoystickHID* d) {
   const uint8_t n = d->axisCount();
   for (uint8_t i = 0; i < n && i < DEVICE_MAX_AXES; ++i) {
     axes.add(d->axis(i));
+  }
+  // Hat state — only emit for devices that actually have a hat. Direction
+  // 0..7 is reported as a number, released as -1 (chosen over JSON null
+  // to dodge ArduinoJson v7's null-emission edge cases and to keep the
+  // wire shape numeric-only). "Device has no hat at all" is represented
+  // by omitting the field, which the client detects via has_hat from
+  // device_attached / list_devices.
+  if (d->hasHat()) {
+    const uint8_t h = d->hat();
+    doc["hat"] = (h == GenericJoystickHID::HAT_RELEASED) ? -1 : (int)h;
+  }
+  // Keyboard state — array of currently-pressed scancodes (HID Keyboard/
+  // Keypad usage IDs). Zero-padded to MAX_KEYS_PRESSED so the client gets
+  // a stable shape; empty slots are 0. Field is omitted for devices that
+  // aren't a keyboard.
+  if (d->hasKeyboard()) {
+    JsonArray keys = doc["keys"].to<JsonArray>();
+    for (uint8_t i = 0; i < GenericJoystickHID::MAX_KEYS_PRESSED; ++i) {
+      keys.add(d->keyAt(i));
+    }
   }
   emit(doc);
 }

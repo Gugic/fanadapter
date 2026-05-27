@@ -53,7 +53,7 @@ Five translation units, loop-dispatched in `firmware.ino` in this order — orde
 g_usb.Task() → pollUsbDriverStatus() → protocolTick() → mappingTick() → pedalsUpdate()
 ```
 
-- `device_pool.{h,cpp}` — 8-slot pool of `GenericJoystickHID` consumers. Claims any joystick, gamepad, or multi-axis controller HID collection (any VID/PID), first-come-first-served. Axis/button counts are discovered lazily from observed reports — they start at 0 and grow.
+- `device_pool.{h,cpp}` — 8-slot pool of `GenericJoystickHID` consumers. Claims any joystick, gamepad, multi-axis controller, or keyboard HID collection (any VID/PID), first-come-first-served. Axis/button counts are discovered lazily from observed reports — they start at 0 and grow. **Hat Switch (D-pad)** is a first-class input type alongside button and axis: each device tracks `m_hat` (0..7 direction, or `HAT_RELEASED = 0xFF`) and `m_hasHat` (set true on first hat report). Bindings of type `INPUT_HAT` match a specific direction strictly — diagonals don't fire cardinal bindings. For lenient matching (e.g. "N or NE" → shift up), bind multiple slots on the same channel. **Keyboards** are tracked similarly: up to `MAX_KEYS_PRESSED = 6` simultaneously-pressed scancodes are kept in `m_keys[]`, `m_hasKeyboard` set on first key event. Bindings of type `INPUT_KEY` carry the HID Keyboard/Keypad scancode in `index` (0x04 = A, …, 0xE0..0xE7 = modifiers) and fire while that scancode is in the pressed set.
 - `mapping.{h,cpp}` — `Config` schema, EEPROM I/O, `evalAxis` / `evalButton` evaluators, per-channel updaters that drive PWM pins and the pedal stream. **`Config` is 1060 bytes with `static_assert`-locked layout**; any field change without a matching size update is a compile error. Bump `CONFIG_VERSION` (`mapping.h`) on schema changes — EEPROMs from older versions are rejected and the firmware boots with defaults.
 - `protocol.{h,cpp}` — Line-based JSON command dispatcher over USB CDC Serial (`ArduinoJson v7`). Lines starting with `{` are JSON commands; other characters go to the CLI callback. Emits async events (`device_attached`, `device_detached`, `live`, `outputs`) — rate-limited to ~50 Hz inputs / ~30 Hz outputs.
 - `pedals.{h,cpp}` — CSL Elite V2 UART emulator on Serial3 (pins 14/15). State machine: STEP0 (250000 baud, expects `0x0A` → sends `0x1A`) → STEP1 (`0x05` → `0x15`) → STEP2 (switches to 115200, 12-byte framed query/response) → STREAMING (100 Hz pedal packets). **Boot warmup**: on startup we silently drain Serial3 for 2 s before engaging the handshake — gives the wheelbase a clean silence window to reset its end after a Teensy reboot (otherwise it hangs sending `0x0A` without following with `0x05`).
@@ -66,9 +66,14 @@ There are **14 output channels**: 8 gears (`gear_R`, `gear_1`..`gear_7`), 2 sequ
 
 Same-VID/PID device aggregation across the 8 host pool slots is layered *under* the per-channel aggregation — i.e. multiple physical devices reporting the same VID/PID get their buttons OR'd and axes MAX'd before evaluation.
 
-### H-pattern defensive neutral
+### H-pattern shifter modes
 
-`updateShifter()` counts how many gear bindings are active. 0 → neutral, 1 → that gear, **2+ → neutral**. This is intentional — when two switches close simultaneously (or a flaky binding double-fires), staying in neutral is safer than picking a random gear. Gear transitions between non-neutral positions insert a `NEUTRAL_TRANSIT_MS` (50 ms) delay so the wheelbase sees a release before the next latch.
+`updateShifter()` has two modes selected by `Config.gearMode`:
+
+- **`hold`** (default, real H-shifter semantics): gear active only while its binding is held. 0 active → neutral, 1 → that gear, **2+ → neutral** (defensive: when two switches close simultaneously, staying in neutral is safer than picking a random gear). A binding on `gear_N` acts as a panic-neutral override.
+- **`latch`** (keyboard / gamepad friendly): rising-edge on any gear binding *switches* the current gear; it stays there until another rising edge moves it elsewhere — including `gear_N` as the explicit "shift to neutral" key. First edge per tick wins on simultaneous presses. No defensive multi-press handling — the user opted into this mode deliberately.
+
+`gear_N` is bindable in both modes (it's slot 8 of `Config.gear[9]`). Gear transitions between non-neutral positions insert a `NEUTRAL_TRANSIT_MS` (50 ms) delay so the wheelbase sees a release before the next latch.
 
 ### Handbrake routing
 
