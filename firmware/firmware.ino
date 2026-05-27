@@ -86,6 +86,13 @@ static void pollUsbDriverStatus() {
 // ---------------- Minimal serial CLI ----------------
 // Everything beyond u/p/X/? lives in the JSON protocol now.
 
+// Array of HID parser pointers for diagnostic access.
+static USBHIDParser* const g_hidParsers[] = {
+  &g_hid1, &g_hid2, &g_hid3, &g_hid4,
+  &g_hid5, &g_hid6, &g_hid7, &g_hid8,
+};
+constexpr uint8_t g_hidParserCount = sizeof(g_hidParsers) / sizeof(g_hidParsers[0]);
+
 static void printUsbStatus() {
   Serial.println();
   Serial.println("Device pool (joystick HID slots):");
@@ -144,10 +151,65 @@ static void printUsbStatus() {
   Serial.println();
 }
 
+// Dump HID parser diagnostic info — descriptor size, first bytes, etc.
+// Invoked via 'd' CLI command. Useful for debugging devices that attach
+// at the bus level but never get claimed by the device pool.
+static void printHidDiag() {
+  Serial.println();
+  Serial.println("HID parser diagnostics:");
+  for (uint8_t i = 0; i < g_hidParserCount; ++i) {
+    USBHIDParser* hid = g_hidParsers[i];
+    Serial.print("  HID");
+    Serial.print(i + 1);
+    Serial.print(": ");
+    if (!(*hid)) {
+      Serial.println("idle");
+      continue;
+    }
+    Serial.print("VID=0x");
+    Serial.print(hid->idVendor(), HEX);
+    Serial.print(" PID=0x");
+    Serial.print(hid->idProduct(), HEX);
+    Serial.print("  descSize=");
+    uint16_t dsize = hid->getHIDReportDescriptorSize();
+    Serial.print(dsize);
+    Serial.print("  subClass=");
+    Serial.print(hid->interfaceSubClass());
+    Serial.print("  protocol=");
+    Serial.print(hid->interfaceProtocol());
+    Serial.print("  inSize=");
+    Serial.print(hid->inSize());
+    Serial.print("  outSize=");
+    Serial.println(hid->outSize());
+
+    // Hex dump report descriptor (up to 128 bytes)
+    const uint8_t* desc = hid->getHIDReportDescriptor();
+    if (desc && dsize > 0) {
+      uint16_t dumpLen = (dsize < 128) ? dsize : 128;
+      Serial.print("    desc[");
+      Serial.print(dsize);
+      Serial.print(" bytes, showing ");
+      Serial.print(dumpLen);
+      Serial.println("]:");
+      for (uint16_t j = 0; j < dumpLen; ++j) {
+        if (j % 16 == 0) Serial.print("    ");
+        if (desc[j] < 0x10) Serial.print('0');
+        Serial.print(desc[j], HEX);
+        Serial.print(' ');
+        if (j % 16 == 15 || j == dumpLen - 1) Serial.println();
+      }
+    } else {
+      Serial.println("    (no descriptor data)");
+    }
+  }
+  Serial.println();
+}
+
 static void printHelp() {
   Serial.println();
   Serial.println("Minimal serial CLI (everything else is JSON / WebSerial):");
   Serial.println("  u    print USB host + device pool status");
+  Serial.println("  d    dump HID parser diagnostics (descriptors)");
   Serial.println("  p    force pedal handshake reset (back to Step 0)");
   Serial.println("  X    CPU soft-reset");
   Serial.println("  ?    this help");
@@ -172,6 +234,9 @@ static void handleCliChar(char c) {
     case 'u': case 'U':
       printUsbStatus();
       break;
+    case 'd': case 'D':
+      printHidDiag();
+      break;
     case 'p': case 'P':
       pedalsForceReset();
       break;
@@ -195,7 +260,7 @@ static void handleCliChar(char c) {
 static void printBanner() {
   Serial.println();
   Serial.println("=== fanadapter — USB HID → Fanatec wheelbase ===");
-  Serial.print  ("=== fw 0.3.0  protocol 2  config v");
+  Serial.print  ("=== fw 0.6.0  protocol 5  config v");
   Serial.print  (CONFIG_VERSION);
   Serial.println(" ===");
   Serial.println("Configure via WebSerial (see webconfig/). '?' for the CLI.");

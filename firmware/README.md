@@ -421,8 +421,8 @@ USB Hub ──────┤ USB host port                        │
 The firmware is a standard Arduino sketch in this folder. Six translation units, separated by concern:
 
 - `firmware.ino` — orchestrator: USB host bring-up, pin / PWM setup, minimal debug CLI, loop dispatch.
-- `device_pool.h` / `device_pool.cpp` — 8-slot pool of `GenericJoystickHID` consumers. Each slot claims the next unowned Joystick, Gamepad, or Multi-axis Controller HID collection (any VID/PID) and tracks live buttons + axes. Axis and button counts are discovered lazily from observed reports.
-- `mapping.h` / `mapping.cpp` — `Config` schema (1060 bytes, layout locked with `static_assert` — each output channel carries up to `MAX_BINDINGS_PER_CHANNEL`=4 `InputBinding`s, OR'd for buttons / MAX'd for axes), EEPROM load/save with CRC-32/ISO-HDLC, `evalAxis` / `evalButton` evaluators (cross-type aware: button↔axis, with deadzones / threshold / invert), per-channel updaters that drive PWM pins and the pedal stream.
+- `device_pool.h` / `device_pool.cpp` — 8-slot pool of `GenericJoystickHID` consumers. Each slot claims the next unowned Joystick, Gamepad, Multi-axis Controller, or Keyboard HID collection (any VID/PID) and tracks live buttons, axes, hat-switch direction (when present), and keyboard scancodes (when present). Counts are discovered lazily from observed reports; `hasHat()` / `hasKeyboard()` flip to true on the first matching event. The D-pad is exposed as a first-class direction value (0..7 per HID Usage Tables: N, NE, E, SE, S, SW, W, NW; `HAT_RELEASED = 0xFF` when centred), with `INPUT_HAT` bindings selecting a specific direction. Keyboards keep up to 6 simultaneously-pressed scancodes in `m_keys[]`; `INPUT_KEY` bindings use the HID Keyboard/Keypad usage code (0x04 = A, …, 0xE0..0xE7 = modifiers) as `index`.
+- `mapping.h` / `mapping.cpp` — `Config` schema (1132 bytes, layout locked with `static_assert` — each output channel carries up to `MAX_BINDINGS_PER_CHANNEL`=4 `InputBinding`s, OR'd for buttons / MAX'd for axes), EEPROM load/save with CRC-32/ISO-HDLC, `evalAxis` / `evalButton` evaluators (cross-type aware: button↔axis↔hat↔key, with deadzones / threshold / invert), per-channel updaters that drive PWM pins and the pedal stream. H-pattern shifter has two modes (hold / latch) selected by `gearMode`.
 - `protocol.h` / `protocol.cpp` — line-based JSON command dispatcher (ArduinoJson v7). Reads from USB CDC Serial; non-`{` bytes go to a CLI callback. Emits async events for device attach/detach and rate-limited `live` / `outputs` streams.
 - `pedals.h` / `pedals.cpp` — CSL Elite V2 UART protocol emulator (unchanged). Handshake state machine, CRC table, response packets, 100 Hz streaming.
 - `name.c` — Custom USB descriptor overrides (`usb_names.h`). Overrides the weak USB Manufacturer Name to `"fanadapter"` and Product Name to `"Fanadapter v0.3.0"` (matching the current firmware version) to replace the generic `"USB Serial"` device string.
@@ -432,7 +432,7 @@ The firmware is a standard Arduino sketch in this folder. Six translation units,
 1. **PWM & GPIO setup**: Pins 4, 5, 8 as 12-bit PWM @ 36 kHz; pins 6, 7 as `OUTPUT_OPENDRAIN`; Serial3 on 14/15 for the pedal UART.
 2. **USB host (`USBHost_t36`)**: USBHIDParser × 8 + USBHub × 2 instances. Joystick, Gamepad, or Multi-axis Controller HID collections are claimed by the pool's `GenericJoystickHID` slots first-come-first-served, regardless of VID/PID.
 3. **Runtime mapping**: Each output channel (H-pattern shifter, sequential up/down, handbrake, throttle, brake, clutch) has an `InputBinding` slot keyed by source-device VID/PID + input type + index. Multiple devices with the same VID/PID are aggregated (buttons OR'd, axes MAX'd) — preserves the prior 2× RS Combo behavior. Bindings are configured at runtime via the WebSerial JSON protocol and persisted to EEPROM.
-4. **H-pattern shifter**: 8 gear-position bindings (gear_R, gear_1..gear_7). The firmware picks the single binding whose `evalButton` is true; 0 active → neutral, 2+ active → neutral (defensive). A `NEUTRAL_TRANSIT_MS` (50 ms) delay is inserted between non-neutral transitions so the wheelbase sees a release before the latch.
+4. **H-pattern shifter**: 9 gear-position bindings (gear_R, gear_1..gear_7, gear_N). Two modes (`Config.gearMode`): **hold** (default — gear active only while bound input is held; 0 active → neutral, 2+ → neutral defensively; gear_N forces neutral while held) and **latch** (rising-edge switches gear, persists until another gear / Neutral fires — keyboard / gamepad friendly). A `NEUTRAL_TRANSIT_MS` (50 ms) delay is inserted between non-neutral transitions so the wheelbase sees a release before the next latch.
 5. **Sequential shifter**: rising-edge detection on `shift_up` / `shift_down` bindings emits an `OUTPUT_OPENDRAIN` LOW pulse (default 50 ms, runtime-configurable via `pulseMs`).
 6. **Axis channels**: `evalAxis` linearly remaps raw axis values from `[rawMin, rawMax]` to `[0, 65535]`, applies invert, then snaps low/high values inside the deadzone bands. The brake-jitter case is fixed by raising `deadzoneLow` to a couple percent. Threshold and deadzone fields are compared against the post-scale value, so 32768 = 50% works regardless of the source device's native bit depth.
 7. **Handbrake routing**: `evalAxis(handbrake)` is written verbatim into the pedal stream (`setPedalHandbrake`, 0–65535) and downscaled to 12-bit for `PIN_HANDBRAKE` PWM (`>> 4`). On current Fanatec firmware the pedal stream is the canonical handbrake source; the dedicated handbrake RJ12 is typically left disconnected.
@@ -456,12 +456,13 @@ Send one JSON object per line over the same USB CDC Serial port. Responses arriv
 
 | Command | Notes |
 |---|---|
-| `{"cmd":"version"}` | → `{"fw":"fanadapter","ver":"0.3.0","protocol":2,"max_bindings_per_channel":4}` |
-| `{"cmd":"list_devices"}` | → device pool snapshot. `axis_count` / `button_count` are 0 until the device sends its first report. |
-| `{"cmd":"get_config"}` | → full Config encoded as JSON. Each channel is an **array** of up to `max_bindings_per_channel` `InputBinding` entries (buttons OR together, axes MAX together — empty slots have `type:"none"`). |
-| `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Channel keys: `gear_R`, `gear_1`..`gear_7`, `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, `clutch`. `slot` is optional (defaults to 0) and selects which binding within the channel's array to write. Binding fields match the `InputBinding` struct. |
+| `{"cmd":"version"}` | → `{"fw":"fanadapter","ver":"0.6.0","protocol":5,"max_bindings_per_channel":4}` |
+| `{"cmd":"list_devices"}` | → device pool snapshot. `axis_count` / `button_count` are 0 until the device sends its first report; `has_hat` and `has_keyboard` flip to true once the device reports any Hat Switch or Keyboard usage. |
+| `{"cmd":"get_config"}` | → full Config encoded as JSON. Includes `gearMode` (`"hold"` or `"latch"`). Each channel is an **array** of up to `max_bindings_per_channel` `InputBinding` entries (buttons OR together, axes MAX together — empty slots have `type:"none"`). `type` is one of `"none"`, `"button"`, `"axis"`, `"hat"`, `"key"`. For `"hat"`, `index` is the strict direction match (0=N, 1=NE, 2=E, 3=SE, 4=S, 5=SW, 6=W, 7=NW). For `"key"`, `index` is the HID Keyboard/Keypad scancode (0x04 = A, … 0xE0..0xE7 = modifiers). |
+| `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Channel keys: `gear_R`, `gear_1`..`gear_7`, `gear_N`, `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, `clutch`. `slot` is optional (defaults to 0) and selects which binding within the channel's array to write. Binding fields match the `InputBinding` struct. |
 | `{"cmd":"set_gear_dac","channel":"gear_3","x":2163,"y":3430}` | Adjust per-gear X/Y DAC output. `gear_N` is allowed (sets neutral voltages). |
 | `{"cmd":"set_pulse_ms","value":50}` | Sequential pulse width. |
+| `{"cmd":"set_gear_mode","value":"hold"\|"latch"}` | H-pattern shifter mode. `hold` = gear active only while binding held (real shifter). `latch` = rising-edge switches gear until another gear / Neutral fires (keyboard / gamepad friendly). |
 | `{"cmd":"save_config"}` | Persist current Config to EEPROM. |
 | `{"cmd":"reset_config"}` | Wipe bindings in RAM and reload compile-time output defaults. Does not touch EEPROM until `save_config`. |
 | `{"cmd":"live_inputs","on":true}` | Stream `{"event":"live",...}` events for any slot whose buttons/axes changed. Rate-limited to ~50 Hz per slot. |
@@ -472,9 +473,9 @@ Send one JSON object per line over the same USB CDC Serial port. Responses arriv
 
 Asynchronous events the firmware emits without prompting:
 
-* `{"event":"device_attached","slot":...,"vid":...,"pid":...,"axis_count":...,"button_count":...}`
+* `{"event":"device_attached","slot":...,"vid":...,"pid":...,"axis_count":...,"button_count":...,"has_hat":false,"has_keyboard":false}`
 * `{"event":"device_detached","slot":...}`
-* `{"event":"live","slot":...,"buttons":...,"axes":[...]}`
+* `{"event":"live","slot":...,"buttons":...,"axes":[...],"hat":-1|0..7,"keys":[code,...]}` — `hat` is omitted for devices without a hat, `-1` while released, `0..7` for an active direction; `keys` is omitted for non-keyboards, otherwise a 6-element zero-padded array of pressed HID scancodes
 * `{"event":"outputs","gear":"gear_3","shift_up":false,...}`
 
 Live streams stop on either `{"cmd":"live_inputs","on":false}` or when the USB CDC host closes the port (detected via `bool(Serial)`).

@@ -122,13 +122,14 @@ ChannelBindings* mappingChannelBindings(ChannelId id) {
     case CH_GEAR_5:     return &g_cfg.gear[5];
     case CH_GEAR_6:     return &g_cfg.gear[6];
     case CH_GEAR_7:     return &g_cfg.gear[7];
+    case CH_GEAR_N:     return &g_cfg.gear[GEAR_N_BINDING_INDEX];
     case CH_SHIFT_UP:   return &g_cfg.shiftUp;
     case CH_SHIFT_DOWN: return &g_cfg.shiftDown;
     case CH_HANDBRAKE:  return &g_cfg.handbrake;
     case CH_THROTTLE:   return &g_cfg.throttle;
     case CH_BRAKE:      return &g_cfg.brake;
     case CH_CLUTCH:     return &g_cfg.clutch;
-    default:            return nullptr;  // CH_NONE, CH_GEAR_N (output-only)
+    default:            return nullptr;  // CH_NONE
   }
 }
 
@@ -185,6 +186,37 @@ uint16_t evalAxis(const InputBinding& b) {
     return pressed ? 65535 : 0;
   }
 
+  // Hat input → strict direction match across same-VID/PID slots, mapped
+  // to 0 or 65535. Lets a D-pad direction drive an axis-shaped channel
+  // (e.g. handbrake) the same way a button can.
+  if (b.type == INPUT_HAT) {
+    if (b.index > 7) return 0;
+    bool matched = false;
+    for (uint8_t i = 0; i < devicePoolSize(); ++i) {
+      GenericJoystickHID* d = devicePoolSlot(i);
+      if (!d->connected())             continue;
+      if (d->vid() != b.vid || d->pid() != b.pid) continue;
+      if (d->hat() == b.index) { matched = true; break; }
+    }
+    if (b.invert) matched = !matched;
+    return matched ? 65535 : 0;
+  }
+
+  // Keyboard key input → key currently pressed on any matching slot.
+  // Mapped to 0 or 65535 like the button-as-axis path.
+  if (b.type == INPUT_KEY) {
+    if (!b.index) return 0;
+    bool pressed = false;
+    for (uint8_t i = 0; i < devicePoolSize(); ++i) {
+      GenericJoystickHID* d = devicePoolSlot(i);
+      if (!d->connected())             continue;
+      if (d->vid() != b.vid || d->pid() != b.pid) continue;
+      if (d->isKeyPressed((uint8_t)b.index)) { pressed = true; break; }
+    }
+    if (b.invert) pressed = !pressed;
+    return pressed ? 65535 : 0;
+  }
+
   // Axis input → MAX raw across matching slots, then scaleAxis.
   if (b.index >= DEVICE_MAX_AXES) return 0;
   bool found = false;
@@ -212,6 +244,36 @@ bool evalButton(const InputBinding& b) {
       if (!d->connected())             continue;
       if (d->vid() != b.vid || d->pid() != b.pid) continue;
       if (d->buttons() & mask) { pressed = true; break; }
+    }
+    if (b.invert) pressed = !pressed;
+    return pressed;
+  }
+
+  // Hat direction matches strictly — diagonals do NOT fire cardinal
+  // bindings. Use multiple slots on a channel for lenient matching.
+  if (b.type == INPUT_HAT) {
+    if (b.index > 7) return false;
+    bool matched = false;
+    for (uint8_t i = 0; i < devicePoolSize(); ++i) {
+      GenericJoystickHID* d = devicePoolSlot(i);
+      if (!d->connected())             continue;
+      if (d->vid() != b.vid || d->pid() != b.pid) continue;
+      if (d->hat() == b.index) { matched = true; break; }
+    }
+    if (b.invert) matched = !matched;
+    return matched;
+  }
+
+  // Keyboard key — pressed if any matching slot has the scancode in its
+  // currently-pressed set.
+  if (b.type == INPUT_KEY) {
+    if (!b.index) return false;
+    bool pressed = false;
+    for (uint8_t i = 0; i < devicePoolSize(); ++i) {
+      GenericJoystickHID* d = devicePoolSlot(i);
+      if (!d->connected())             continue;
+      if (d->vid() != b.vid || d->pid() != b.pid) continue;
+      if (d->isKeyPressed((uint8_t)b.index)) { pressed = true; break; }
     }
     if (b.invert) pressed = !pressed;
     return pressed;
@@ -251,48 +313,74 @@ static void writeGearDac(ChannelId gear) {
   analogWrite(PIN_Y, g.y);
 }
 
+// Rising-edge shadow for latch mode — one bool per gear binding slot,
+// remembers whether the binding was active last tick so we can fire only
+// once per press.
+static bool g_gearPrevPressed[NUM_GEAR_BINDINGS] = {0};
+
+static void transitGear(ChannelId newGear, const char* tag) {
+  if (newGear == g_currentGear) return;
+  if (newGear != CH_GEAR_N && g_currentGear != CH_GEAR_N) {
+    writeGearDac(CH_GEAR_N);
+    delay(NEUTRAL_TRANSIT_MS);
+  }
+  writeGearDac(newGear);
+  g_currentGear = newGear;
+  Serial.print(tag);
+  Serial.println(mappingChannelName(g_currentGear));
+}
+
 static void updateShifter() {
-  // Test override wins.
+  // Test override wins (both modes).
   if (g_testGearUntil != 0 && (int32_t)(millis() - g_testGearUntil) < 0) {
-    if (g_testGearOverride != g_currentGear) {
-      if (g_testGearOverride != CH_GEAR_N && g_currentGear != CH_GEAR_N) {
-        writeGearDac(CH_GEAR_N);
-        delay(NEUTRAL_TRANSIT_MS);
-      }
-      writeGearDac(g_testGearOverride);
-      g_currentGear = g_testGearOverride;
-      Serial.print("[Shifter/test] → ");
-      Serial.println(mappingChannelName(g_currentGear));
-    }
+    transitGear(g_testGearOverride, "[Shifter/test] → ");
     g_outputs.gear = g_currentGear;
     return;
   }
   if (g_testGearUntil != 0) g_testGearUntil = 0;  // expired; clear
 
+  if (g_cfg.gearMode == GEAR_MODE_LATCH) {
+    // Latch: rising-edge on a gear binding switches the current gear.
+    // The gear persists until another rising edge moves it elsewhere
+    // (including gear_N as the explicit "shift to neutral" key). First
+    // edge per tick wins on simultaneous keypresses — deterministic.
+    ChannelId newGear = g_currentGear;
+    bool changed = false;
+    for (uint8_t i = 0; i < NUM_GEAR_BINDINGS; ++i) {
+      const bool pressed = evalChannelButton(g_cfg.gear[i]);
+      if (pressed && !g_gearPrevPressed[i] && !changed) {
+        newGear = (ChannelId)(CH_GEAR_R + i);
+        changed = true;
+      }
+      g_gearPrevPressed[i] = pressed;
+    }
+    if (changed) transitGear(newGear, "[Shifter/latch] → ");
+    g_outputs.gear = g_currentGear;
+    return;
+  }
+
+  // Hold mode (default): gear active only while binding held.
   // Walk gear bindings R, 1..7. Count true hits.
   // 0 → neutral.  1 → that gear.  2+ → neutral (defensive: matches the
   // pre-refactor buttonsToGear() behavior where any unexpected multi-bit
   // value fell through to GEAR_N).
   ChannelId target = CH_GEAR_N;
   uint8_t hits = 0;
-  for (uint8_t i = 0; i < NUM_GEAR_BINDINGS; ++i) {
+  for (uint8_t i = 0; i < GEAR_N_BINDING_INDEX; ++i) {
     if (evalChannelButton(g_cfg.gear[i])) {
       ++hits;
       if (hits == 1) target = (ChannelId)(CH_GEAR_R + i);
     }
   }
   if (hits >= 2) target = CH_GEAR_N;
+  // Explicit neutral binding overrides — useful as a panic-neutral key
+  // independent of whether any gear binding is also active.
+  if (evalChannelButton(g_cfg.gear[GEAR_N_BINDING_INDEX])) target = CH_GEAR_N;
 
-  if (target != g_currentGear) {
-    if (target != CH_GEAR_N && g_currentGear != CH_GEAR_N) {
-      writeGearDac(CH_GEAR_N);
-      delay(NEUTRAL_TRANSIT_MS);
-    }
-    writeGearDac(target);
-    g_currentGear = target;
-    Serial.print("[Shifter] → ");
-    Serial.println(mappingChannelName(g_currentGear));
-  }
+  transitGear(target, "[Shifter] → ");
+  // Reset the latch shadow whenever we're in hold mode so a later switch
+  // to latch starts clean.
+  memset(g_gearPrevPressed, 0, sizeof(g_gearPrevPressed));
   g_outputs.gear = g_currentGear;
 }
 
@@ -370,9 +458,10 @@ const OutputSnapshot& mappingOutputs() {
 
 void mappingReset() {
   memset(&g_cfg, 0, sizeof(Config));
-  g_cfg.magic   = CONFIG_MAGIC;
-  g_cfg.version = CONFIG_VERSION;
-  g_cfg.pulseMs = DEFAULT_PULSE_MS;
+  g_cfg.magic    = CONFIG_MAGIC;
+  g_cfg.version  = CONFIG_VERSION;
+  g_cfg.pulseMs  = DEFAULT_PULSE_MS;
+  g_cfg.gearMode = GEAR_MODE_HOLD;
   for (uint8_t i = 0; i < NUM_GEAR_OUTPUTS; ++i) {
     g_cfg.gearOut[i] = GEAR_DEFAULT_OUT[i];
   }
