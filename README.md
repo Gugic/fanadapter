@@ -2,7 +2,7 @@
 
 USB HID → Fanatec wheelbase adapter using a Teensy 4.1, combined with a browser-based WebSerial configuration UI.
 
-An open-source adapter that lets arbitrary USB HID sim racing peripherals (H-pattern shifters, sequential shifters, handbrakes, and USB pedals) connect to a Fanatec wheelbase as if they were native Fanatec gear. This is particularly valuable on game consoles (PS4/PS5/Xbox Series X|S) where third-party USB peripherals cannot be plugged directly into the console.
+An open-source adapter that lets arbitrary USB HID sim racing peripherals (H-pattern shifters, sequential shifters, handbrakes, and USB pedals — plus gamepads, D-pad/Hat controllers, and keyboards) connect to a Fanatec wheelbase as if they were native Fanatec gear. This is particularly valuable on game consoles (PS4/PS5/Xbox Series X|S) where third-party USB peripherals cannot be plugged directly into the console.
 
 From the perspective of the wheelbase, the adapter looks like genuine Fanatec hardware (supporting a digital UART pedal stream and analog/digital shifter and handbrake signals).
 

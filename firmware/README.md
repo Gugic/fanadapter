@@ -10,6 +10,7 @@ The `firmware/` directory contains the Arduino sketch (Teensyduino) that runs on
 * **Board:** Teensy 4.1
 * **Core:** Teensyduino (installed via Arduino IDE or `arduino-cli` board manager)
 * **Required Libraries:** **ArduinoJson** ≥ 7.0 (`arduino-cli lib install ArduinoJson`)
+* **USB host stack:** `USBHost_t36` ships with Teensyduino. Reliable **keyboard** input requires the **master** branch of `USBHost_t36` — the bundled `0.2` release does not deliver keypresses from some receivers (e.g. a Logitech Unifying Receiver). Logitech HID++ wireless keyboards remain unsupported (proprietary protocol); use a wired or standard-HID keyboard.
 
 ### Compilation & Flash Commands
 Use `arduino-cli` to compile and upload from this directory:
@@ -53,10 +54,10 @@ g_usb.Task() → pollUsbDriverStatus() → protocolTick() → mappingTick() → 
   Orchestrates setup and execution. Initializes the physical pins, configures the 12-bit PWM timer (36 kHz frequency), sets up the `USBHost_t36` host parser instances, and runs the serial CLI callback dispatcher.
   
 * **`device_pool.{h,cpp}`**  
-  Maintains an 8-slot array of `GenericJoystickHID` consumers. It claims any connected USB joystick, gamepad, or multi-axis controller (first-come, first-served) regardless of its VID/PID. It lazily discovers axis and button counts from incoming reports.
+  Maintains an 8-slot array of `GenericJoystickHID` consumers. It claims any connected USB joystick, gamepad, multi-axis controller, or **keyboard** HID collection (first-come, first-served) regardless of its VID/PID. It lazily discovers axis and button counts from incoming reports; `hasHat()` / `hasKeyboard()` flip to true on the first matching event. A gamepad **D-pad / Hat Switch** is exposed as a first-class direction value (`0..7` per the HID Usage Tables — N, NE, E, SE, S, SW, W, NW; `HAT_RELEASED = 0xFF` when centred), and `INPUT_HAT` bindings select a specific direction strictly (diagonals don't fire cardinal bindings — bind multiple slots on a channel for lenient matching). **Keyboards** keep up to `MAX_KEYS_PRESSED` (6) simultaneously-pressed scancodes; `INPUT_KEY` bindings carry the HID Keyboard/Keypad usage code in `index` (`0x04` = A, … `0xE0..0xE7` = modifiers).
   
 * **`mapping.{h,cpp}`**  
-  Contains the `Config` schema, EEPROM read/write routines (secured by a CRC-32/ISO-HDLC checksum), axis/button evaluation algorithms, and per-output channel updating drivers.
+  Contains the `Config` schema (**1132 bytes**, layout locked with `static_assert`), EEPROM read/write routines (secured by a CRC-32/ISO-HDLC checksum), the `evalAxis` / `evalButton` evaluators (cross-type aware: button ↔ axis ↔ hat ↔ key, with deadzones / threshold / invert), and per-output channel updating drivers. The H-pattern shifter has two modes (`hold` / `latch`) selected by `Config.gearMode`.
   
 * **`protocol.{h,cpp}`**  
   Line-based JSON command parser and event emitter using ArduinoJson 7. Listens on the Teensy CDC Serial port. Parses objects starting with `{`, and routes all other characters to the diagnostic CLI callback. Emits periodic telemetry events (`live`, `outputs`).
@@ -72,30 +73,34 @@ g_usb.Task() → pollUsbDriverStatus() → protocolTick() → mappingTick() → 
 ## Internal Software Design
 
 ### 1. Channel Model
-The firmware manages **14 virtual output channels**:
-* **Gears (8):** `gear_R`, `gear_1` .. `gear_7`
+The firmware manages **14 virtual output channels**, plus a bindable `gear_N` (neutral) for the H-pattern:
+* **Gears (8 + Neutral):** `gear_R`, `gear_1` .. `gear_7`, and `gear_N` — 9 gear binding slots in total. `gear_N` is a panic-neutral override in `hold` mode and the explicit shift-to-neutral input in `latch` mode.
 * **Sequential (2):** `shift_up`, `shift_down`
 * **Analog (4):** `handbrake`, `throttle`, `brake`, `clutch`
 
-Each channel supports up to **4 `InputBinding` slots** (configured via webconfig). Button bindings are **OR'd** together across slots, and Axis bindings are **MAX'd** together. You can mix types: a button can drive an axis (outputting 0 or 65535), and an axis can drive a button (by checking if it exceeds a deadzone/threshold).
+Each channel supports up to **4 `InputBinding` slots** (configured via webconfig). Button bindings are **OR'd** together across slots, and Axis bindings are **MAX'd** together. Inputs come in four types — **button**, **axis**, **hat** (D-pad direction), and **key** (keyboard scancode) — and you can mix them: a button / hat / key can drive an axis channel (outputting 0 or 65535), and an axis can drive a button channel (by checking if it exceeds a deadzone/threshold).
 
 Physical inputs from different slots sharing the same VID/PID are automatically aggregated under the hood before final evaluation.
 
-### 2. H-Pattern Defensive Neutral
-`updateShifter()` tracks active gear bindings. To prevent conflicts and secure gear shifts on noisy sensors:
-* 0 active gear buttons → **Neutral**
-* 1 active gear button → **Actuates that gear**
-* 2 or more active gear buttons → **Neutral**
+### 2. H-Pattern Shifter Modes
+`updateShifter()` has two modes, selected by `Config.gearMode` (set at runtime via `set_gear_mode`):
 
-When switching between gears, the firmware inserts a `NEUTRAL_TRANSIT_MS` (50 ms) window of pure neutral to allow the wheelbase's internal state machine to register a release before latching the next gear.
+**`hold`** (default — real H-shifter semantics): a gear is active only while its binding is held.
+* 0 active gear bindings → **Neutral**
+* 1 active gear binding → **Actuates that gear**
+* 2 or more active → **Neutral** (defensive: when two switches close simultaneously or a flaky binding double-fires, staying in neutral is safer than picking a random gear). A binding on `gear_N` acts as a panic-neutral override.
+
+**`latch`** (keyboard / gamepad friendly): a rising edge on any gear binding *switches* the current gear; it stays there until another rising edge moves it elsewhere — including `gear_N` as the explicit "shift to neutral" input. First edge per tick wins on simultaneous presses; there is no defensive multi-press handling (the user opted into this mode deliberately).
+
+When switching between non-neutral gears, the firmware inserts a `NEUTRAL_TRANSIT_MS` (50 ms) window of pure neutral so the wheelbase's internal state machine registers a release before latching the next gear.
 
 ### 3. Sequential Pulse Handling
 A successful upshift or downshift triggers a brief pull-to-ground pulse (using `OUTPUT_OPENDRAIN` mode to avoid fighting the wheelbase's 3.3V internal pull-ups). The duration is defined by `pulseMs` (default 50 ms).
 
 ### 4. EEPROM Versioning
-The configuration layout in EEPROM is locked by a static assert to exactly **1060 bytes**.
+The configuration layout in EEPROM is locked by a static assert to exactly **1132 bytes** (current schema `CONFIG_VERSION` 3).
 ```cpp
-static_assert(sizeof(Config) == 1060, "Config struct size changed!");
+static_assert(sizeof(Config) == 1132, "Config layout locked — bump CONFIG_VERSION on change");
 ```
 * **IMPORTANT:** If you change any fields in the `Config` struct (`mapping.h`), you must adjust the layout validation and bump `CONFIG_VERSION`. Version mismatches will wipe user EEPROMs on startup, reverting to defaults.
 
@@ -106,6 +111,7 @@ static_assert(sizeof(Config) == 1060, "Config struct size changed!");
 When connecting with a terminal program, sending single characters will execute debugging actions:
 
 * **`u`** — Prints the USB driver host status, connected device pool, and current pedal axis stream outputs.
+* **`d`** — Dumps HID parser diagnostics (report descriptors) for attached devices, on demand.
 * **`p`** — Forces a pedal handshake reset (re-enters Step 0 state).
 * **`X`** — Software reset (reboots Teensy).
 * **`?` or `h`** — Prints help menu.
@@ -120,12 +126,13 @@ Send single-line JSON objects over the USB CDC serial port. Responses and events
 
 | Request Shape | Response / Effect |
 |---|---|
-| `{"cmd":"version"}` | `{"fw":"fanadapter","ver":"0.3.0","protocol":2,"max_bindings_per_channel":4}` |
-| `{"cmd":"list_devices"}` | Returns a list of active USB host devices, showing VID, PID, and discovered button/axis counts. |
-| `{"cmd":"get_config"}` | Returns the full `Config` JSON object (bindings, deadzones, gear DAC configurations). |
-| `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Sets a specific binding slot. Channel keys match the virtual channel names. Binding matches the `InputBinding` shape. |
+| `{"cmd":"version"}` | `{"fw":"fanadapter","ver":"0.6.0","protocol":5,"max_bindings_per_channel":4}` |
+| `{"cmd":"list_devices"}` | Returns a list of active USB host devices, showing VID, PID, and discovered button/axis counts. `has_hat` / `has_keyboard` flip to `true` once the device reports any Hat Switch or Keyboard usage. |
+| `{"cmd":"get_config"}` | Returns the full `Config` JSON object (bindings, deadzones, gear DAC configurations, and `gearMode` = `"hold"` or `"latch"`). Each binding's `type` is one of `"none"`, `"button"`, `"axis"`, `"hat"`, `"key"`. For `"hat"`, `index` is the strict direction (`0`=N, `1`=NE, `2`=E, `3`=SE, `4`=S, `5`=SW, `6`=W, `7`=NW); for `"key"`, `index` is the HID Keyboard/Keypad scancode. |
+| `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Sets a specific binding slot. Channel keys: `gear_R`, `gear_1`..`gear_7`, `gear_N`, `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, `clutch`. Binding matches the `InputBinding` shape, including the `"hat"` and `"key"` types. |
 | `{"cmd":"set_gear_dac","channel":"gear_3","x":2163,"y":3430}` | Calibrates the X/Y PWM DAC targets for a specific gear. `gear_N` sets the Neutral column target. |
 | `{"cmd":"set_pulse_ms","value":50}` | Configures the sequential gear shift pull pulse duration. |
+| `{"cmd":"set_gear_mode","value":"hold"\|"latch"}` | Selects the H-pattern shifter mode. `hold` = gear active only while its binding is held (real shifter); `latch` = a rising edge switches gear until another gear / Neutral fires (keyboard / gamepad friendly). |
 | `{"cmd":"save_config"}` | Commits active RAM configuration to EEPROM. |
 | `{"cmd":"reset_config"}` | Reloads compiled default values into RAM (does not touch EEPROM until `save_config`). |
 | `{"cmd":"reboot"}` | Instantly soft-reboots the Teensy 4.1. |
@@ -138,9 +145,9 @@ Send single-line JSON objects over the USB CDC serial port. Responses and events
 
 ### Asynchronous Events
 
-* **`{"event":"device_attached","slot":0,"vid":1133,"pid":49771,...}`** — Sent when a USB device is enumerated.
+* **`{"event":"device_attached","slot":0,"vid":1133,"pid":49771,"axis_count":...,"button_count":...,"has_hat":false,"has_keyboard":false}`** — Sent when a USB device is enumerated.
 * **`{"event":"device_detached","slot":0}`** — Sent when a device is disconnected.
-* **`{"event":"live","slot":0,"buttons":0,"axes":[32768,...]}`** — Streamed input values (when `live_inputs` is active).
+* **`{"event":"live","slot":0,"buttons":0,"axes":[32768,...],"hat":-1,"keys":[...]}`** — Streamed input values (when `live_inputs` is active). `hat` is omitted for devices without a hat, `-1` while released, `0..7` for an active direction; `keys` is omitted for non-keyboards, otherwise a 6-element zero-padded array of pressed HID scancodes.
 * **`{"event":"outputs","gear":"gear_N","shift_up":false,...}`** — Streamed virtual channel outputs (when `live_outputs` is active).
 
 ---
@@ -155,6 +162,9 @@ Calibration coordinates the adapter's input mappings (configured on the Teensy v
 3. Launch the **Shifter Calibration Wizard**.
 4. Follow the prompts on the screen (Neutral → Reverse → 1 → 2...): put your USB shifter in that gear, and click confirm. The wheelbase registers the custom DAC voltage mapping.
 5. If a gear fails to map, go to the webconfig **Outputs** tab, adjust the X/Y DAC values in the table, and retry the wizard.
+
+> [!NOTE]
+> For keyboards or gamepad D-pads, switch the shifter to **latch** mode (the toggle in webconfig's **H-Pattern Shifter** card, or `set_gear_mode`) so a momentary input holds the selected gear, and optionally bind `gear_N` as an explicit shift-to-neutral input. The Fanatec wizard still maps the same gear DAC voltages regardless of mode.
 
 ### Sequential Calibration
 1. Map buttons to **Shift Up** and **Shift Down** in webconfig.

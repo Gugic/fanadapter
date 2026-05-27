@@ -75,15 +75,15 @@ webconfig/
 To keep the web configurator aligned with the microcontroller's operation, three critical design architectures are enforced:
 
 ### 1. In-App Capture Flow State Machine
-`webconfig/src/App.tsx` coordinates a three-phase "Listen" process for capture-mapping button or axis inputs:
+`webconfig/src/App.tsx` coordinates a three-phase "Listen" process for capture-mapping button, axis, hat (D-pad direction), or key (keyboard) inputs:
 
 1. **`baseline` (Duration: ~400 ms):**  
    Samples active button bits and axis ranges to establish the sensor noise floor.  
-   *Implementation detail:* To avoid trigger-heavy React component re-renders on 50 Hz serial updates, this baseline data accumulates in a React `useRef` rather than state.
+   *Implementation detail:* To avoid trigger-heavy React component re-renders on 50 Hz serial updates, this baseline data accumulates in a React `useRef` rather than state. A device that stays completely silent through this window (a keyboard, or a jitter-free gamepad) is lazily seeded with an at-rest baseline, so the very first Listen recognises it instead of ignoring it until timeout.
    
 2. **`active`:**  
    Waits for input activity that crosses the noise floor.  
-   * Buttons: Commit immediately when any button bit toggles.  
+   * Buttons, hats, and keys: Commit immediately when a new button bit, hat direction, or pressed key appears.  
    * Axes: Latch and advance to Phase 3 when an axis value deviates from its baseline midpoint by more than `max(noise × 5, 500)`.
    
 3. **`tracking`:**  
