@@ -109,6 +109,8 @@ export interface DeviceSlot {
   connected: boolean;
   vid: number;
   pid: number;
+  manufacturer?: string;  // USB manufacturer string descriptor ("" if none)
+  product?: string;       // USB product string descriptor ("" if none)
   axis_count: number;
   button_count: number;
   has_hat?: boolean;

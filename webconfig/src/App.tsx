@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Plug, Unplug, Save, RotateCcw, Mic, Trash2, Play, AlertCircle,
   Loader2, CheckCircle2, Cable, X, Power,
+  Wand2, Check, ChevronLeft, SkipForward,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,9 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { SerialClient, type ProtocolEvent } from "@/lib/serial";
 import {
   CHANNELS, GEAR_KEYS, HAT_DIRECTION_LABELS, MAX_BINDINGS_PER_CHANNEL,
@@ -33,7 +37,20 @@ function vidPid(b: { vid: number; pid: number }) {
   return `${hex(b.vid)}:${hex(b.pid)}`;
 }
 
-function bindingSummary(b: InputBinding): string {
+// Resolve a binding's VID/PID to a human-readable name using the currently
+// connected devices. Returns undefined when no matching device is connected or
+// the device reports no string descriptors (caller falls back to VID:PID hex).
+function deviceNameForBinding(
+  b: { vid: number; pid: number },
+  devices: DeviceSlot[],
+): string | undefined {
+  const d = devices.find((dev) => dev.vid === b.vid && dev.pid === b.pid);
+  if (!d) return undefined;
+  const name = [d.manufacturer, d.product].map((s) => s?.trim()).filter(Boolean).join(" ");
+  return name || undefined;
+}
+
+function bindingSummary(b: InputBinding, deviceName?: string): string {
   if (b.type === "none" || !b.vid) return "Unmapped";
   let kind: string;
   switch (b.type) {
@@ -47,7 +64,7 @@ function bindingSummary(b: InputBinding): string {
     case "key": kind = `key ${keyName(b.index)}`; break;
     default: kind = `${b.type} ${b.index}`;
   }
-  return `${vidPid(b)} · ${kind}`;
+  return `${deviceName || vidPid(b)} · ${kind}`;
 }
 
 function pct(value: number, max = 65535): string {
@@ -171,11 +188,27 @@ interface CaptureState {
   phase: "baseline" | "active" | "tracking";
   baselineEnd: number;
   deadline: number;
+  // Fired once a binding is actually committed for this capture (not on
+  // timeout or manual cancel). Lets the shifter wizard auto-advance.
+  onCommitted?: () => void;
 }
 
 // Baseline data lives in a ref so the per-tick accumulation doesn't trigger
 // a render every time a live event arrives. Capture state in React is just
 // the metadata that drives UI (phase, deadline).
+
+// Guided shifter mapping. A wizard walks an ordered list of channels, running
+// the normal capture for each into slot 0 and auto-advancing on commit. When
+// `index === steps.length` the wizard is finished and waits to be closed.
+interface WizardStep {
+  channel: ChannelKey;
+  label: string;
+}
+interface WizardState {
+  title: string;
+  steps: WizardStep[];
+  index: number;
+}
 
 // ------------------ App ------------------
 
@@ -202,6 +235,7 @@ export default function App() {
   const [axisMax, setAxisMax] = useState<Map<string, number>>(new Map());
   const [dirty, setDirty] = useState(false);
   const [capturing, setCapturing] = useState<CaptureState | null>(null);
+  const [wizard, setWizard] = useState<WizardState | null>(null);
   const baselineRef = useRef<Map<number, SlotBaseline>>(new Map());
   const trackingRef = useRef<TrackingState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -263,6 +297,8 @@ export default function App() {
               connected: true,
               vid: ev.vid,
               pid: ev.pid,
+              manufacturer: ev.manufacturer,
+              product: ev.product,
               axis_count: ev.axis_count,
               button_count: ev.button_count,
               has_hat: ev.has_hat ?? false,
@@ -440,6 +476,7 @@ export default function App() {
       const hasPressed = travel > t.triggerThreshold * 1.5;
       if (hasPressed && deviation <= returnBand) {
         commitAxisCapture();
+        capturing.onCommitted?.();
         setCapturing(null);
       }
       return;
@@ -480,6 +517,7 @@ export default function App() {
           type: "button",
           index: bit,
         });
+        capturing.onCommitted?.();
         setCapturing(null);
         return;
       }
@@ -500,6 +538,7 @@ export default function App() {
           type: "hat",
           index: live.hat,
         });
+        capturing.onCommitted?.();
         setCapturing(null);
         return;
       }
@@ -518,6 +557,7 @@ export default function App() {
             type: "key",
             index: code,
           });
+          capturing.onCommitted?.();
           setCapturing(null);
           return;
         }
@@ -553,6 +593,22 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveSlots, capturing, devices]);
+
+  // Wizard driver: when a wizard is active, on a real step, and nothing is
+  // currently capturing, start the capture for that step. The capture's
+  // onCommitted advances the index, which re-runs this effect for the next
+  // step. Starting a capture flips `capturing` non-null, so this won't
+  // double-fire mid-capture.
+  useEffect(() => {
+    if (!wizard) return;
+    if (wizard.index >= wizard.steps.length) return; // finished — awaiting close
+    if (capturing) return;
+    const step = wizard.steps[wizard.index];
+    beginCapture(step.channel, 0, () => {
+      setWizard((w) => (w ? { ...w, index: w.index + 1 } : w));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wizard, capturing]);
 
   // ------------------ Tracking commit ------------------
   // Build the binding from the data accumulated in trackingRef and push it.
@@ -675,7 +731,7 @@ export default function App() {
     }
   }
 
-  function beginCapture(channel: ChannelKey, bindingSlot: number) {
+  function beginCapture(channel: ChannelKey, bindingSlot: number, onCommitted?: () => void) {
     // Seed the baseline from the current live snapshot so a fast first
     // sample is still useful even before phase 1's window has elapsed.
     const baseline = new Map<number, SlotBaseline>();
@@ -698,12 +754,35 @@ export default function App() {
       baselineEnd: now + 400,
       // Allow plenty of time for the full press + release cycle.
       deadline: now + 12000,
+      onCommitted,
     });
   }
 
   function cancelCapture() {
     trackingRef.current = null;
     setCapturing(null);
+  }
+
+  // ------------------ Shifter wizard ------------------
+  // The driver effect (below) starts the capture for the current step; these
+  // just move the index. cancelCapture() first so the in-flight capture (if
+  // any) is torn down without counting as a commit — the effect then re-arms
+  // for whatever step we land on.
+  function startWizard(title: string, steps: WizardStep[]) {
+    cancelCapture();
+    setWizard({ title, steps, index: 0 });
+  }
+  function wizardSkip() {
+    cancelCapture();
+    setWizard((w) => (w ? { ...w, index: w.index + 1 } : w));
+  }
+  function wizardBack() {
+    cancelCapture();
+    setWizard((w) => (w && w.index > 0 ? { ...w, index: w.index - 1 } : w));
+  }
+  function closeWizard() {
+    cancelCapture();
+    setWizard(null);
   }
 
   async function handleSave() {
@@ -794,12 +873,24 @@ export default function App() {
           </div>
         ) : (
           <>
-            {capturing && (
+            {capturing && !wizard && (
               <CaptureBanner
                 channel={capturing.channel}
                 phase={capturing.phase}
                 onCancel={cancelCapture}
                 deadline={capturing.deadline}
+              />
+            )}
+
+            {wizard && (
+              <ShifterWizard
+                wizard={wizard}
+                capturing={capturing}
+                config={config}
+                devices={devices}
+                onSkip={wizardSkip}
+                onBack={wizardBack}
+                onClose={closeWizard}
               />
             )}
 
@@ -826,6 +917,7 @@ export default function App() {
                   onUnbind={unbind}
                   onUpdateField={updateBindingField}
                   onSetGearMode={pushGearMode}
+                  onStartWizard={startWizard}
                 />
               </TabsContent>
               <TabsContent value="outputs">
@@ -1070,12 +1162,16 @@ function DeviceCard({
 }) {
   const buttonCount = Math.max(dev.button_count, 0);
   const axisCount = Math.max(dev.axis_count, 0);
+  const deviceName = [dev.manufacturer, dev.product]
+    .map((s) => s?.trim())
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <Card className={dev.connected ? "" : "opacity-50"}>
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center justify-between text-base">
-          <span>Slot {dev.slot}</span>
+        <CardTitle className="flex items-center justify-between gap-2 text-base">
+          <span className="min-w-0 truncate">{deviceName || `Slot ${dev.slot}`}</span>
           {dev.connected ? (
             <Badge variant="success">connected</Badge>
           ) : (
@@ -1083,7 +1179,7 @@ function DeviceCard({
           )}
         </CardTitle>
         <CardDescription className="font-mono text-xs">
-          VID {hex(dev.vid)} · PID {hex(dev.pid)}
+          {deviceName ? `Slot ${dev.slot} · ` : ""}VID {hex(dev.vid)} · PID {hex(dev.pid)}
           {buttonCount > 0 && ` · ${buttonCount} btn`}
           {axisCount > 0 && ` · ${axisCount} ax`}
         </CardDescription>
@@ -1192,6 +1288,7 @@ function MappingsView({
   onUnbind,
   onUpdateField,
   onSetGearMode,
+  onStartWizard,
 }: {
   config: Config;
   devices: DeviceSlot[];
@@ -1204,17 +1301,30 @@ function MappingsView({
     c: ChannelKey, slot: number, k: K, v: InputBinding[K]
   ) => Promise<void>;
   onSetGearMode: (mode: "hold" | "latch") => void;
+  onStartWizard: (title: string, steps: WizardStep[]) => void;
 }) {
-  const groups: { title: string; keys: ChannelKey[]; description?: string }[] = [
+  const gearMode = (config.gearMode as "hold" | "latch") ?? "hold";
+  // Neutral is only bindable in latch mode — there it's the explicit "shift to
+  // neutral" key. In hold mode neutral is implicit (no gear held), so binding
+  // gear_N has no effect; hide it. Applies to both the channel list and the
+  // wizard, which derive their steps from these keys.
+  const hpatternKeys: ChannelKey[] = [
+    "gear_R", "gear_1", "gear_2", "gear_3", "gear_4", "gear_5", "gear_6", "gear_7",
+    ...(gearMode === "latch" ? (["gear_N"] as ChannelKey[]) : []),
+  ];
+
+  const groups: { title: string; keys: ChannelKey[]; description?: string; wizard?: boolean }[] = [
     {
       title: "H-Pattern Shifter",
       description: "Bind one or several inputs per gear (they OR together). In Hold mode the gear is active only while the input is held; in Latch mode the gear stays engaged until another gear / Neutral fires.",
-      keys: ["gear_R", "gear_1", "gear_2", "gear_3", "gear_4", "gear_5", "gear_6", "gear_7", "gear_N"],
+      keys: hpatternKeys,
+      wizard: true,
     },
     {
       title: "Sequential Shifter",
       description: "Rising edges trigger a pulse to the wheelbase's Shifter 2 port.",
       keys: ["shift_up", "shift_down"],
+      wizard: true,
     },
     {
       title: "Handbrake",
@@ -1233,12 +1343,32 @@ function MappingsView({
           <CardHeader>
             <CardTitle className="flex items-center justify-between gap-3">
               <span>{g.title}</span>
-              {g.title === "H-Pattern Shifter" && (
-                <GearModeToggle
-                  value={(config.gearMode as "hold" | "latch") ?? "hold"}
-                  onChange={onSetGearMode}
-                />
-              )}
+              <div className="flex shrink-0 items-center gap-2">
+                {g.title === "H-Pattern Shifter" && (
+                  <GearModeToggle
+                    value={(config.gearMode as "hold" | "latch") ?? "hold"}
+                    onChange={onSetGearMode}
+                  />
+                )}
+                {g.wizard && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      onStartWizard(
+                        g.title,
+                        g.keys.map((k) => ({
+                          channel: k,
+                          label: CHANNELS.find((c) => c.key === k)!.label,
+                        })),
+                      )
+                    }
+                  >
+                    <Wand2 className="h-3.5 w-3.5" />
+                    Setup wizard
+                  </Button>
+                )}
+              </div>
             </CardTitle>
             {g.description && <CardDescription>{g.description}</CardDescription>}
           </CardHeader>
@@ -1263,6 +1393,116 @@ function MappingsView({
         </Card>
       ))}
     </div>
+  );
+}
+
+// Guided, sequential mapping for shifter-type channels. Walks each step,
+// auto-capturing into slot 0 and advancing on commit (driven by the wizard
+// effect in App). Per-step bindings are committed immediately, so closing
+// early keeps whatever was already mapped.
+function ShifterWizard({
+  wizard,
+  capturing,
+  config,
+  devices,
+  onSkip,
+  onBack,
+  onClose,
+}: {
+  wizard: WizardState;
+  capturing: CaptureState | null;
+  config: Config;
+  devices: DeviceSlot[];
+  onSkip: () => void;
+  onBack: () => void;
+  onClose: () => void;
+}) {
+  const { steps, index, title } = wizard;
+  const done = index >= steps.length;
+  const current = done ? null : steps[index];
+  const capturingThis = !!current && capturing?.channel === current.channel;
+  const phase = capturingThis && capturing ? capturing.phase : null;
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent showClose={false} className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title} — setup</DialogTitle>
+          <DialogDescription>
+            {done
+              ? "All steps done. Review below, then finish."
+              : "Engage each position when prompted. Skip any your shifter doesn't have."}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-64 space-y-0.5 overflow-y-auto rounded-md border bg-muted/30 p-2">
+          {steps.map((s, i) => {
+            const b = getBinding(config, s.channel, 0);
+            const bound = b.type !== "none";
+            const isCurrent = i === index && !done;
+            return (
+              <div
+                key={s.channel}
+                className={
+                  "flex items-center justify-between gap-2 rounded px-2 py-1 text-sm " +
+                  (isCurrent ? "bg-primary/15" : "")
+                }
+              >
+                <span className="flex items-center gap-2">
+                  {isCurrent ? (
+                    <Mic className="h-3.5 w-3.5 animate-pulse text-primary" />
+                  ) : i < index ? (
+                    bound ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-500" />
+                    ) : (
+                      <span className="w-3.5 text-center text-[9px] text-muted-foreground">—</span>
+                    )
+                  ) : (
+                    <span className="h-3.5 w-3.5" />
+                  )}
+                  <span className={isCurrent ? "font-medium" : ""}>{s.label}</span>
+                </span>
+                <span className="truncate font-mono text-[11px] text-muted-foreground">
+                  {bound ? bindingSummary(b, deviceNameForBinding(b, devices)) : ""}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {!done && current && (
+          <div className="rounded-md border bg-card/40 p-3 text-center">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              Step {index + 1} of {steps.length}
+            </div>
+            <div className="mt-1 text-lg font-semibold">{current.label}</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              {phase === "baseline"
+                ? "Get ready — hold still…"
+                : "Engage this position now and hold it."}
+            </div>
+          </div>
+        )}
+
+        <DialogFooter className="sm:justify-between">
+          <Button variant="ghost" size="sm" onClick={onBack} disabled={index === 0}>
+            <ChevronLeft className="h-4 w-4" />
+            Back
+          </Button>
+          <div className="flex gap-2">
+            {!done && (
+              <Button variant="outline" size="sm" onClick={onSkip}>
+                <SkipForward className="h-4 w-4" />
+                Skip
+              </Button>
+            )}
+            <Button size="sm" onClick={onClose}>
+              {done ? "Finish" : "Cancel"}
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1412,7 +1652,7 @@ function BindingSlotRow({
     <div className="space-y-3 rounded-md border bg-card/40 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="mt-0.5 text-sm text-muted-foreground font-mono">
-          {bindingSummary(binding)}
+          {bindingSummary(binding, deviceNameForBinding(binding, devices))}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <Button
@@ -1612,15 +1852,16 @@ function AxisCalibration({
       <Separator />
 
       <div className="space-y-3">
-        <SliderField
-          label="Deadzone low"
-          value={binding.deadzoneLow}
-          onChange={(v) => onUpdateField("deadzoneLow", v)}
-        />
-        <SliderField
-          label="Deadzone high"
-          value={binding.deadzoneHigh}
-          onChange={(v) => onUpdateField("deadzoneHigh", v)}
+        <RangeSliderField
+          label="Deadzone"
+          low={binding.deadzoneLow}
+          high={binding.deadzoneHigh}
+          min={0}
+          max={65535}
+          step={64}
+          format={(v) => pct(v, 65535)}
+          onCommitLow={(v) => onUpdateField("deadzoneLow", v)}
+          onCommitHigh={(v) => onUpdateField("deadzoneHigh", v)}
         />
         {!isAxisChannel && (
           <SliderField
@@ -1735,6 +1976,56 @@ function SliderField({
         onValueChange={(v) => setLocal(v[0])}
         onValueCommit={(v) => {
           if (v[0] !== value) onChange(v[0]);
+        }}
+      />
+    </div>
+  );
+}
+
+// Two-thumb slider for a [low, high] pair. Same local-state / commit-on-release
+// approach as SliderField. Only the thumb that actually moved is committed —
+// a single Radix commit only changes one thumb, so we never issue two updates
+// from one stale binding (which would race in updateBindingField).
+function RangeSliderField({
+  label,
+  low,
+  high,
+  min = 0,
+  max = 65535,
+  step = 64,
+  format,
+  onCommitLow,
+  onCommitHigh,
+}: {
+  label: string;
+  low: number;
+  high: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  format: (v: number) => string;
+  onCommitLow: (v: number) => void;
+  onCommitHigh: (v: number) => void;
+}) {
+  const [local, setLocal] = useState<[number, number]>([low, high]);
+  useEffect(() => setLocal([low, high]), [low, high]);
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <Label className="text-xs text-muted-foreground">{label}</Label>
+        <span className="font-mono text-xs tabular-nums">
+          {format(local[0])} – {format(local[1])}
+        </span>
+      </div>
+      <Slider
+        value={local}
+        min={min}
+        max={max}
+        step={step}
+        onValueChange={(v) => setLocal([v[0], v[1]])}
+        onValueCommit={(v) => {
+          if (v[0] !== low) onCommitLow(v[0]);
+          if (v[1] !== high) onCommitHigh(v[1]);
         }}
       />
     </div>

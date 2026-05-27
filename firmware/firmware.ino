@@ -106,7 +106,9 @@ static void printUsbStatus() {
       Serial.print(d->vid(), HEX);
       Serial.print(" PID=0x");
       Serial.print(d->pid(), HEX);
-      Serial.print("  buttons=0x");
+      Serial.print("  \"");
+      Serial.print(d->productName());
+      Serial.print("\"  buttons=0x");
       Serial.print(d->buttons(), HEX);
       Serial.print("  axes=[");
       for (uint8_t j = 0; j < d->axisCount(); ++j) {

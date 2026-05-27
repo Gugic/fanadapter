@@ -131,7 +131,7 @@ Send single-line JSON objects over the USB CDC serial port. Responses and events
 | Request Shape | Response / Effect |
 |---|---|
 | `{"cmd":"version"}` | `{"fw":"fanadapter","ver":"0.6.0","protocol":5,"max_bindings_per_channel":4}` |
-| `{"cmd":"list_devices"}` | Returns a list of active USB host devices, showing VID, PID, and discovered button/axis counts. `has_hat` / `has_keyboard` flip to `true` once the device reports any Hat Switch or Keyboard usage. |
+| `{"cmd":"list_devices"}` | Returns a list of active USB host devices, showing VID, PID, the `manufacturer` / `product` USB string descriptors (empty string when the device reports none), and discovered button/axis counts. `has_hat` / `has_keyboard` flip to `true` once the device reports any Hat Switch or Keyboard usage. |
 | `{"cmd":"get_config"}` | Returns the full `Config` JSON object (bindings, deadzones, gear DAC configurations, and `gearMode` = `"hold"` or `"latch"`). Each binding's `type` is one of `"none"`, `"button"`, `"axis"`, `"hat"`, `"key"`. For `"hat"`, `index` is the strict direction (`0`=N, `1`=NE, `2`=E, `3`=SE, `4`=S, `5`=SW, `6`=W, `7`=NW); for `"key"`, `index` is the HID Keyboard/Keypad scancode. |
 | `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Sets a specific binding slot. Channel keys: `gear_R`, `gear_1`..`gear_7`, `gear_N`, `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, `clutch`. Binding matches the `InputBinding` shape, including the `"hat"` and `"key"` types. |
 | `{"cmd":"set_gear_dac","channel":"gear_3","x":2163,"y":3430}` | Calibrates the X/Y PWM DAC targets for a specific gear. `gear_N` sets the Neutral column target. |
@@ -149,7 +149,7 @@ Send single-line JSON objects over the USB CDC serial port. Responses and events
 
 ### Asynchronous Events
 
-* **`{"event":"device_attached","slot":0,"vid":1133,"pid":49771,"axis_count":...,"button_count":...,"has_hat":false,"has_keyboard":false}`** — Sent when a USB device is enumerated.
+* **`{"event":"device_attached","slot":0,"vid":1133,"pid":49771,"manufacturer":"Logitech","product":"G29 Driving Force","axis_count":...,"button_count":...,"has_hat":false,"has_keyboard":false}`** — Sent when a USB device is enumerated. `manufacturer` / `product` are the device's USB string descriptors (sanitised to printable ASCII; empty string when the device reports none).
 * **`{"event":"device_detached","slot":0}`** — Sent when a device is disconnected.
 * **`{"event":"live","slot":0,"buttons":0,"axes":[32768,...],"hat":-1,"keys":[...]}`** — Streamed input values (when `live_inputs` is active). `hat` is omitted for devices without a hat, `-1` while released, `0..7` for an active direction; `keys` is omitted for non-keyboards, otherwise a 6-element zero-padded array of pressed HID scancodes.
 * **`{"event":"outputs","gear":"gear_N","shift_up":false,...}`** — Streamed virtual channel outputs (when `live_outputs` is active).
