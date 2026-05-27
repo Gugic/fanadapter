@@ -123,6 +123,8 @@ static void cmdListDevices() {
     row["connected"]    = d->connected();
     row["vid"]          = d->vid();
     row["pid"]          = d->pid();
+    row["manufacturer"] = d->manufacturerName();
+    row["product"]      = d->productName();
     row["axis_count"]   = d->axisCount();
     row["button_count"] = d->buttonCount();
     row["has_hat"]      = d->hasHat();
@@ -336,6 +338,8 @@ static void emitDeviceAttached(uint8_t slot, GenericJoystickHID* d) {
   doc["slot"]         = slot;
   doc["vid"]          = d->vid();
   doc["pid"]          = d->pid();
+  doc["manufacturer"] = d->manufacturerName();
+  doc["product"]      = d->productName();
   doc["axis_count"]   = d->axisCount();
   doc["button_count"] = d->buttonCount();
   doc["has_hat"]      = d->hasHat();

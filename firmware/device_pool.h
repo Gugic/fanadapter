@@ -17,6 +17,10 @@
 
 #define DEVICE_POOL_SIZE 8
 #define DEVICE_MAX_AXES  8
+// USB string descriptors (manufacturer/product) are down-converted to ASCII
+// by USBHost_t36 and share a single 50-byte per-device buffer across all three
+// strings, so each individual string fits comfortably here.
+#define DEVICE_STR_LEN   48
 
 class GenericJoystickHID : public USBHIDInput {
 public:
@@ -68,6 +72,11 @@ public:
   uint8_t  axisCount()   const { return m_axisCount; }
   uint8_t  hubPort()     const { return m_hubPort; }
 
+  // USB string descriptors captured at claim time (sanitised to printable
+  // ASCII, never null). Empty string when the device reports no such string.
+  const char* manufacturerName() const { return m_manufacturer; }
+  const char* productName()      const { return m_product; }
+
   // Monotonic counter incremented on every input report that changed any
   // observable state — lets the protocol layer detect "something happened"
   // for the live_inputs stream without per-field comparisons.
@@ -77,6 +86,8 @@ private:
   bool      m_claimed     = false;
   uint16_t  m_vid         = 0;
   uint16_t  m_pid         = 0;
+  char      m_manufacturer[DEVICE_STR_LEN] = {0};
+  char      m_product[DEVICE_STR_LEN]      = {0};
   uint32_t  m_buttons     = 0;
   uint16_t  m_axes[DEVICE_MAX_AXES] = {0};
   uint8_t   m_hat         = HAT_RELEASED;

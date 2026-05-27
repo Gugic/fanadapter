@@ -13,6 +13,22 @@ struct LoggedCollection {
 static LoggedCollection g_loggedCollections[MAX_LOGGED_COLLECTIONS];
 static volatile uint8_t g_loggedCollectionsCount = 0;
 
+// Copy a USBHost_t36 device string into a fixed buffer, keeping only printable
+// ASCII (the lib's UTF-16→ASCII pass can leave stray high bytes that would make
+// the protocol's JSON invalid UTF-8) and right-trimming trailing spaces. Always
+// null-terminates; `src == nullptr` yields an empty string.
+static void copyDeviceString(char* dst, uint8_t dstLen, const uint8_t* src) {
+  uint8_t n = 0;
+  if (src) {
+    for (; n < (uint8_t)(dstLen - 1) && src[n]; ++n) {
+      const uint8_t c = src[n];
+      dst[n] = (c >= 0x20 && c <= 0x7E) ? (char)c : '?';
+    }
+  }
+  dst[n] = 0;
+  while (n > 0 && dst[n - 1] == ' ') dst[--n] = 0;
+}
+
 hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
                                                 Device_t* dev,
                                                 uint32_t  topusage) {
@@ -45,6 +61,12 @@ hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
   m_claimed     = true;
   m_vid         = dev->idVendor;
   m_pid         = dev->idProduct;
+  // Bind the base-class device pointer so the inherited manufacturer()/
+  // product() accessors resolve, then snapshot the strings. They're already
+  // populated at claim time — enumeration reads them before claim_drivers().
+  mydevice      = dev;
+  copyDeviceString(m_manufacturer, DEVICE_STR_LEN, manufacturer());
+  copyDeviceString(m_product,      DEVICE_STR_LEN, product());
   m_buttons     = 0;
   memset(m_axes, 0, sizeof(m_axes));
   m_hat         = HAT_RELEASED;
@@ -60,7 +82,11 @@ hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
   Serial.print(dev->idVendor, HEX);
   Serial.print("  PID=0x");
   Serial.print(dev->idProduct, HEX);
-  Serial.print("  hub_port=");
+  Serial.print("  \"");
+  Serial.print(m_manufacturer);
+  if (m_manufacturer[0] && m_product[0]) Serial.print(' ');
+  Serial.print(m_product);
+  Serial.print("\"  hub_port=");
   Serial.println(dev->hub_port);
 
   return CLAIM_REPORT;
@@ -73,13 +99,14 @@ void GenericJoystickHID::disconnect_collection(Device_t* /*dev*/) {
   Serial.println(m_pid, HEX);
 
   m_claimed     = false;
+  mydevice      = NULL;  // device's strbuf is freed on disconnect — don't read it
   m_buttons     = 0;
   memset(m_axes, 0, sizeof(m_axes));
   m_hat         = HAT_RELEASED;
   memset(m_keys, 0, sizeof(m_keys));
-  // Keep m_vid/m_pid/m_hasHat/m_hasKeyboard/m_buttonCount/m_axisCount
-  // around briefly so any final log lines about this slot still make
-  // sense — the next claim_collection overwrites them.
+  // Keep m_vid/m_pid/m_manufacturer/m_product/m_hasHat/m_hasKeyboard/
+  // m_buttonCount/m_axisCount around briefly so any final log lines about
+  // this slot still make sense — the next claim_collection overwrites them.
   m_changeSeq++;
 }
 
