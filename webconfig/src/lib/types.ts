@@ -1,7 +1,55 @@
 // Mirrors the firmware Config schema (mapping.h). Field names match the
 // JSON encoding emitted by the firmware's protocol.cpp.
 
-export type InputType = "none" | "button" | "axis";
+export type InputType = "none" | "button" | "axis" | "hat" | "key";
+
+// Hat direction labels indexed by the HID Usage Tables convention:
+// 0=N, 1=NE, 2=E, 3=SE, 4=S, 5=SW, 6=W, 7=NW. A binding with type "hat"
+// uses `index` to select which direction it matches.
+export const HAT_DIRECTION_LABELS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
+
+// Pretty-print a HID Keyboard/Keypad scancode (USB HID Usage Tables §10).
+// Returns "Key 0x<hex>" for codes we don't have a friendly name for.
+export function keyName(scancode: number): string {
+  if (scancode >= 0x04 && scancode <= 0x1D) return String.fromCharCode(0x41 + (scancode - 0x04)); // A..Z
+  if (scancode >= 0x1E && scancode <= 0x26) return String.fromCharCode(0x31 + (scancode - 0x1E)); // 1..9
+  if (scancode === 0x27) return "0";
+  if (scancode >= 0x3A && scancode <= 0x45) return `F${scancode - 0x3A + 1}`;                     // F1..F12
+  if (scancode >= 0x59 && scancode <= 0x61) return `Kp${scancode - 0x59 + 1}`;                    // Keypad 1..9
+  if (scancode === 0x62) return "Kp0";
+  switch (scancode) {
+    case 0x28: return "Enter";
+    case 0x29: return "Esc";
+    case 0x2A: return "Backspace";
+    case 0x2B: return "Tab";
+    case 0x2C: return "Space";
+    case 0x2D: return "-";
+    case 0x2E: return "=";
+    case 0x2F: return "[";
+    case 0x30: return "]";
+    case 0x31: return "\\";
+    case 0x33: return ";";
+    case 0x34: return "'";
+    case 0x35: return "`";
+    case 0x36: return ",";
+    case 0x37: return ".";
+    case 0x38: return "/";
+    case 0x39: return "CapsLock";
+    case 0x4F: return "→";
+    case 0x50: return "←";
+    case 0x51: return "↓";
+    case 0x52: return "↑";
+    case 0xE0: return "LCtrl";
+    case 0xE1: return "LShift";
+    case 0xE2: return "LAlt";
+    case 0xE3: return "LGUI";
+    case 0xE4: return "RCtrl";
+    case 0xE5: return "RShift";
+    case 0xE6: return "RAlt";
+    case 0xE7: return "RGUI";
+  }
+  return `Key 0x${scancode.toString(16).toUpperCase().padStart(2, "0")}`;
+}
 
 export interface InputBinding {
   vid: number;
@@ -30,11 +78,18 @@ export type GearKey =
 export const MAX_BINDINGS_PER_CHANNEL = 4;
 export type ChannelBindings = InputBinding[]; // length === MAX_BINDINGS_PER_CHANNEL
 
+// H-pattern shifter mode (firmware ≥ 0.6.0 / config v3):
+//   "hold"  — gear engaged only while binding is active (real H-shifter).
+//   "latch" — rising-edge switches gear, stays until next edge moves it
+//             (keyboard / gamepad friendly).
+export type GearMode = "hold" | "latch";
+
 export interface Config {
   version: number;
   pulseMs: number;
+  gearMode?: GearMode;
   max_bindings_per_channel?: number;
-  gear: Record<Exclude<GearKey, "gear_N">, ChannelBindings>;
+  gear: Record<GearKey, ChannelBindings>;
   gearOut: Record<GearKey, GearDac>;
   shift_up: ChannelBindings;
   shift_down: ChannelBindings;
@@ -56,12 +111,20 @@ export interface DeviceSlot {
   pid: number;
   axis_count: number;
   button_count: number;
+  has_hat?: boolean;
+  has_keyboard?: boolean;
 }
 
 export interface LiveSlot {
   slot: number;
   buttons: number;
   axes: number[];
+  // Hat Switch / D-pad direction. 0..7 = active direction, null = released,
+  // undefined = device has no hat reporting at all.
+  hat?: number | null;
+  // Currently-pressed keyboard scancodes. Up to MAX_KEYS_PRESSED (6) entries;
+  // empty slots are 0. undefined if device isn't a keyboard.
+  keys?: number[];
 }
 
 export interface OutputsEvent {
@@ -119,6 +182,7 @@ export const CHANNELS: ChannelInfo[] = [
   { key: "gear_5",     label: "5th",         group: "shifter",    preferred: "button" },
   { key: "gear_6",     label: "6th",         group: "shifter",    preferred: "button" },
   { key: "gear_7",     label: "7th",         group: "shifter",    preferred: "button" },
+  { key: "gear_N",     label: "Neutral",     group: "shifter",    preferred: "button" },
   { key: "shift_up",   label: "Shift Up",    group: "sequential", preferred: "button" },
   { key: "shift_down", label: "Shift Down",  group: "sequential", preferred: "button" },
   { key: "handbrake",  label: "Handbrake",   group: "handbrake",  preferred: "axis" },
@@ -138,10 +202,9 @@ export const GEAR_KEYS: GearKey[] = [
 // shape (firmware v0.2.0) and wraps it as a 1-element array so the UI keeps
 // rendering when the Teensy hasn't been reflashed yet.
 export function getChannelBindings(config: Config, key: ChannelKey): ChannelBindings {
-  if (key === "gear_N") return [];
   let raw: unknown;
   if (key.startsWith("gear_")) {
-    raw = config.gear?.[key as Exclude<GearKey, "gear_N">];
+    raw = config.gear?.[key as GearKey];
   } else {
     raw = config[key as keyof Config];
   }

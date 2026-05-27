@@ -15,9 +15,9 @@ const TEENSY_VID = 0x16c0;
 
 export type ProtocolEvent =
   | { type: "log"; line: string }
-  | { type: "device_attached"; slot: number; vid: number; pid: number; axis_count: number; button_count: number }
+  | { type: "device_attached"; slot: number; vid: number; pid: number; axis_count: number; button_count: number; has_hat?: boolean; has_keyboard?: boolean }
   | { type: "device_detached"; slot: number }
-  | { type: "live"; slot: number; buttons: number; axes: number[] }
+  | { type: "live"; slot: number; buttons: number; axes: number[]; hat?: number | null; keys?: number[] }
   | { type: "outputs"; outputs: OutputsEvent };
 
 export type EventListener = (event: ProtocolEvent) => void;
@@ -176,19 +176,39 @@ export class SerialClient {
           pid: msg.pid as number,
           axis_count: msg.axis_count as number,
           button_count: msg.button_count as number,
+          has_hat: msg.has_hat as boolean | undefined,
+          has_keyboard: msg.has_keyboard as boolean | undefined,
         });
         break;
       case "device_detached":
         this.emit({ type: "device_detached", slot: msg.slot as number });
         break;
-      case "live":
+      case "live": {
+        // Wire shape (firmware ≥ 0.4.0): hat field omitted for devices
+        // with no hat; -1 = released; 0..7 = direction.
+        const rawHat = msg.hat;
+        let hat: number | null | undefined;
+        if (typeof rawHat !== "number") {
+          hat = undefined;
+        } else if (rawHat >= 0 && rawHat <= 7) {
+          hat = rawHat;
+        } else {
+          hat = null;
+        }
+        // Wire shape (firmware ≥ 0.5.0): keys is a zero-padded array of
+        // HID scancodes; field omitted for non-keyboard devices.
+        const rawKeys = msg.keys;
+        const keys = Array.isArray(rawKeys) ? (rawKeys as number[]) : undefined;
         this.emit({
           type: "live",
           slot: msg.slot as number,
           buttons: msg.buttons as number,
           axes: (msg.axes as number[]) ?? [],
+          hat,
+          keys,
         });
         break;
+      }
       case "outputs":
         this.emit({ type: "outputs", outputs: msg as unknown as OutputsEvent });
         break;
@@ -253,6 +273,10 @@ export class SerialClient {
 
   async setPulseMs(value: number): Promise<void> {
     await this.send({ cmd: "set_pulse_ms", value });
+  }
+
+  async setGearMode(value: "hold" | "latch"): Promise<void> {
+    await this.send({ cmd: "set_gear_mode", value });
   }
 
   async saveConfig(): Promise<void> {

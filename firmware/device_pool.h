@@ -24,7 +24,19 @@ public:
 
   static constexpr uint32_t TOPUSAGE_JOYSTICK  = 0x10004;
   static constexpr uint32_t TOPUSAGE_GAMEPAD   = 0x10005;
+  static constexpr uint32_t TOPUSAGE_KEYBOARD  = 0x10006;
   static constexpr uint32_t TOPUSAGE_MULTIAXIS = 0x10008;
+
+  // Hat Switch value when the D-pad is released / centred. Real directions
+  // are 0..7 (N, NE, E, SE, S, SW, W, NW — clockwise from North per HID
+  // Usage Tables).
+  static constexpr uint8_t HAT_RELEASED = 0xFF;
+
+  // Standard HID boot-keyboard array holds up to 6 simultaneously pressed
+  // keys; we use the same size for storage. Modifier keys (LCtrl/LShift/
+  // etc, scancodes 0xE0..0xE7) come through the same code path here, so
+  // they get a slot in the array just like printable keys.
+  static constexpr uint8_t MAX_KEYS_PRESSED = 6;
 
   // USBHIDInput overrides
   hidclaim_t claim_collection(USBHIDParser* driver, Device_t* dev, uint32_t topusage) override;
@@ -41,6 +53,17 @@ public:
   uint16_t pid()         const { return m_pid; }
   uint32_t buttons()     const { return m_buttons; }
   uint16_t axis(uint8_t i) const { return (i < DEVICE_MAX_AXES) ? m_axes[i] : 0; }
+  uint8_t  hat()         const { return m_hat; }
+  bool     hasHat()      const { return m_hasHat; }
+  uint8_t  keyAt(uint8_t i) const { return (i < MAX_KEYS_PRESSED) ? m_keys[i] : 0; }
+  bool     hasKeyboard() const { return m_hasKeyboard; }
+  bool     isKeyPressed(uint8_t scancode) const {
+    if (!scancode) return false;
+    for (uint8_t i = 0; i < MAX_KEYS_PRESSED; ++i) {
+      if (m_keys[i] == scancode) return true;
+    }
+    return false;
+  }
   uint8_t  buttonCount() const { return m_buttonCount; }
   uint8_t  axisCount()   const { return m_axisCount; }
   uint8_t  hubPort()     const { return m_hubPort; }
@@ -56,6 +79,10 @@ private:
   uint16_t  m_pid         = 0;
   uint32_t  m_buttons     = 0;
   uint16_t  m_axes[DEVICE_MAX_AXES] = {0};
+  uint8_t   m_hat         = HAT_RELEASED;
+  bool      m_hasHat      = false;
+  uint8_t   m_keys[MAX_KEYS_PRESSED] = {0};
+  bool      m_hasKeyboard = false;
   uint8_t   m_buttonCount = 0;
   uint8_t   m_axisCount   = 0;
   uint8_t   m_hubPort     = 0;

@@ -15,8 +15,8 @@ import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { SerialClient, type ProtocolEvent } from "@/lib/serial";
 import {
-  CHANNELS, GEAR_KEYS, MAX_BINDINGS_PER_CHANNEL, NONE_BINDING,
-  firstEmptySlot, getBinding, getChannelBindings,
+  CHANNELS, GEAR_KEYS, HAT_DIRECTION_LABELS, MAX_BINDINGS_PER_CHANNEL,
+  NONE_BINDING, firstEmptySlot, getBinding, getChannelBindings, keyName,
   type ChannelBindings, type ChannelKey, type Config, type DeviceSlot,
   type GearKey, type InputBinding, type LiveSlot, type OutputsEvent,
   type VersionInfo,
@@ -35,7 +35,18 @@ function vidPid(b: { vid: number; pid: number }) {
 
 function bindingSummary(b: InputBinding): string {
   if (b.type === "none" || !b.vid) return "Unmapped";
-  const kind = b.type === "button" ? `button ${b.index}` : `axis ${b.index}`;
+  let kind: string;
+  switch (b.type) {
+    case "button": kind = `button ${b.index}`; break;
+    case "axis":   kind = `axis ${b.index}`;   break;
+    case "hat": {
+      const label = HAT_DIRECTION_LABELS[b.index] ?? `?${b.index}`;
+      kind = `D-pad ${label}`;
+      break;
+    }
+    case "key": kind = `key ${keyName(b.index)}`; break;
+    default: kind = `${b.type} ${b.index}`;
+  }
   return `${vidPid(b)} · ${kind}`;
 }
 
@@ -73,6 +84,38 @@ function Bar({
   );
 }
 
+// Tiny 3x3 D-pad / hat indicator. Active direction cell glows. Diagonals
+// (1/3/5/7) light up the diagonal cell, NOT the two adjacent cardinals,
+// matching the strict-direction semantics of the firmware's INPUT_HAT.
+function HatIndicator({ value }: { value: number | null }) {
+  // Cell index → hat direction it represents, in 3x3 grid row-major.
+  // Cells: 0  1  2     (NW N  NE)
+  //        3  4  5     (W  -- E )
+  //        6  7  8     (SW S  SE)
+  const cellToDirection: (number | null)[] = [7, 0, 1, 6, null, 2, 5, 4, 3];
+  return (
+    <div className="mt-1.5 grid w-fit grid-cols-3 gap-0.5">
+      {cellToDirection.map((dir, i) => {
+        const isCenter = dir === null;
+        const active = !isCenter && value !== null && dir === value;
+        return (
+          <div
+            key={i}
+            className={
+              "h-4 w-4 rounded-sm " +
+              (isCenter
+                ? "bg-transparent"
+                : active
+                ? "bg-primary"
+                : "bg-secondary")
+            }
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 // ------------------ Capture state ------------------
 // Three-phase capture:
 //   Phase 1 ("baseline"): 400 ms during which we sample each connected
@@ -94,6 +137,14 @@ interface SlotBaseline {
   buttons: number;
   axesMin: number[];
   axesMax: number[];
+  // Hat value at start of capture. We trigger on the first transition from
+  // baseline to any 0..7 direction. null means "released at baseline" or
+  // "device has no hat" — both behave the same for trigger purposes.
+  hat: number | null;
+  // Keyboard scancodes pressed at baseline. We trigger on the first key
+  // that wasn't already in this set (so holding a key during the baseline
+  // window doesn't accidentally bind that key).
+  keys: Set<number>;
 }
 
 interface TrackingState {
@@ -214,6 +265,8 @@ export default function App() {
               pid: ev.pid,
               axis_count: ev.axis_count,
               button_count: ev.button_count,
+              has_hat: ev.has_hat ?? false,
+              has_keyboard: ev.has_keyboard ?? false,
             };
             if (idx >= 0) next[idx] = slot;
             else next.push(slot);
@@ -235,17 +288,40 @@ export default function App() {
         case "live": {
           setLiveSlots((prev) => {
             const next = new Map(prev);
-            next.set(ev.slot, { slot: ev.slot, buttons: ev.buttons, axes: ev.axes });
+            next.set(ev.slot, {
+              slot: ev.slot,
+              buttons: ev.buttons,
+              axes: ev.axes,
+              hat: ev.hat,
+              keys: ev.keys,
+            });
             return next;
           });
           // Grow observed counts so the UI knows how many to render.
+          // `has_hat` and `has_keyboard` flip on the first live event that
+          // carries the corresponding field — they signal "this device
+          // reports a hat / a keyboard at all", independent of the value.
           setDevices((prev) =>
             prev.map((d) => {
               if (d.slot !== ev.slot) return d;
               const ac = Math.max(d.axis_count, ev.axes.length);
               const highest = ev.buttons === 0 ? 0 : 32 - Math.clz32(ev.buttons);
               const bc = Math.max(d.button_count, highest);
-              return ac === d.axis_count && bc === d.button_count ? d : { ...d, axis_count: ac, button_count: bc };
+              const hh = d.has_hat || ev.hat !== undefined;
+              const hk = d.has_keyboard || ev.keys !== undefined;
+              if (
+                ac === d.axis_count &&
+                bc === d.button_count &&
+                hh === !!d.has_hat &&
+                hk === !!d.has_keyboard
+              ) return d;
+              return {
+                ...d,
+                axis_count: ac,
+                button_count: bc,
+                has_hat: hh,
+                has_keyboard: hk,
+              };
             })
           );
           // Track per-axis peak for bar auto-scale.
@@ -318,6 +394,8 @@ export default function App() {
           buttons: live.buttons,
           axesMin: [...live.axes],
           axesMax: [...live.axes],
+          hat: live.hat ?? null,
+          keys: new Set<number>((live.keys ?? []).filter((k) => k > 0)),
         };
         b.buttons |= live.buttons;
         for (let i = 0; i < live.axes.length; i++) {
@@ -325,6 +403,15 @@ export default function App() {
           if (b.axesMax[i] === undefined) b.axesMax[i] = live.axes[i];
           if (live.axes[i] < b.axesMin[i]) b.axesMin[i] = live.axes[i];
           if (live.axes[i] > b.axesMax[i]) b.axesMax[i] = live.axes[i];
+        }
+        // Remember the most-recent hat value during baseline. If the user
+        // is holding a direction at baseline (rare but possible), we'd
+        // need them to release + press a different one to trigger.
+        if (live.hat !== undefined) b.hat = live.hat;
+        // Any keys held during baseline get whitelisted so we don't latch
+        // them when the user lifts and re-presses to confirm the bind.
+        if (live.keys) {
+          for (const k of live.keys) if (k > 0) b.keys.add(k);
         }
         baselineRef.current.set(slot, b);
       }
@@ -362,8 +449,24 @@ export default function App() {
     for (const [slot, live] of liveSlots) {
       const dev = devices.find((d) => d.slot === slot);
       if (!dev || !dev.connected) continue;
-      const b = baselineRef.current.get(slot);
-      if (!b) continue;
+      let b = baselineRef.current.get(slot);
+      if (!b) {
+        // Device stayed silent through the whole baseline window — keyboards
+        // and jitter-free gamepads emit nothing until touched, so they never
+        // got sampled and aren't in baselineRef. Seed an at-rest baseline
+        // now (no buttons / keys, hat released, axes at their current
+        // resting values) so this first input registers as new instead of
+        // being skipped. Without this, the first Listen silently ignores the
+        // device until it times out.
+        b = {
+          buttons: 0,
+          axesMin: [...live.axes],
+          axesMax: [...live.axes],
+          hat: null,
+          keys: new Set<number>(),
+        };
+        baselineRef.current.set(slot, b);
+      }
 
       // New button bit (a bit that wasn't held during baseline)
       const newBits = (live.buttons | 0) & ~(b.buttons | 0);
@@ -379,6 +482,45 @@ export default function App() {
         });
         setCapturing(null);
         return;
+      }
+
+      // Hat direction change — only fire on a transition INTO an active
+      // direction (0..7). Returning to "released" doesn't count.
+      if (
+        live.hat !== undefined &&
+        live.hat !== null &&
+        live.hat !== b.hat &&
+        live.hat >= 0 &&
+        live.hat <= 7
+      ) {
+        void applyBinding(capturing.channel, capturing.bindingSlot, {
+          ...NONE_BINDING,
+          vid: dev.vid,
+          pid: dev.pid,
+          type: "hat",
+          index: live.hat,
+        });
+        setCapturing(null);
+        return;
+      }
+
+      // New keyboard scancode — first key that wasn't held during the
+      // baseline window. Modifiers (0xE0..0xE7) are valid scancodes too,
+      // so binding LShift / RAlt / etc just works.
+      if (live.keys) {
+        for (const code of live.keys) {
+          if (!code) continue;
+          if (b.keys.has(code)) continue;
+          void applyBinding(capturing.channel, capturing.bindingSlot, {
+            ...NONE_BINDING,
+            vid: dev.vid,
+            pid: dev.pid,
+            type: "key",
+            index: code,
+          });
+          setCapturing(null);
+          return;
+        }
       }
 
       // Axis movement well outside baseline range — latch the axis and
@@ -462,7 +604,6 @@ export default function App() {
   function setConfigBinding(channel: ChannelKey, slot: number, b: InputBinding) {
     setConfig((prev) => {
       if (!prev) return prev;
-      if (channel === "gear_N") return prev;
       const current = getChannelBindings(prev, channel);
       const next = current.slice();
       next[slot] = b;
@@ -526,6 +667,14 @@ export default function App() {
     }
   }
 
+  async function pushGearMode(mode: "hold" | "latch") {
+    setConfig((prev) => (prev ? { ...prev, gearMode: mode } : prev));
+    setDirty(true);
+    try { await client.setGearMode(mode); } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   function beginCapture(channel: ChannelKey, bindingSlot: number) {
     // Seed the baseline from the current live snapshot so a fast first
     // sample is still useful even before phase 1's window has elapsed.
@@ -535,6 +684,8 @@ export default function App() {
         buttons: live.buttons,
         axesMin: [...live.axes],
         axesMax: [...live.axes],
+        hat: live.hat ?? null,
+        keys: new Set((live.keys ?? []).filter((k) => k > 0)),
       });
     }
     baselineRef.current = baseline;
@@ -674,6 +825,7 @@ export default function App() {
                   onCapture={beginCapture}
                   onUnbind={unbind}
                   onUpdateField={updateBindingField}
+                  onSetGearMode={pushGearMode}
                 />
               </TabsContent>
               <TabsContent value="outputs">
@@ -937,7 +1089,7 @@ function DeviceCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {buttonCount === 0 && axisCount === 0 ? (
+        {buttonCount === 0 && axisCount === 0 && !dev.has_hat ? (
           <p className="text-xs text-muted-foreground">
             No input seen yet — press a button or move an axis to populate.
           </p>
@@ -961,6 +1113,42 @@ function DeviceCard({
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {dev.has_hat && (
+          <div>
+            <Label className="text-xs text-muted-foreground">
+              D-pad
+              {live?.hat != null && (
+                <span className="ml-2 font-mono text-foreground">
+                  {HAT_DIRECTION_LABELS[live.hat] ?? "?"}
+                </span>
+              )}
+            </Label>
+            <HatIndicator value={live?.hat ?? null} />
+          </div>
+        )}
+
+        {dev.has_keyboard && (
+          <div>
+            <Label className="text-xs text-muted-foreground">keyboard</Label>
+            <div className="mt-1.5 flex flex-wrap gap-1 min-h-[1.5rem]">
+              {(live?.keys ?? []).filter((k) => k > 0).length === 0 ? (
+                <span className="text-[10px] text-muted-foreground italic">
+                  (no key pressed)
+                </span>
+              ) : (
+                (live!.keys!).filter((k) => k > 0).map((code) => (
+                  <span
+                    key={code}
+                    className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-mono text-primary-foreground"
+                  >
+                    {keyName(code)}
+                  </span>
+                ))
+              )}
             </div>
           </div>
         )}
@@ -1003,6 +1191,7 @@ function MappingsView({
   onCapture,
   onUnbind,
   onUpdateField,
+  onSetGearMode,
 }: {
   config: Config;
   devices: DeviceSlot[];
@@ -1014,12 +1203,13 @@ function MappingsView({
   onUpdateField: <K extends keyof InputBinding>(
     c: ChannelKey, slot: number, k: K, v: InputBinding[K]
   ) => Promise<void>;
+  onSetGearMode: (mode: "hold" | "latch") => void;
 }) {
   const groups: { title: string; keys: ChannelKey[]; description?: string }[] = [
     {
       title: "H-Pattern Shifter",
-      description: "Pick one input per gear (or several — they OR together). Multiple gears active simultaneously = neutral (defensive).",
-      keys: ["gear_R", "gear_1", "gear_2", "gear_3", "gear_4", "gear_5", "gear_6", "gear_7"],
+      description: "Bind one or several inputs per gear (they OR together). In Hold mode the gear is active only while the input is held; in Latch mode the gear stays engaged until another gear / Neutral fires.",
+      keys: ["gear_R", "gear_1", "gear_2", "gear_3", "gear_4", "gear_5", "gear_6", "gear_7", "gear_N"],
     },
     {
       title: "Sequential Shifter",
@@ -1041,7 +1231,15 @@ function MappingsView({
       {groups.map((g) => (
         <Card key={g.title}>
           <CardHeader>
-            <CardTitle>{g.title}</CardTitle>
+            <CardTitle className="flex items-center justify-between gap-3">
+              <span>{g.title}</span>
+              {g.title === "H-Pattern Shifter" && (
+                <GearModeToggle
+                  value={(config.gearMode as "hold" | "latch") ?? "hold"}
+                  onChange={onSetGearMode}
+                />
+              )}
+            </CardTitle>
             {g.description && <CardDescription>{g.description}</CardDescription>}
           </CardHeader>
           <CardContent className="space-y-3">
@@ -1063,6 +1261,40 @@ function MappingsView({
             ))}
           </CardContent>
         </Card>
+      ))}
+    </div>
+  );
+}
+
+function GearModeToggle({
+  value,
+  onChange,
+}: {
+  value: "hold" | "latch";
+  onChange: (v: "hold" | "latch") => void;
+}) {
+  // Tiny two-position toggle. Compact enough to live in the card title row.
+  return (
+    <div className="flex shrink-0 items-center gap-1 rounded-md border bg-muted/40 p-0.5 text-xs">
+      {(["hold", "latch"] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => onChange(m)}
+          className={
+            "rounded px-2 py-0.5 font-mono transition-colors " +
+            (value === m
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground")
+          }
+          title={
+            m === "hold"
+              ? "Gear active only while binding is held (real H-shifter behaviour)"
+              : "Rising-edge switches gear, stays until another gear / Neutral fires (keyboard / gamepad friendly)"
+          }
+        >
+          {m}
+        </button>
       ))}
     </div>
   );

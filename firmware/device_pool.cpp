@@ -36,6 +36,7 @@ hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
 
   if (topusage != TOPUSAGE_JOYSTICK &&
       topusage != TOPUSAGE_GAMEPAD &&
+      topusage != TOPUSAGE_KEYBOARD &&
       topusage != TOPUSAGE_MULTIAXIS) {
     return CLAIM_NO;
   }
@@ -46,6 +47,10 @@ hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
   m_pid         = dev->idProduct;
   m_buttons     = 0;
   memset(m_axes, 0, sizeof(m_axes));
+  m_hat         = HAT_RELEASED;
+  m_hasHat      = false;
+  memset(m_keys, 0, sizeof(m_keys));
+  m_hasKeyboard = false;
   m_buttonCount = 0;
   m_axisCount   = 0;
   m_hubPort     = dev->hub_port;
@@ -70,9 +75,11 @@ void GenericJoystickHID::disconnect_collection(Device_t* /*dev*/) {
   m_claimed     = false;
   m_buttons     = 0;
   memset(m_axes, 0, sizeof(m_axes));
-  // Keep m_vid/m_pid/m_buttonCount/m_axisCount around briefly so any final
-  // log lines about this slot still make sense — the next claim_collection
-  // overwrites them.
+  m_hat         = HAT_RELEASED;
+  memset(m_keys, 0, sizeof(m_keys));
+  // Keep m_vid/m_pid/m_hasHat/m_hasKeyboard/m_buttonCount/m_axisCount
+  // around briefly so any final log lines about this slot still make
+  // sense — the next claim_collection overwrites them.
   m_changeSeq++;
 }
 
@@ -90,6 +97,33 @@ void GenericJoystickHID::hid_input_data(uint32_t usage, int32_t value) {
       m_changeSeq++;
     }
     if (bit + 1 > m_buttonCount) m_buttonCount = bit + 1;
+  } else if (page == 0x01 && id == 0x39) {
+    // Hat Switch — first-class direction value, NOT four virtual buttons.
+    // The HID spec uses 0..7 walking clockwise from North (N, NE, E, SE,
+    // S, SW, W, NW); 8 / 15 / -1 / out-of-range all mean "released".
+    // The mapping layer (`INPUT_HAT` bindings) matches strict direction —
+    // diagonals only fire bindings explicitly bound to that diagonal.
+    const uint8_t newHat = (value >= 0 && value <= 7) ? (uint8_t)value : HAT_RELEASED;
+    // Diagnostic: log when the raw value or decoded direction transitions.
+    // Only when WebSerial is open — otherwise these would queue into the
+    // CDC TX buffer and eventually stall the main loop. Goes silent once
+    // the hat sits at a stable value.
+    if (Serial && (m_hat != newHat || !m_hasHat)) {
+      Serial.print("[HID/Hat] VID=0x");
+      Serial.print(m_vid, HEX);
+      Serial.print(" PID=0x");
+      Serial.print(m_pid, HEX);
+      Serial.print(" raw=");
+      Serial.print(value);
+      Serial.print(" decoded=");
+      if (newHat == HAT_RELEASED) Serial.println("RELEASED");
+      else                        Serial.println((int)newHat);
+    }
+    m_hasHat = true;
+    if (m_hat != newHat) {
+      m_hat = newHat;
+      m_changeSeq++;
+    }
   } else if (page == 0x01) {
     // Generic Desktop — axes are usage 0x30..0x37 (X, Y, Z, Rx, Ry, Rz,
     // Slider, Dial). Anything outside that range we ignore here.
@@ -101,6 +135,37 @@ void GenericJoystickHID::hid_input_data(uint32_t usage, int32_t value) {
         m_changeSeq++;
       }
       if (axisIdx + 1 > m_axisCount) m_axisCount = axisIdx + 1;
+    }
+  } else if (page == 0x07) {
+    // Keyboard/Keypad usage page. `id` is the HID scancode (0x04 = A,
+    // 0x05 = B, …, 0x1E..0x27 = 1..0, 0x28 = Enter, … 0xE0..0xE7 =
+    // modifiers). `value` is 1 on press, 0 on release. USBHIDParser
+    // synthesises one event per usage even for array-typed report items
+    // (so we don't need to track the 6-slot key array directly).
+    m_hasKeyboard = true;
+    const uint8_t code = (uint8_t)(id & 0xFF);
+    if (!code) return;  // 0x00 = "no key" filler, never a real scancode
+    if (value) {
+      // Press — append to the first empty slot if not already tracked.
+      bool present = false;
+      int8_t firstEmpty = -1;
+      for (uint8_t i = 0; i < MAX_KEYS_PRESSED; ++i) {
+        if (m_keys[i] == code) { present = true; break; }
+        if (firstEmpty < 0 && m_keys[i] == 0) firstEmpty = i;
+      }
+      if (!present && firstEmpty >= 0) {
+        m_keys[firstEmpty] = code;
+        m_changeSeq++;
+      }
+    } else {
+      // Release — clear the slot holding this scancode.
+      for (uint8_t i = 0; i < MAX_KEYS_PRESSED; ++i) {
+        if (m_keys[i] == code) {
+          m_keys[i] = 0;
+          m_changeSeq++;
+          break;
+        }
+      }
     }
   }
   // Vendor-defined pages and unknown usages: ignored. The SP Pro pedals'
