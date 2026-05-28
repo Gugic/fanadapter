@@ -45,7 +45,9 @@ export default tseslint.config(
         },
       ],
       '@typescript-eslint/no-confusing-void-expression': 'off',
-      '@typescript-eslint/no-non-null-assertion': 'off',
+      // no-non-null-assertion: left at the default (error). Non-null
+      // assertions hide real "undefined" bugs — fix the call site with a
+      // guard or fallback instead.
       '@typescript-eslint/no-deprecated': 'off',
       '@typescript-eslint/no-empty-function': 'off',
       '@typescript-eslint/prefer-for-of': 'off',
@@ -57,7 +59,9 @@ export default tseslint.config(
       ],
       '@typescript-eslint/use-unknown-in-catch-callback-variable': 'off',
       '@typescript-eslint/prefer-nullish-coalescing': 'off',
-      '@typescript-eslint/no-unnecessary-condition': 'off',
+      // no-unnecessary-condition: left at the default (error). Catches dead
+      // conditionals after type narrowing — flip back to 'off' here if a
+      // real-world false positive turns out to be too noisy to fix.
     },
   },
   eslintConfigPrettier,

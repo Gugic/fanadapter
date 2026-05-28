@@ -1315,20 +1315,24 @@ function DeviceCard({
           <div>
             <Label className="text-xs text-muted-foreground">keyboard</Label>
             <div className="mt-1.5 flex flex-wrap gap-1 min-h-[1.5rem]">
-              {(live?.keys ?? []).filter((k) => k > 0).length === 0 ? (
-                <span className="text-[10px] text-muted-foreground italic">(no key pressed)</span>
-              ) : (
-                live!
-                  .keys!.filter((k) => k > 0)
-                  .map((code) => (
-                    <span
-                      key={code}
-                      className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-mono text-primary-foreground"
-                    >
-                      {keyName(code)}
+              {(() => {
+                const pressed = (live?.keys ?? []).filter((k) => k > 0)
+                if (pressed.length === 0) {
+                  return (
+                    <span className="text-[10px] text-muted-foreground italic">
+                      (no key pressed)
                     </span>
-                  ))
-              )}
+                  )
+                }
+                return pressed.map((code) => (
+                  <span
+                    key={code}
+                    className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-mono text-primary-foreground"
+                  >
+                    {keyName(code)}
+                  </span>
+                ))
+              })()}
             </div>
           </div>
         )}
@@ -1449,7 +1453,11 @@ function MappingsView({
                         g.title,
                         g.keys.map((k) => ({
                           channel: k,
-                          label: CHANNELS.find((c) => c.key === k)!.label,
+                          // Fallback to the raw channel key if CHANNELS is
+                          // missing an entry (shouldn't happen given the
+                          // ChannelKey union, but avoids a runtime crash
+                          // and a non-null assertion).
+                          label: CHANNELS.find((c) => c.key === k)?.label ?? k,
                         })),
                       )
                     }
@@ -1660,8 +1668,10 @@ function ChannelEditor({
     v: InputBinding[K],
   ) => Promise<void>
 }) {
-  const ch = CHANNELS.find((c) => c.key === channel)!
-  const isAxisChannel = ch.preferred === 'axis'
+  // ch should always be found (ChannelKey is the exhaustive union over
+  // CHANNELS.key), but guard with `?.` so a missing entry can't crash the UI.
+  const ch = CHANNELS.find((c) => c.key === channel)
+  const isAxisChannel = ch?.preferred === 'axis'
 
   // Which slots are occupied vs. empty. We show all populated slots plus
   // (when below the cap) a single "+ Add another input" button targeting
@@ -1679,7 +1689,7 @@ function ChannelEditor({
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <span className="font-medium">{ch.label}</span>
+        <span className="font-medium">{ch?.label ?? channel}</span>
         <span className="font-mono text-xs text-muted-foreground">{channel}</span>
         {populated.length > 1 && (
           <Badge variant="secondary" className="text-[10px]">

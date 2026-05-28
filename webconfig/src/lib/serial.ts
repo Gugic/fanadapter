@@ -99,14 +99,24 @@ export class SerialClient {
     await port.open({ baudRate: 115200 })
     this.port = port
 
+    // WebSerial spec: writable / readable are non-null once open() resolves,
+    // but the types stay `WritableStream | null` / `ReadableStream | null`.
+    // Capture once with an explicit guard so the rest of this method can use
+    // them without non-null assertions.
+    const writable = port.writable
+    const readable = port.readable
+    if (!writable || !readable) {
+      throw new Error('serial port opened without readable/writable streams')
+    }
+
     // Outgoing: encoder → port.writable
     const encoder = new TextEncoderStream()
-    this.writableClosed = encoder.readable.pipeTo(port.writable!).catch(() => {})
+    this.writableClosed = encoder.readable.pipeTo(writable).catch(() => {})
     this.writer = encoder.writable.getWriter()
 
     // Incoming: port.readable → decoder → line splitter → reader
     const decoder = new TextDecoderStream()
-    this.readableClosed = port.readable!.pipeTo(decoder.writable).catch(() => {})
+    this.readableClosed = readable.pipeTo(decoder.writable).catch(() => {})
     const lineStream = decoder.readable.pipeThrough(lineSplitter())
     this.reader = lineStream.getReader()
 
@@ -155,7 +165,8 @@ export class SerialClient {
 
   private async readLoop(): Promise<void> {
     if (!this.reader) return
-    while (true) {
+    // `for (;;)` avoids no-unnecessary-condition flagging the literal `true`.
+    for (;;) {
       let chunk: ReadableStreamReadResult<string>
       try {
         chunk = await this.reader.read()
@@ -240,7 +251,7 @@ export class SerialClient {
           type: 'live',
           slot: msg.slot as number,
           buttons: msg.buttons as number,
-          axes: (msg.axes as number[]) ?? [],
+          axes: Array.isArray(msg.axes) ? (msg.axes as number[]) : [],
           hat,
           keys,
         })
@@ -260,7 +271,8 @@ export class SerialClient {
     cmd: Record<string, unknown>,
     timeoutMs = 3000,
   ): Promise<T> {
-    if (!this.writer) return Promise.reject(new Error('not connected'))
+    const writer = this.writer
+    if (!writer) return Promise.reject(new Error('not connected'))
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         const idx = this.pending.findIndex((p) => p.timer === timer)
@@ -272,7 +284,7 @@ export class SerialClient {
         reject,
         timer,
       })
-      this.writer!.write(JSON.stringify(cmd) + '\n').catch((err: unknown) => {
+      writer.write(JSON.stringify(cmd) + '\n').catch((err: unknown) => {
         clearTimeout(timer)
         const idx = this.pending.findIndex((p) => p.timer === timer)
         if (idx >= 0) this.pending.splice(idx, 1)
@@ -288,7 +300,9 @@ export class SerialClient {
   }
 
   async listDevices(): Promise<DeviceSlot[]> {
-    const r = await this.send<{ devices: DeviceSlot[] }>({ cmd: 'list_devices' })
+    // `devices` is typed as optional because some firmware error paths return
+    // an empty object — keep the `?? []` defensive fallback meaningful.
+    const r = await this.send<{ devices?: DeviceSlot[] }>({ cmd: 'list_devices' })
     return r.devices ?? []
   }
 
