@@ -29,6 +29,7 @@ struct SlotShadow {
   uint16_t pid           = 0;
   uint32_t lastChangeSeq = 0;
 };
+static_assert(sizeof(SlotShadow) == 12, "SlotShadow layout size mismatch");
 static SlotShadow g_slotShadow[DEVICE_POOL_SIZE];
 
 // ---------------- Helpers ----------------
@@ -75,8 +76,14 @@ static void writeChannelTo(JsonArray arr, const ChannelBindings& cb) {
 static void readBindingFrom(JsonVariantConst v, InputBinding& b) {
   if (v["vid"].is<int>())          b.vid          = v["vid"].as<uint16_t>();
   if (v["pid"].is<int>())          b.pid          = v["pid"].as<uint16_t>();
-  if (v["type"].is<const char*>())      b.type         = inputTypeFromName(v["type"]);
-  if (v["index"].is<int>())         b.index        = v["index"].as<uint8_t>();
+  if (v["type"].is<const char*>()) {
+    uint8_t t = inputTypeFromName(v["type"]);
+    if (t <= INPUT_KEY) b.type = t;
+  }
+  if (v["index"].is<int>()) {
+    int idx = v["index"].as<int>();
+    if (idx >= 0 && idx <= 255) b.index = (uint8_t)idx;
+  }
   if (v["threshold"].is<int>())    b.threshold    = v["threshold"].as<uint16_t>();
   if (v["rawMin"].is<int>())       b.rawMin       = v["rawMin"].as<uint16_t>();
   if (v["rawMax"].is<int>())       b.rawMax       = v["rawMax"].as<uint16_t>();
@@ -85,7 +92,10 @@ static void readBindingFrom(JsonVariantConst v, InputBinding& b) {
   if (v["invert"].is<bool>())           b.invert       = v["invert"].as<bool>() ? 1 : 0;
 }
 
-static void emit(const JsonDocument& doc) {
+static void emit(const JsonDocument& doc, bool isTelemetry = false) {
+  if (isTelemetry && Serial.availableForWrite() < 128) {
+    return;
+  }
   serializeJson(doc, Serial);
   Serial.println();
 }
@@ -180,6 +190,7 @@ static void cmdSetBinding(const JsonDocument& doc) {
   ChannelId ch = mappingChannelByName(chName);
   // `slot` is optional, defaults to 0 — preserves single-binding ergonomics.
   const uint8_t slot = doc["slot"].is<int>() ? doc["slot"].as<uint8_t>() : 0;
+  if (slot >= MAX_BINDINGS_PER_CHANNEL) { sendErr("invalid_slot"); return; }
   InputBinding* b = mappingBindingSlot(ch, slot);
   if (!b) { sendErr("unknown_channel_or_slot"); return; }
   JsonVariantConst bind = doc["binding"];
@@ -384,7 +395,7 @@ static void emitLiveSlot(uint8_t slot, GenericJoystickHID* d) {
       keys.add(d->keyAt(i));
     }
   }
-  emit(doc);
+  emit(doc, true);
 }
 
 static void emitLiveOutputs() {
@@ -398,7 +409,7 @@ static void emitLiveOutputs() {
   doc["brake"]      = o.brake;
   doc["clutch"]     = o.clutch;
   doc["handbrake"]  = o.handbrake;
-  emit(doc);
+  emit(doc, true);
 }
 
 // ---------------- Public API ----------------

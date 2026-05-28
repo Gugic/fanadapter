@@ -156,6 +156,7 @@ struct OutputSnapshot {
   uint16_t  clutch;
   uint16_t  handbrake;
 };
+static_assert(sizeof(OutputSnapshot) == 12, "OutputSnapshot layout size mismatch");
 
 // ---------------- Lifecycle ----------------
 

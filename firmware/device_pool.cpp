@@ -213,6 +213,7 @@ GenericJoystickHID* devicePoolSlot(uint8_t i) {
 }
 
 uint8_t devicePoolGetLoggedCollections(uint16_t* vids, uint16_t* pids, uint32_t* topusages, uint8_t maxCount) {
+  noInterrupts();
   uint8_t count = g_loggedCollectionsCount;
   if (count > maxCount) count = maxCount;
   for (uint8_t i = 0; i < count; ++i) {
@@ -227,5 +228,6 @@ uint8_t devicePoolGetLoggedCollections(uint16_t* vids, uint16_t* pids, uint32_t*
   } else {
     g_loggedCollectionsCount = 0;
   }
+  interrupts();
   return count;
 }
