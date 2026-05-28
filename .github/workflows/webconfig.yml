@@ -1,0 +1,48 @@
+name: Verify webconfig
+
+# Pull-request gate for webconfig changes — pages.yml only triggers on push to
+# main (because it deploys), so without this PRs that break format/lint/types/
+# build would only be caught post-merge on the deploy attempt.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'webconfig/**'
+      - '.github/workflows/webconfig.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'webconfig/**'
+      - '.github/workflows/webconfig.yml'
+
+concurrency:
+  group: webconfig-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webconfig
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: webconfig/package-lock.json
+
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # Fails the build on `high` or `critical` advisories only — `moderate`
+      # and `low` are surfaced as output but don't gate. Adjust if you want
+      # to be stricter.
+      - name: Audit dependencies
+        run: npm audit --audit-level=high

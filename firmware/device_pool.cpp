@@ -1,8 +1,6 @@
 #include "device_pool.h"
 
-GenericJoystickHID::GenericJoystickHID() {
-  USBHIDParser::driver_ready_for_hid_collection(this);
-}
+GenericJoystickHID::GenericJoystickHID() { USBHIDParser::driver_ready_for_hid_collection(this); }
 
 struct LoggedCollection {
   uint16_t vid;
@@ -26,12 +24,12 @@ static void copyDeviceString(char* dst, uint8_t dstLen, const uint8_t* src) {
     }
   }
   dst[n] = 0;
-  while (n > 0 && dst[n - 1] == ' ') dst[--n] = 0;
+  while (n > 0 && dst[n - 1] == ' ')
+    dst[--n] = 0;
 }
 
-hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
-                                                Device_t* dev,
-                                                uint32_t  topusage) {
+hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/, Device_t* dev,
+                                                uint32_t topusage) {
   // Log this collection if not already logged
   bool foundLog = false;
   for (uint8_t i = 0; i < g_loggedCollectionsCount; ++i) {
@@ -43,39 +41,34 @@ hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
     }
   }
   if (!foundLog && g_loggedCollectionsCount < MAX_LOGGED_COLLECTIONS) {
-    g_loggedCollections[g_loggedCollectionsCount++] = {
-      dev->idVendor,
-      dev->idProduct,
-      topusage
-    };
+    g_loggedCollections[g_loggedCollectionsCount++] = {dev->idVendor, dev->idProduct, topusage};
   }
 
-  if (topusage != TOPUSAGE_JOYSTICK &&
-      topusage != TOPUSAGE_GAMEPAD &&
-      topusage != TOPUSAGE_KEYBOARD &&
-      topusage != TOPUSAGE_MULTIAXIS) {
+  if (topusage != TOPUSAGE_JOYSTICK && topusage != TOPUSAGE_GAMEPAD &&
+      topusage != TOPUSAGE_KEYBOARD && topusage != TOPUSAGE_MULTIAXIS) {
     return CLAIM_NO;
   }
-  if (m_claimed)                     return CLAIM_NO;
+  if (m_claimed)
+    return CLAIM_NO;
 
-  m_claimed     = true;
-  m_vid         = dev->idVendor;
-  m_pid         = dev->idProduct;
+  m_claimed = true;
+  m_vid = dev->idVendor;
+  m_pid = dev->idProduct;
   // Bind the base-class device pointer so the inherited manufacturer()/
   // product() accessors resolve, then snapshot the strings. They're already
   // populated at claim time — enumeration reads them before claim_drivers().
-  mydevice      = dev;
+  mydevice = dev;
   copyDeviceString(m_manufacturer, DEVICE_STR_LEN, manufacturer());
-  copyDeviceString(m_product,      DEVICE_STR_LEN, product());
-  m_buttons     = 0;
+  copyDeviceString(m_product, DEVICE_STR_LEN, product());
+  m_buttons = 0;
   memset(m_axes, 0, sizeof(m_axes));
-  m_hat         = HAT_RELEASED;
-  m_hasHat      = false;
+  m_hat = HAT_RELEASED;
+  m_hasHat = false;
   memset(m_keys, 0, sizeof(m_keys));
   m_hasKeyboard = false;
   m_buttonCount = 0;
-  m_axisCount   = 0;
-  m_hubPort     = dev->hub_port;
+  m_axisCount = 0;
+  m_hubPort = dev->hub_port;
   m_changeSeq++;
 
   Serial.print("[USB] slot claimed  VID=0x");
@@ -84,7 +77,8 @@ hidclaim_t GenericJoystickHID::claim_collection(USBHIDParser* /*driver*/,
   Serial.print(dev->idProduct, HEX);
   Serial.print("  \"");
   Serial.print(m_manufacturer);
-  if (m_manufacturer[0] && m_product[0]) Serial.print(' ');
+  if (m_manufacturer[0] && m_product[0])
+    Serial.print(' ');
   Serial.print(m_product);
   Serial.print("\"  hub_port=");
   Serial.println(dev->hub_port);
@@ -98,11 +92,11 @@ void GenericJoystickHID::disconnect_collection(Device_t* /*dev*/) {
   Serial.print("  PID=0x");
   Serial.println(m_pid, HEX);
 
-  m_claimed     = false;
-  mydevice      = NULL;  // device's strbuf is freed on disconnect — don't read it
-  m_buttons     = 0;
+  m_claimed = false;
+  mydevice = NULL; // device's strbuf is freed on disconnect — don't read it
+  m_buttons = 0;
   memset(m_axes, 0, sizeof(m_axes));
-  m_hat         = HAT_RELEASED;
+  m_hat = HAT_RELEASED;
   memset(m_keys, 0, sizeof(m_keys));
   // Keep m_vid/m_pid/m_manufacturer/m_product/m_hasHat/m_hasKeyboard/
   // m_buttonCount/m_axisCount around briefly so any final log lines about
@@ -112,18 +106,19 @@ void GenericJoystickHID::disconnect_collection(Device_t* /*dev*/) {
 
 void GenericJoystickHID::hid_input_data(uint32_t usage, int32_t value) {
   const uint16_t page = usage >> 16;
-  const uint16_t id   = usage & 0xFFFF;
+  const uint16_t id = usage & 0xFFFF;
 
   if (page == 0x09 && id >= 1 && id <= 32) {
     // Button page — 1-indexed button id, bit (id-1)
-    const uint8_t  bit  = (uint8_t)(id - 1);
+    const uint8_t bit = (uint8_t)(id - 1);
     const uint32_t mask = (1u << bit);
     const uint32_t newButtons = value ? (m_buttons | mask) : (m_buttons & ~mask);
     if (newButtons != m_buttons) {
       m_buttons = newButtons;
       m_changeSeq++;
     }
-    if (bit + 1 > m_buttonCount) m_buttonCount = bit + 1;
+    if (bit + 1 > m_buttonCount)
+      m_buttonCount = bit + 1;
   } else if (page == 0x01 && id == 0x39) {
     // Hat Switch — first-class direction value, NOT four virtual buttons.
     // The HID spec uses 0..7 walking clockwise from North (N, NE, E, SE,
@@ -143,8 +138,10 @@ void GenericJoystickHID::hid_input_data(uint32_t usage, int32_t value) {
       Serial.print(" raw=");
       Serial.print(value);
       Serial.print(" decoded=");
-      if (newHat == HAT_RELEASED) Serial.println("RELEASED");
-      else                        Serial.println((int)newHat);
+      if (newHat == HAT_RELEASED)
+        Serial.println("RELEASED");
+      else
+        Serial.println((int)newHat);
     }
     m_hasHat = true;
     if (m_hat != newHat) {
@@ -155,13 +152,14 @@ void GenericJoystickHID::hid_input_data(uint32_t usage, int32_t value) {
     // Generic Desktop — axes are usage 0x30..0x37 (X, Y, Z, Rx, Ry, Rz,
     // Slider, Dial). Anything outside that range we ignore here.
     if (id >= 0x30 && id <= 0x37) {
-      const uint8_t  axisIdx  = (uint8_t)(id - 0x30);
+      const uint8_t axisIdx = (uint8_t)(id - 0x30);
       const uint16_t newValue = (uint16_t)value;
       if (m_axes[axisIdx] != newValue) {
         m_axes[axisIdx] = newValue;
         m_changeSeq++;
       }
-      if (axisIdx + 1 > m_axisCount) m_axisCount = axisIdx + 1;
+      if (axisIdx + 1 > m_axisCount)
+        m_axisCount = axisIdx + 1;
     }
   } else if (page == 0x07) {
     // Keyboard/Keypad usage page. `id` is the HID scancode (0x04 = A,
@@ -171,14 +169,19 @@ void GenericJoystickHID::hid_input_data(uint32_t usage, int32_t value) {
     // (so we don't need to track the 6-slot key array directly).
     m_hasKeyboard = true;
     const uint8_t code = (uint8_t)(id & 0xFF);
-    if (!code) return;  // 0x00 = "no key" filler, never a real scancode
+    if (!code)
+      return; // 0x00 = "no key" filler, never a real scancode
     if (value) {
       // Press — append to the first empty slot if not already tracked.
       bool present = false;
       int8_t firstEmpty = -1;
       for (uint8_t i = 0; i < MAX_KEYS_PRESSED; ++i) {
-        if (m_keys[i] == code) { present = true; break; }
-        if (firstEmpty < 0 && m_keys[i] == 0) firstEmpty = i;
+        if (m_keys[i] == code) {
+          present = true;
+          break;
+        }
+        if (firstEmpty < 0 && m_keys[i] == 0)
+          firstEmpty = i;
       }
       if (!present && firstEmpty >= 0) {
         m_keys[firstEmpty] = code;
@@ -203,29 +206,36 @@ void GenericJoystickHID::hid_input_data(uint32_t usage, int32_t value) {
 
 static GenericJoystickHID g_devicePool[DEVICE_POOL_SIZE];
 
-uint8_t devicePoolSize() {
-  return DEVICE_POOL_SIZE;
-}
+uint8_t devicePoolSize() { return DEVICE_POOL_SIZE; }
 
 GenericJoystickHID* devicePoolSlot(uint8_t i) {
-  if (i >= DEVICE_POOL_SIZE) return nullptr;
+  if (i >= DEVICE_POOL_SIZE)
+    return nullptr;
   return &g_devicePool[i];
 }
 
-uint8_t devicePoolGetLoggedCollections(uint16_t* vids, uint16_t* pids, uint32_t* topusages, uint8_t maxCount) {
+uint8_t devicePoolGetLoggedCollections(uint16_t* vids, uint16_t* pids, uint32_t* topusages,
+                                       uint8_t maxCount) {
+  noInterrupts();
   uint8_t count = g_loggedCollectionsCount;
-  if (count > maxCount) count = maxCount;
+  if (count > maxCount)
+    count = maxCount;
   for (uint8_t i = 0; i < count; ++i) {
-    if (vids)      vids[i]      = g_loggedCollections[i].vid;
-    if (pids)      pids[i]      = g_loggedCollections[i].pid;
-    if (topusages) topusages[i] = g_loggedCollections[i].topusage;
+    if (vids)
+      vids[i] = g_loggedCollections[i].vid;
+    if (pids)
+      pids[i] = g_loggedCollections[i].pid;
+    if (topusages)
+      topusages[i] = g_loggedCollections[i].topusage;
   }
   // Shift remaining
   if (count < g_loggedCollectionsCount) {
-    memmove(g_loggedCollections, &g_loggedCollections[count], (g_loggedCollectionsCount - count) * sizeof(LoggedCollection));
+    memmove(g_loggedCollections, &g_loggedCollections[count],
+            (g_loggedCollectionsCount - count) * sizeof(LoggedCollection));
     g_loggedCollectionsCount -= count;
   } else {
     g_loggedCollectionsCount = 0;
   }
+  interrupts();
   return count;
 }

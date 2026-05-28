@@ -17,16 +17,17 @@
 
 #include <Arduino.h>
 #include <USBHost_t36.h>
-#include "pedals.h"
-#include "mapping.h"
+
 #include "device_pool.h"
+#include "mapping.h"
+#include "pedals.h"
 #include "protocol.h"
 
 // ---------------- USB host ----------------
 
-USBHost      g_usb;
-USBHub       g_hub1(g_usb);
-USBHub       g_hub2(g_usb);
+USBHost g_usb;
+USBHub g_hub1(g_usb);
+USBHub g_hub2(g_usb);
 
 // One USBHIDParser per claimable HID interface. The Logitech RS H-Shifter
 // alone exposes two interfaces (HID1 + HID2), and the SP Pro adds a third,
@@ -41,24 +42,32 @@ USBHIDParser g_hid7(g_usb);
 USBHIDParser g_hid8(g_usb);
 
 USBDriver* const g_usbDrivers[] = {
-  &g_hub1, &g_hub2,
-  &g_hid1, &g_hid2, &g_hid3, &g_hid4, &g_hid5, &g_hid6, &g_hid7, &g_hid8,
+    &g_hub1, &g_hub2, &g_hid1, &g_hid2, &g_hid3, &g_hid4, &g_hid5, &g_hid6, &g_hid7, &g_hid8,
 };
-constexpr uint8_t g_usbDriverCount =
-  sizeof(g_usbDrivers) / sizeof(g_usbDrivers[0]);
-bool g_usbDriverActive[g_usbDriverCount] = { false };
+constexpr uint8_t g_usbDriverCount = sizeof(g_usbDrivers) / sizeof(g_usbDrivers[0]);
+bool g_usbDriverActive[g_usbDriverCount] = {false};
 
 static const char* driverName(USBDriver* d) {
-  if (d == &g_hub1) return "Hub1";
-  if (d == &g_hub2) return "Hub2";
-  if (d == &g_hid1) return "HID1";
-  if (d == &g_hid2) return "HID2";
-  if (d == &g_hid3) return "HID3";
-  if (d == &g_hid4) return "HID4";
-  if (d == &g_hid5) return "HID5";
-  if (d == &g_hid6) return "HID6";
-  if (d == &g_hid7) return "HID7";
-  if (d == &g_hid8) return "HID8";
+  if (d == &g_hub1)
+    return "Hub1";
+  if (d == &g_hub2)
+    return "Hub2";
+  if (d == &g_hid1)
+    return "HID1";
+  if (d == &g_hid2)
+    return "HID2";
+  if (d == &g_hid3)
+    return "HID3";
+  if (d == &g_hid4)
+    return "HID4";
+  if (d == &g_hid5)
+    return "HID5";
+  if (d == &g_hid6)
+    return "HID6";
+  if (d == &g_hid7)
+    return "HID7";
+  if (d == &g_hid8)
+    return "HID8";
   return "?";
 }
 
@@ -68,7 +77,8 @@ static const char* driverName(USBDriver* d) {
 static void pollUsbDriverStatus() {
   for (uint8_t i = 0; i < g_usbDriverCount; ++i) {
     const bool nowActive = (*g_usbDrivers[i]);
-    if (nowActive == g_usbDriverActive[i]) continue;
+    if (nowActive == g_usbDriverActive[i])
+      continue;
     g_usbDriverActive[i] = nowActive;
     Serial.print("[USB] ");
     Serial.print(driverName(g_usbDrivers[i]));
@@ -88,8 +98,7 @@ static void pollUsbDriverStatus() {
 
 // Array of HID parser pointers for diagnostic access.
 static USBHIDParser* const g_hidParsers[] = {
-  &g_hid1, &g_hid2, &g_hid3, &g_hid4,
-  &g_hid5, &g_hid6, &g_hid7, &g_hid8,
+    &g_hid1, &g_hid2, &g_hid3, &g_hid4, &g_hid5, &g_hid6, &g_hid7, &g_hid8,
 };
 constexpr uint8_t g_hidParserCount = sizeof(g_hidParsers) / sizeof(g_hidParsers[0]);
 
@@ -112,7 +121,8 @@ static void printUsbStatus() {
       Serial.print(d->buttons(), HEX);
       Serial.print("  axes=[");
       for (uint8_t j = 0; j < d->axisCount(); ++j) {
-        if (j) Serial.print(',');
+        if (j)
+          Serial.print(',');
         Serial.print(d->axis(j));
       }
       Serial.print("]  ac=");
@@ -194,11 +204,14 @@ static void printHidDiag() {
       Serial.print(dumpLen);
       Serial.println("]:");
       for (uint16_t j = 0; j < dumpLen; ++j) {
-        if (j % 16 == 0) Serial.print("    ");
-        if (desc[j] < 0x10) Serial.print('0');
+        if (j % 16 == 0)
+          Serial.print("    ");
+        if (desc[j] < 0x10)
+          Serial.print('0');
         Serial.print(desc[j], HEX);
         Serial.print(' ');
-        if (j % 16 == 15 || j == dumpLen - 1) Serial.println();
+        if (j % 16 == 15 || j == dumpLen - 1)
+          Serial.println();
       }
     } else {
       Serial.println("    (no descriptor data)");
@@ -226,27 +239,33 @@ static inline void cpuSoftReset() {
   Serial.flush();
   delay(50);
   (*((volatile uint32_t*)0xE000ED0C)) = 0x5FA0004;
-  while (true) {}
+  while (true) {
+  }
 }
 
 // CliCharCallback registered with the protocol layer. The layer forwards
 // any non-'{' byte here.
 static void handleCliChar(char c) {
   switch (c) {
-    case 'u': case 'U':
+    case 'u':
+    case 'U':
       printUsbStatus();
       break;
-    case 'd': case 'D':
+    case 'd':
+    case 'D':
       printHidDiag();
       break;
-    case 'p': case 'P':
+    case 'p':
+    case 'P':
       pedalsForceReset();
       break;
     case 'X':
       Serial.println("[CPU] Manual soft-reset.");
       cpuSoftReset();
       break;
-    case '?': case 'h': case 'H':
+    case '?':
+    case 'h':
+    case 'H':
       printHelp();
       break;
     default:
@@ -262,8 +281,8 @@ static void handleCliChar(char c) {
 static void printBanner() {
   Serial.println();
   Serial.println("=== fanadapter — USB HID → Fanatec wheelbase ===");
-  Serial.print  ("=== fw 0.6.0  protocol 5  config v");
-  Serial.print  (CONFIG_VERSION);
+  Serial.print("=== fw 0.6.0  protocol 5  config v");
+  Serial.print(CONFIG_VERSION);
   Serial.println(" ===");
   Serial.println("Configure via WebSerial (see webconfig/). '?' for the CLI.");
   Serial.println();
@@ -271,7 +290,7 @@ static void printBanner() {
 
 void setup() {
   Serial.begin(115200);
-  delay(500);  // let the USB CDC enumeration settle before the banner
+  delay(500); // let the USB CDC enumeration settle before the banner
 
   // PWM resolution is global; set once.
   analogWriteResolution(PWM_BITS);
@@ -283,9 +302,9 @@ void setup() {
   analogWriteFrequency(PIN_Y, PWM_FREQ_HZ);
 
   // Sequential pins — open-drain, idle high (wheelbase has internal pull-up)
-  pinMode(PIN_SEQ_UP,   OUTPUT_OPENDRAIN);
+  pinMode(PIN_SEQ_UP, OUTPUT_OPENDRAIN);
   pinMode(PIN_SEQ_DOWN, OUTPUT_OPENDRAIN);
-  digitalWrite(PIN_SEQ_UP,   HIGH);
+  digitalWrite(PIN_SEQ_UP, HIGH);
   digitalWrite(PIN_SEQ_DOWN, HIGH);
 
   // Handbrake DAC
@@ -308,7 +327,7 @@ void setup() {
 void loop() {
   g_usb.Task();
   pollUsbDriverStatus();
-  protocolTick();   // drain Serial → dispatch JSON / CLI, emit live events
-  mappingTick();    // read device pool → drive DACs / sequential / pedal stream
-  pedalsUpdate();   // Fanatec pedal-port UART state machine
+  protocolTick(); // drain Serial → dispatch JSON / CLI, emit live events
+  mappingTick();  // read device pool → drive DACs / sequential / pedal stream
+  pedalsUpdate(); // Fanatec pedal-port UART state machine
 }

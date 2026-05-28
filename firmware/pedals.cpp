@@ -3,10 +3,10 @@
 // State definitions
 enum PedalsState : uint8_t {
   STATE_INIT = 0,
-  STATE_STEP0,       // 250000 baud, wait for 0x0A, send 0x1A
-  STATE_STEP1,       // 250000 baud, wait for 0x05, send 0x15
-  STATE_STEP2,       // 115200 baud, wait for 36-byte query, send 36-byte response
-  STATE_STREAMING    // 115200 baud, continuously streaming pedal packets
+  STATE_STEP0,    // 250000 baud, wait for 0x0A, send 0x1A
+  STATE_STEP1,    // 250000 baud, wait for 0x05, send 0x15
+  STATE_STEP2,    // 115200 baud, wait for 36-byte query, send 36-byte response
+  STATE_STREAMING // 115200 baud, continuously streaming pedal packets
 };
 
 // State variables
@@ -42,9 +42,9 @@ constexpr uint32_t WARMUP_MS = 2000;
 // seen at least once.
 static uint8_t g_step2Buf[12];
 static uint8_t g_step2BufIdx = 0;
-static bool    g_step2Got00 = false;
-static bool    g_step2Got02 = false;
-static bool    g_step2Got03 = false;
+static bool g_step2Got00 = false;
+static bool g_step2Got02 = false;
+static bool g_step2Got03 = false;
 
 // Step 2 response packets — sent INDIVIDUALLY per matching query, not bulk.
 // Per the community sketch in GeekyDeaks/fanatec-pedal-emulator#4, the
@@ -56,12 +56,12 @@ static bool    g_step2Got03 = false;
 //   cmd 0x02 (config query)  → STEP2_TX_CMD_02
 //   cmd 0x00 (ping/null)     → STEP2_TX_CMD_00
 //   cmd 0x03 (version query) → STEP2_TX_CMD_03
-static const uint8_t STEP2_TX_CMD_02[12] =
-  { 0x7B, 0x05, 0x06, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6D, 0x7D };
-static const uint8_t STEP2_TX_CMD_00[12] =
-  { 0x7B, 0x07, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x7D };
-static const uint8_t STEP2_TX_CMD_03[12] =
-  { 0x7B, 0x08, 0x01, 0x06, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0xBF, 0x7D };
+static const uint8_t STEP2_TX_CMD_02[12] = {0x7B, 0x05, 0x06, 0x62, 0x00, 0x00,
+                                            0x00, 0x00, 0x00, 0x00, 0x6D, 0x7D};
+static const uint8_t STEP2_TX_CMD_00[12] = {0x7B, 0x07, 0x0B, 0x00, 0x00, 0x00,
+                                            0x00, 0x00, 0x00, 0x00, 0x12, 0x7D};
+static const uint8_t STEP2_TX_CMD_03[12] = {0x7B, 0x08, 0x01, 0x06, 0x07, 0x00,
+                                            0x00, 0x00, 0x00, 0x00, 0xBF, 0x7D};
 
 // Pedal position values (0..65535)
 static uint16_t g_throttle = 0;
@@ -102,9 +102,9 @@ static void reinitSerial(uint32_t baud) {
 
 static void resetStep2State() {
   g_step2BufIdx = 0;
-  g_step2Got00  = false;
-  g_step2Got02  = false;
-  g_step2Got03  = false;
+  g_step2Got00 = false;
+  g_step2Got02 = false;
+  g_step2Got03 = false;
 }
 
 static void resetToStep0() {
@@ -134,31 +134,31 @@ void pedalsForceReset() {
 
 static void sendPedalPacket() {
   uint8_t packet[12];
-  
+
   packet[0] = 0x7B; // Start frame marker
   packet[1] = 0x01; // Send pedals command
-  
+
   // Throttle (Little Endian)
   packet[2] = g_throttle & 0xFF;
   packet[3] = (g_throttle >> 8) & 0xFF;
-  
+
   // Brake (Little Endian)
   packet[4] = g_brake & 0xFF;
   packet[5] = (g_brake >> 8) & 0xFF;
-  
+
   // Clutch (Little Endian)
   packet[6] = g_clutch & 0xFF;
   packet[7] = (g_clutch >> 8) & 0xFF;
-  
+
   // Handbrake (Little Endian)
   packet[8] = g_handbrake & 0xFF;
   packet[9] = (g_handbrake >> 8) & 0xFF;
-  
+
   // Generate CRC over packet[1] through packet[9] (9 bytes total)
   packet[10] = generateCrc(&packet[1], 9);
-  
+
   packet[11] = 0x7D; // End frame marker
-  
+
   Serial3.write(packet, 12);
 }
 
@@ -169,11 +169,12 @@ void pedalsUpdate() {
   // STEP0. See WARMUP_MS comment up top for rationale.
   if (g_warmupUntil != 0) {
     if (millis() < g_warmupUntil) {
-      while (Serial3.available() > 0) Serial3.read();
+      while (Serial3.available() > 0)
+        Serial3.read();
       return;
     }
     Serial.println("[Pedal] Warmup complete — engaging handshake state machine.");
-    g_warmupUntil      = 0;
+    g_warmupUntil = 0;
     g_lastActivityTime = millis(); // fresh baseline for the STEP1/2 timeout
   }
 
@@ -209,7 +210,7 @@ void pedalsUpdate() {
           Serial.println("[Pedal] Step 1: Received 0x05. Sending 0x15.");
           Serial3.write(0x15);
           Serial3.flush(); // wait for byte to fully transmit before baud change
-          
+
           Serial.println("[Pedal] Switching to 115200 baud (STATE_STEP2)...");
           reinitSerial(115200);
           resetStep2State();
@@ -235,7 +236,8 @@ void pedalsUpdate() {
         }
 
         g_step2Buf[g_step2BufIdx++] = b;
-        if (g_step2BufIdx < 12) break;
+        if (g_step2BufIdx < 12)
+          break;
 
         // Got a full 12-byte packet — validate framing + CRC, tag command.
         g_step2BufIdx = 0;
@@ -243,14 +245,16 @@ void pedalsUpdate() {
           Serial.println("[Pedal] Step 2: bad end marker, skipping packet.");
           break;
         }
-        const uint8_t rxCrc   = g_step2Buf[10];
+        const uint8_t rxCrc = g_step2Buf[10];
         const uint8_t calcCrc = generateCrc(&g_step2Buf[1], 9);
         if (rxCrc != calcCrc) {
           Serial.print("[Pedal] Step 2: CRC fail (got 0x");
-          if (rxCrc < 0x10) Serial.print('0');
+          if (rxCrc < 0x10)
+            Serial.print('0');
           Serial.print(rxCrc, HEX);
           Serial.print(" expected 0x");
-          if (calcCrc < 0x10) Serial.print('0');
+          if (calcCrc < 0x10)
+            Serial.print('0');
           Serial.print(calcCrc, HEX);
           Serial.println("), skipping packet.");
           break;
@@ -281,7 +285,8 @@ void pedalsUpdate() {
             break;
           default:
             Serial.print("[Pedal] Step 2: unexpected cmd 0x");
-            if (cmd < 0x10) Serial.print('0');
+            if (cmd < 0x10)
+              Serial.print('0');
             Serial.println(cmd, HEX);
             break;
         }
@@ -327,23 +332,28 @@ void pedalsUpdate() {
   }
 }
 
-void setPedalThrottle(uint16_t val)   { g_throttle = val; }
-void setPedalBrake(uint16_t val)      { g_brake = val; }
-void setPedalClutch(uint16_t val)     { g_clutch = val; }
-void setPedalHandbrake(uint16_t val)  { g_handbrake = val; }
+void setPedalThrottle(uint16_t val) { g_throttle = val; }
+void setPedalBrake(uint16_t val) { g_brake = val; }
+void setPedalClutch(uint16_t val) { g_clutch = val; }
+void setPedalHandbrake(uint16_t val) { g_handbrake = val; }
 
-uint16_t getPedalThrottle()   { return g_throttle; }
-uint16_t getPedalBrake()      { return g_brake; }
-uint16_t getPedalClutch()     { return g_clutch; }
-uint16_t getPedalHandbrake()  { return g_handbrake; }
+uint16_t getPedalThrottle() { return g_throttle; }
+uint16_t getPedalBrake() { return g_brake; }
+uint16_t getPedalClutch() { return g_clutch; }
+uint16_t getPedalHandbrake() { return g_handbrake; }
 
 const char* getPedalsStateName() {
   switch (g_state) {
-    case STATE_INIT:      return "INIT";
-    case STATE_STEP0:     // Fallthrough
-    case STATE_STEP1:     return "HANDSHAKE_250K";
-    case STATE_STEP2:     return "HANDSHAKE_115K";
-    case STATE_STREAMING: return "STREAMING_115K";
-    default:              return "UNKNOWN";
+    case STATE_INIT:
+      return "INIT";
+    case STATE_STEP0: // Fallthrough
+    case STATE_STEP1:
+      return "HANDSHAKE_250K";
+    case STATE_STEP2:
+      return "HANDSHAKE_115K";
+    case STATE_STREAMING:
+      return "STREAMING_115K";
+    default:
+      return "UNKNOWN";
   }
 }

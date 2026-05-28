@@ -10,7 +10,7 @@
 #include <Arduino.h>
 
 void protocolInit();
-void protocolTick();   // call every loop iteration
+void protocolTick(); // call every loop iteration
 
 // The protocol layer forwards non-JSON bytes to this callback so the main
 // sketch can keep the minimal CLI (X / p / u / ? / h) alongside JSON.
