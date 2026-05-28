@@ -16,7 +16,7 @@ jobs:
   lint-and-static-analysis:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install clang-format and cppcheck
         run: |
@@ -34,7 +34,7 @@ jobs:
   compile-warnings-as-errors:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Arduino CLI
         uses: arduino/setup-arduino-cli@v2
