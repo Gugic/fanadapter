@@ -408,8 +408,7 @@ static void updateShifter() {
     g_outputs.gear = g_currentGear;
     return;
   }
-  if (g_testGearUntil != 0)
-    g_testGearUntil = 0; // expired; clear
+  g_testGearUntil = 0; // expired; clear (no-op if already zero)
 
   if (g_cfg.gearMode == GEAR_MODE_LATCH) {
     // Latch: rising-edge on a gear binding switches the current gear.
@@ -571,7 +570,10 @@ void mappingRecomputeCrc() {
 
 void mappingInit() {
   // Read EEPROM bytes into a temp Config and validate before adopting.
-  Config tmp;
+  // Value-initialise so cppcheck can see every member is defined before the
+  // EEPROM read loop overwrites them — otherwise it flags `tmp.magic` as
+  // uninitialised because it can't trace the byte-by-byte fill.
+  Config tmp{};
   uint8_t* p = (uint8_t*)&tmp;
   for (size_t i = 0; i < sizeof(Config); ++i) {
     p[i] = EEPROM.read(i);
