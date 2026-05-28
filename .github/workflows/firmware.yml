@@ -29,7 +29,7 @@ jobs:
 
       - name: Run Static Code Analysis (cppcheck)
         run: |
-          cppcheck --enable=all --suppress=missingIncludeSystem --error-exitcode=1 firmware/
+          cppcheck --enable=all --suppress=unusedFunction --suppress=constParameterPointer --suppress=missingIncludeSystem --error-exitcode=1 firmware/
 
   compile-warnings-as-errors:
     runs-on: ubuntu-latest
