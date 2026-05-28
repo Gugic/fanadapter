@@ -44,7 +44,10 @@ jobs:
       # known false positives without globally weakening a check. Global
       # suppressions below are kept narrow: stylistic noise that's expected in
       # Arduino code (cstyleCast, system includes, const-pointer hints,
-      # unused-function from Arduino library headers).
+      # unused-function from Arduino library headers). `badBitmaskCheck` is
+      # suppressed because ArduinoJson's `doc["x"] | default` reads as a
+      # bitwise OR to cppcheck but is actually the library's overloaded
+      # default-value operator — every hit in protocol.cpp is that idiom.
       - name: Run Static Code Analysis (cppcheck)
         run: |
           cppcheck \
@@ -53,6 +56,7 @@ jobs:
             --suppress=unusedFunction \
             --suppress=constParameterPointer \
             --suppress=constVariablePointer \
+            --suppress=badBitmaskCheck \
             --suppress=cstyleCast \
             --suppress=missingIncludeSystem \
             --error-exitcode=1 \
