@@ -12,6 +12,19 @@ on:
       - 'firmware/**'
       - '.github/workflows/firmware.yml'
 
+# Cancel in-flight runs for the same ref so rapid pushes don't queue duplicate
+# work; matches the pattern already used by pages.yml.
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+# Pinning the toolchain — these versions are what we test against locally and
+# what the firmware is known to build & pass static checks with. Bump them
+# deliberately rather than letting an upstream release silently change CI.
+env:
+  TEENSY_CORE_VERSION: 1.61.0
+  ARDUINOJSON_VERSION: 7.4.3
+
 jobs:
   lint-and-static-analysis:
     runs-on: ubuntu-latest
@@ -27,9 +40,23 @@ jobs:
         run: |
           clang-format --dry-run --Werror firmware/*.cpp firmware/*.h firmware/*.ino
 
+      # `--inline-suppr` lets us add `// cppcheck-suppress <id>` per-line for
+      # known false positives without globally weakening a check. Global
+      # suppressions below are kept narrow: stylistic noise that's expected in
+      # Arduino code (cstyleCast, system includes, const-pointer hints,
+      # unused-function from Arduino library headers).
       - name: Run Static Code Analysis (cppcheck)
         run: |
-          cppcheck --enable=all --suppress=unusedFunction --suppress=constParameterPointer --suppress=constVariablePointer --suppress=badBitmaskCheck --suppress=cstyleCast --suppress=missingIncludeSystem --error-exitcode=1 firmware/
+          cppcheck \
+            --enable=all \
+            --inline-suppr \
+            --suppress=unusedFunction \
+            --suppress=constParameterPointer \
+            --suppress=constVariablePointer \
+            --suppress=cstyleCast \
+            --suppress=missingIncludeSystem \
+            --error-exitcode=1 \
+            firmware/
 
   compile-warnings-as-errors:
     runs-on: ubuntu-latest
@@ -39,14 +66,14 @@ jobs:
       - name: Setup Arduino CLI
         uses: arduino/setup-arduino-cli@v2
 
-      - name: Setup arduino-cli cores & libraries
+      - name: Setup arduino-cli cores & libraries (pinned)
         run: |
           arduino-cli config init --overwrite
           arduino-cli core update-index
           arduino-cli config set board_manager.additional_urls https://www.pjrc.com/teensy/package_teensy_index.json
           arduino-cli core update-index
-          arduino-cli core install teensy:avr
-          arduino-cli lib install ArduinoJson
+          arduino-cli core install teensy:avr@${TEENSY_CORE_VERSION}
+          arduino-cli lib install ArduinoJson@${ARDUINOJSON_VERSION}
 
       - name: Compile Teensy sketch with strict warnings-as-errors
         run: |

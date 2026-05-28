@@ -1,0 +1,35 @@
+# Editor defaults for files not covered by clang-format / prettier.
+# https://editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Markdown preserves trailing spaces for hard line breaks.
+[*.md]
+trim_trailing_whitespace = false
+
+# Match Prettier (webconfig/.prettierrc): printWidth 100, 2-space.
+[*.{ts,tsx,js,jsx,json,css,html}]
+indent_size = 2
+max_line_length = 100
+
+# Match firmware/.clang-format: 2-space indent, 100-col limit.
+[*.{c,cpp,h,hpp,ino}]
+indent_size = 2
+max_line_length = 100
+
+# YAML is whitespace-significant; force spaces explicitly.
+[*.{yml,yaml}]
+indent_size = 2
+indent_style = space
+
+# Makefiles need real tabs.
+[Makefile]
+indent_style = tab
