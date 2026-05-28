@@ -67,8 +67,6 @@ webconfig/
       scaleAxis.ts        # Client-side replica of the firmware's scaleAxis() math
       crc32.ts            # Client-side CRC-32/ISO-HDLC encoder (matches firmware)
       utils.ts            # Tailwind CSS class merging helper
-  public/
-    presets/              # Pre-bundled JSON configurations loaded via fetch
   tailwind.config.js      # Styling design tokens and theme settings
   vite.config.ts          # Vite build config
 ```
@@ -118,24 +116,6 @@ The web app shares four strict boundaries with the Teensy 4.1 C++ code. If a cha
 
 > [!IMPORTANT]
 > **Backward Compatibility:** `types.ts` is designed defensively to handle both the v2 schema (channels mapped as array slots) and the legacy v1 schema (single bindings) so the interface continues rendering when connected to older firmware versions. Keep this fallback structure intact.
-
----
-
-## Presets Config Layout
-
-Pre-bundled JSON configurations are saved under `public/presets/`. Their layout mirrors the JSON schema emitted by the Teensy's `get_config` command:
-
-- Each output channel carries a array containing up to 4 input binding slots.
-- Unmapped slots are designated as `{"type": "none"}`.
-
-### Standard Presets
-
-- **`rs-shifter-rs-combo-spu-spro.json`**  
-  Restores standard behavior for:
-  - Logitech RS H-Pattern Shifter (`046D:C26B`)
-  - Logitech RS Combo Shifter/Handbrake (`046D:C278`)
-  - Simnet SP Pro Pedals (`CAFE:A301`)
-    It configures default gear DAC target voltages, defines a 12-bit max range (4095) for the SP Pro pedals, and adds a 2% low brake deadzone to absorb initial sensor noise.
 
 ---
 
