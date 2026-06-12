@@ -11,29 +11,32 @@ This directory contains the physical, mechanical, and electrical details for con
 
 ```
               ┌──────────────────────────────────────┐
-              │            Teensy 4.1                │
+              │      ESP32-S3 (N16R8 dev board)      │
               │                                      │
-USB Hub ──────┤ USB host port                        │
+USB Hub ──────┤ USB OTG port ("USB", w/ VBUS mod)    │
    │          │                                      │
-   ├─► H-pat shifter            Pin 4 ──[1kΩ]──┬───────────► Shifter 1 RJ12 Pin 4
+   ├─► H-pat shifter           GPIO 4 ──[1kΩ]──┬───────────► Shifter 1 RJ12 Pin 4
    ├─► Seq shifter                            [1µF]
    ├─► Handbrake                               GND
-   └─► USB pedals               Pin 5 ──[1kΩ]──┬───────────► Shifter 1 RJ12 Pin 5
+   └─► USB pedals              GPIO 5 ──[1kΩ]──┬───────────► Shifter 1 RJ12 Pin 5
                                                [1µF]
                                                 GND
-                                Pin 6 ──────────────────────► Shifter 2 RJ12 Pin 4
-                                Pin 7 ──────────────────────► Shifter 2 RJ12 Pin 5
-                                Pin 8 ──[1kΩ]──┬───────────► Handbrake RJ12 Pin 5
+                               GPIO 6 ──────────────────────► Shifter 2 RJ12 Pin 4
+                               GPIO 7 ──────────────────────► Shifter 2 RJ12 Pin 5
+                               GPIO 8 ──[1kΩ]──┬───────────► Handbrake RJ12 Pin 5
                                               [1µF]
                                                GND
  
                                 (pedal port: UART, no analog stage)
-                                Pin 14 (TX3) ──────────────► Pedal RJ12 Pin 5
-                                Pin 15 (RX3) ◄───────────── Pedal RJ12 Pin 4
+                               GPIO 17 (Serial1 TX) ───────► Pedal RJ12 Pin 5
+                               GPIO 18 (Serial1 RX) ◄─────── Pedal RJ12 Pin 4
  
-                                GND   ─────────┬───────────► All RJ12 GND pins
-                                                              (Handbrake: both Pin 1 AND Pin 2)
-                                                              (Pedals: Pins 1, 2, and 3)
+                               GND   ─────────┬───────────► All RJ12 GND pins
+                                                             (Handbrake: both Pin 1 AND Pin 2)
+                                                             (Pedals: Pins 1, 2, and 3)
+              │                                      │
+PC ───────────┤ UART port (CH340/CP2102 bridge)      │
+              │   → flashing + WebSerial config      │
               └──────────────────────────────────────┘
 ```
 
@@ -56,7 +59,7 @@ Encodes the X (column) and Y (row) position of the gear lever using analog volta
 | 5 | Y-axis | Analog row voltage | Up, Neutral/Middle, Down |
 | 6 | VCC 3.3V | 3.3V Supply | Supplied by wheelbase (leave disconnected) |
 
-**Voltage & PWM Levels (Teensy 3.3V Vref, 12-bit PWM, 0–4095 range):**
+**Voltage & PWM Levels (ESP32-S3 3.3V Vref, 12-bit LEDC PWM at 5 kHz, 0–4095 range):**
 * **X-Axis (Columns):**
   * **X1 (Reverse rail):** 3.30 V (PWM: 4095)
   * **X2 (1-2 gate):** 2.25 V (PWM: 2790)
@@ -132,13 +135,13 @@ Speaks a digital UART protocol to emulate a Fanatec **CSL Elite V2 pedal control
 * **Full Bit Depth:** The digital protocol carries full per-axis resolution end-to-end — no ADC quantization loss (the analog path is limited by the wheelbase's ~10–12 effective bits).
 
 **RJ12 Pinout:**
-| Pin | Function (Control Board PoV) | Teensy 4.1 Connection | Notes |
+| Pin | Function (Control Board PoV) | ESP32-S3 Connection | Notes |
 |---|---|---|---|
 | 1 | GND | GND | Common ground |
 | 2 | GND | GND | Ground (must be tied) |
 | 3 | GND | GND | Ground (must be tied) |
-| 4 | RX (receive) | **Pin 15 (Serial3 RX)** | Receives data from wheelbase TX |
-| 5 | TX (transmit) | **Pin 14 (Serial3 TX)** | Transmits data to wheelbase RX |
+| 4 | RX (receive) | **GPIO 18 (Serial1 RX)** | Receives data from wheelbase TX |
+| 5 | TX (transmit) | **GPIO 17 (Serial1 TX)** | Transmits data to wheelbase RX |
 | 6 | +5V | NC | 5V supply from wheelbase (leave disconnected) |
 
 > [!IMPORTANT]
@@ -156,26 +159,36 @@ Speaks a digital UART protocol to emulate a Fanatec **CSL Elite V2 pedal control
 
 | Item | Quantity | Approx. Cost | Notes |
 |---|---|---|---|
-| **Teensy 4.1** | 1 | $32.00 | PJRC or authorized distributors |
-| **USB Host Cable** | 1 | $5.00 | 5-pin JST to USB-A female (PJRC sells these) |
-| **5-pin Male Header Strip** | 1 | $0.10 | 0.1" pitch, to solder to Teensy host pads |
-| **Powered USB 2.0 Hub** | 1 | $15.00 | **Must be powered** (external power supply) |
+| **ESP32-S3 N16R8 dev board** | 1 | $15–20 | Two USB-C ports required (one OTG, one UART-bridge). Tested: Lonely Binary Gold Edition (= YD-ESP32-S3 clone). Any board with ESP32-S3-WROOM-1 + CH340/CP2102 UART bridge works. |
+| **USB-C cables** | 2 | $3.00/each | One for the UART port (to PC, power + config) and one for the OTG port (to the USB hub). |
+| **Powered USB 2.0 Hub** | 1 | $15.00 | **Must be powered** (external power supply). Hub upstream connects to ESP32 OTG port. |
 | **RJ12 6P6C Cables** | 3 | $3.00/each | Must have all 6 wires connected. One for Shifter 1, Shifter 2, and Pedals. |
 | **RJ12 6P6C Breakout Boards**| 3 | $3.00/each | Screw terminals for easy prototyping |
 | **1 kΩ Resistor (1/4W)** | 3 | $0.05/each | For RC filters |
 | **1 µF Capacitor** | 3 | $0.10/each | For RC filters (electrolytic or ceramic) |
 | **Breadboard (830-point)** | 1 | $5.00 | For prototyping |
 | **Jumper Wires** | 1 pack | $5.00 | Male/Male and Male/Female as needed |
-| **Micro-USB Cable** | 1 | — | For Teensy power and programming |
 
-*Total cost to prototype:* **~$80 - $90**.
+*Total cost to prototype:* **~$55 - $70**.
 
 ---
 
 ## Step-by-Step Assembly
 
-### Step 1: Teensy USB Host Header
-Solder a 5-pin 0.1" pitch male header strip onto the USB host pads located on the underside of the Teensy 4.1 (near the Micro-USB port). Once soldered, plug the Teensy USB Host cable onto these pins. Use a multimeter to verify continuity from each pin to its corresponding copper pad.
+### Step 1: USB-OTG VBUS solder-jumper mod (required, one-time)
+
+Generic ESP32-S3 dev boards (Lonely Binary Gold Edition, YD-ESP32-S3, etc.) wire the native USB-C "USB" port so its VBUS pin is **input-only** — there's a normally-open solder jumper (or in some revisions a SOD-123 diode) between the connector's VBUS pin and the board's 5V rail. Downstream USB devices need 5V on the cable to power their controllers and signal attach, so without this mod the host stack starts cleanly but no device ever enumerates.
+
+1. Power the board via the **UART** USB-C port (provides the 5V rail).
+2. Flip the board over. On the back, behind the USB-C connectors / WROOM-1 module, find the solder jumper labeled **`USB-OTG`** (or just `OTG`). Two adjacent exposed-copper pads, normally open.
+3. Multimeter (continuity mode): touch one probe to a 5V breakout pin, the other to the OTG-port VBUS pin (USB-C connector body pin 1, or its solder pad). Should **not** beep. If it already beeps, the unit shipped pre-bridged — skip step 4.
+4. Flood solder across the `USB-OTG` pads until they form a solid blob. A 0Ω 0402 resistor or wire scrap across the pads works too.
+5. Verify: power on, measure ~5.0 V on the OTG-port VBUS pin.
+
+If your board has no labeled jumper, identify the SOD-123 diode in series between the OTG connector's VBUS pin and the 5V rail (small black two-terminal SMD, ~1.6 × 3.5 mm, band on the cathode) and bridge across it.
+
+> [!CRITICAL]
+> **After this mod, never plug the "USB" (OTG) port into a PC or any other 5V source.** Both sides would push 5V → contention → possible damage to either side. From now on, the OTG port plugs only into your downstream USB hub / devices. The UART port stays normal for everything else.
 
 ### Step 2: Build the RC Analog Filters
 Construct three identical low-pass RC filters on your breadboard for the analog signals (Shifter 1 X-axis, Shifter 1 Y-axis, Handbrake):
@@ -190,33 +203,34 @@ Teensy PWM Pin ────[ 1 kΩ Resistor ]────┬────► To R
 *If using electrolytic capacitors, the negative stripe leg must connect to the GND rail.*
 
 **Analog pin routing:**
-* Teensy **Pin 4 (PWM)** → Filter → Shifter 1 Breakout **Pin 4 (X-axis)**
-* Teensy **Pin 5 (PWM)** → Filter → Shifter 1 Breakout **Pin 5 (Y-axis)**
-* Teensy **Pin 8 (PWM)** → Filter → Handbrake Breakout **Pin 5 (Signal)**
+* ESP32-S3 **GPIO 4 (LEDC PWM)** → Filter → Shifter 1 Breakout **Pin 4 (X-axis)**
+* ESP32-S3 **GPIO 5 (LEDC PWM)** → Filter → Shifter 1 Breakout **Pin 5 (Y-axis)**
+* ESP32-S3 **GPIO 8 (LEDC PWM)** → Filter → Handbrake Breakout **Pin 5 (Signal)**
 
 ### Step 3: Wire Shifter 2 (Sequential)
 Sequential connections are purely digital. No filters are needed.
-* Teensy **Pin 6 (GPIO)** → Shifter 2 Breakout **Pin 4 (Upshift)**
-* Teensy **Pin 7 (GPIO)** → Shifter 2 Breakout **Pin 5 (Downshift)**
+* ESP32-S3 **GPIO 6** → Shifter 2 Breakout **Pin 4 (Upshift)**
+* ESP32-S3 **GPIO 7** → Shifter 2 Breakout **Pin 5 (Downshift)**
 * Common GND rail → Shifter 2 Breakout **Pin 1 (GND)**
 
 ### Step 4: Wire the Pedal UART
 No filters are needed. Tie the serial lines directly:
-* Teensy **Pin 14 (TX3)** → Pedal Breakout **Pin 5 (RX/TX line)**
-* Teensy **Pin 15 (RX3)** → Pedal Breakout **Pin 4 (RX/TX line)**
+* ESP32-S3 **GPIO 17 (Serial1 TX)** → Pedal Breakout **Pin 5**
+* ESP32-S3 **GPIO 18 (Serial1 RX)** → Pedal Breakout **Pin 4**
 * Common GND rail → Pedal Breakout **Pins 1, 2, and 3**
 
 ### Step 5: Multimeter Pre-Flight Checks (Power Unplugged!)
 Perform these safety checks with your multimeter before connecting the adapter to your expensive Fanatec wheelbase:
-1. **GND Check:** Check continuity between Teensy GND and Pin 1 on all RJ12 breakouts. It should beep.
+1. **GND Check:** Check continuity between ESP32 GND and Pin 1 on all RJ12 breakouts. It should beep.
 2. **Select/Detect Check:** Check continuity between Shifter 1 Breakout Pin 2, Pin 3, and GND. All three must be connected.
-3. **Shorts Check:** Check that there is no continuity (no short) between Teensy 3.3V/5V/VIN and any RJ12 output pins.
+3. **Shorts Check:** Check that there is no continuity (no short) between ESP32 3.3V/5V and any RJ12 output pins.
 4. **Adjacent Pin Check:** Verify there are no adjacent shorts on any of the RJ12 breakout terminals.
-5. **Resistor Check:** Measure resistance from Teensy Pin 4 to Shifter 1 Breakout Pin 4, from Pin 5 to Shifter 1 Breakout Pin 5, and from Pin 8 to Handbrake Breakout Pin 5. Each path should read ~1 kΩ.
+5. **Resistor Check:** Measure resistance from GPIO 4 to Shifter 1 Breakout Pin 4, GPIO 5 to Shifter 1 Breakout Pin 5, and GPIO 8 to Handbrake Breakout Pin 5. Each path should read ~1 kΩ.
+6. **VBUS Check:** Power the board via the UART USB-C port. Measure between OTG-port VBUS pin and GND. Should read ~5.0 V — this confirms the Step 1 solder mod is in place.
 
 ### Step 6: Output Voltage Verification
 Before plugging the cables into the wheelbase:
-1. Power up the Teensy via Micro-USB.
+1. Power up the ESP32 via its UART USB-C port.
 2. Open the [webconfig configuration utility](../webconfig/README.md) or use the Serial CLI.
 3. In the **Outputs** tab, trigger the test voltages for the gears (or use the JSON command `{"cmd":"test_gear","channel":"gear_3"}`).
 4. Measure the voltage at the Shifter 1 Breakout X and Y pins with a DC voltmeter. Verify they match the X/Y target voltages in the [Shifter 1 target table](#1-shifter-1-port-h-pattern-analog) within ±50 mV.
@@ -248,12 +262,13 @@ If everything checks out, it is safe to plug the cables into the Fanatec wheelba
 * The dedicated handbrake RJ12 is almost certainly still plugged into the wheelbase. Current firmware prefers that physical port over the pedal-stream handbrake field and locks it at "released". Unplug the dedicated handbrake cable from the wheelbase (see the Handbrake routing warning above).
 
 **USB devices don't enumerate, or some attach and others don't:**
+* **First check the VBUS mod.** Probe the OTG-port VBUS pin to GND — should read ~5.0 V. If it reads 0 V, the Step 1 solder jumper is still open and downstream devices can't power up to signal attach. This is the #1 cause of empty `list_devices` on first power-on.
 * Confirm the hub is **powered** (own supply), not bus-powered — inrush spikes make bus-powered hubs fail intermittently.
-* Plug each device directly into the Teensy host cable to isolate which one fails.
-* Check the hub against the [compatibility list](../README.md#usb-hubs-important) — known-bad hubs cause partial enumeration and detach cascades.
+* Plug each device directly into the ESP32 OTG port to isolate which one fails (only safe AFTER the VBUS mod is in place).
+* Watch the EHCI channel count in the `u` CLI dump — ESP32-S3 has a hard ~8 channel ceiling shared across all downstream interrupt endpoints + hub control pipes. Multi-interface devices (composite gamepads with consumer-control, keyboard receivers with HID++ pages) eat 2–3 channels each.
 
 **Devices were working, then mass-detached:**
-* The hub is likely wedged. Unplug it from the Teensy, plug it into a PC for ~5 s to renegotiate its state, then reconnect. A Teensy reset alone won't fix it — the hub keeps its state across the reboot.
+* The hub is likely wedged. Unplug it from the ESP32, plug it into a PC for ~5 s to renegotiate its state, then reconnect. A chip reset alone won't fix it — the hub keeps its state across the reboot.
 
 ---
 

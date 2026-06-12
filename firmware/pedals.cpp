@@ -1,5 +1,7 @@
 #include "pedals.h"
 
+#include "mapping.h" // PEDAL_TX / PEDAL_RX
+
 // State definitions
 enum PedalsState : uint8_t {
   STATE_INIT = 0,
@@ -14,13 +16,13 @@ static PedalsState g_state = STATE_INIT;
 static uint32_t g_lastActivityTime = 0;
 static uint32_t g_lastStreamTime = 0;
 
-// Warmup window. On boot we silently drain Serial3 for ~2 seconds before
+// Warmup window. On boot we silently drain Serial1 for ~2 seconds before
 // engaging the handshake state machine. The wheelbase often still has
-// state from the previous Teensy session — partway through its own
-// retry loop, or with stale TX buffers — and any half-finished 0x0A /
-// 0x05 we'd act on lands us in an out-of-sync STEP1 that the wheelbase
-// won't follow through. Giving the line ~2 s of silence lets the
-// wheelbase's retry timer fire fresh and re-initiate cleanly.
+// state from the previous adapter session — partway through its own retry
+// loop, or with stale TX buffers — and any half-finished 0x0A / 0x05 we'd
+// act on lands us in an out-of-sync STEP1 that the wheelbase won't follow
+// through. Giving the line ~2 s of silence lets the wheelbase's retry
+// timer fire fresh and re-initiate cleanly.
 //
 // 0 once warmup has completed (set by pedalsUpdate).
 static uint32_t g_warmupUntil = 0;
@@ -38,8 +40,7 @@ constexpr uint32_t WARMUP_MS = 2000;
 // against the proxy.go expected sequence fails on this base.
 //
 // We collect 12-byte framed packets (0x7B…0x7D), tally which command IDs
-// have arrived, and fire the identity response once all three have been
-// seen at least once.
+// have arrived, and fire the identity response once 0x03 has been seen.
 static uint8_t g_step2Buf[12];
 static uint8_t g_step2BufIdx = 0;
 static bool g_step2Got00 = false;
@@ -94,10 +95,15 @@ static uint8_t generateCrc(const uint8_t* data, size_t len) {
   return crc;
 }
 
+// Re-initialise Serial1 at a new baud rate. On ESP32-S3 Arduino we have to
+// re-supply the pin assignments because Serial.end() drops the peripheral
+// config. updateBaudRate() would be lighter but doesn't reset the FIFO,
+// which is the whole point of the call site (STEP1 → STEP2 transition
+// needs a clean slate).
 static void reinitSerial(uint32_t baud) {
-  Serial3.end();
+  Serial1.end();
   delay(10); // give serial peripheral time to settle
-  Serial3.begin(baud);
+  Serial1.begin(baud, SERIAL_8N1, PEDAL_RX, PEDAL_TX);
 }
 
 static void resetStep2State() {
@@ -118,7 +124,7 @@ static void resetToStep0() {
 void pedalsInit() {
   initCrcTable();
   g_warmupUntil = millis() + WARMUP_MS;
-  Serial.print("[Pedal] Warmup: draining Serial3 for ");
+  Serial.print("[Pedal] Warmup: draining Serial1 for ");
   Serial.print(WARMUP_MS);
   Serial.println(" ms before engaging handshake.");
   resetToStep0();
@@ -159,7 +165,7 @@ static void sendPedalPacket() {
 
   packet[11] = 0x7D; // End frame marker
 
-  Serial3.write(packet, 12);
+  Serial1.write(packet, 12);
 }
 
 void pedalsUpdate() {
@@ -169,8 +175,8 @@ void pedalsUpdate() {
   // STEP0. See WARMUP_MS comment up top for rationale.
   if (g_warmupUntil != 0) {
     if (millis() < g_warmupUntil) {
-      while (Serial3.available() > 0)
-        Serial3.read();
+      while (Serial1.available() > 0)
+        Serial1.read();
       return;
     }
     Serial.println("[Pedal] Warmup complete — engaging handshake state machine.");
@@ -192,15 +198,15 @@ void pedalsUpdate() {
   }
 
   // Handle incoming data based on state
-  while (Serial3.available() > 0) {
-    uint8_t b = Serial3.read();
+  while (Serial1.available() > 0) {
+    uint8_t b = Serial1.read();
     g_lastActivityTime = millis();
 
     switch (g_state) {
       case STATE_STEP0:
         if (b == 0x0A) {
           Serial.println("[Pedal] Step 0: Received 0x0A. Sending 0x1A.");
-          Serial3.write(0x1A);
+          Serial1.write(0x1A);
           g_state = STATE_STEP1;
         }
         break;
@@ -208,8 +214,8 @@ void pedalsUpdate() {
       case STATE_STEP1:
         if (b == 0x05) {
           Serial.println("[Pedal] Step 1: Received 0x05. Sending 0x15.");
-          Serial3.write(0x15);
-          Serial3.flush(); // wait for byte to fully transmit before baud change
+          Serial1.write(0x15);
+          Serial1.flush(); // wait for byte to fully transmit before baud change
 
           Serial.println("[Pedal] Switching to 115200 baud (STATE_STEP2)...");
           reinitSerial(115200);
@@ -265,21 +271,21 @@ void pedalsUpdate() {
           case 0x00:
             if (!g_step2Got00) {
               Serial.println("[Pedal] Step 2: ack cmd 0x00");
-              Serial3.write(STEP2_TX_CMD_00, sizeof(STEP2_TX_CMD_00));
+              Serial1.write(STEP2_TX_CMD_00, sizeof(STEP2_TX_CMD_00));
               g_step2Got00 = true;
             }
             break;
           case 0x02:
             if (!g_step2Got02) {
               Serial.println("[Pedal] Step 2: ack cmd 0x02");
-              Serial3.write(STEP2_TX_CMD_02, sizeof(STEP2_TX_CMD_02));
+              Serial1.write(STEP2_TX_CMD_02, sizeof(STEP2_TX_CMD_02));
               g_step2Got02 = true;
             }
             break;
           case 0x03:
             if (!g_step2Got03) {
               Serial.println("[Pedal] Step 2: ack cmd 0x03");
-              Serial3.write(STEP2_TX_CMD_03, sizeof(STEP2_TX_CMD_03));
+              Serial1.write(STEP2_TX_CMD_03, sizeof(STEP2_TX_CMD_03));
               g_step2Got03 = true;
             }
             break;
@@ -299,7 +305,7 @@ void pedalsUpdate() {
         // before we'd transition), so we don't gate on them. Matches the
         // sketch in GeekyDeaks/fanatec-pedal-emulator#4.
         if (g_step2Got03) {
-          Serial3.flush();
+          Serial1.flush();
           Serial.println("[Pedal] Handshake complete (cmd 0x03 acked). → STREAMING.");
           g_state = STATE_STREAMING;
           g_lastStreamTime = millis();

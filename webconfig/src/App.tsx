@@ -876,11 +876,11 @@ export default function App() {
     }
   }
 
-  // Soft-reset the Teensy. The firmware drops USB immediately after acking,
+  // Soft-reset the adapter. The firmware drops USB immediately after acking,
   // so we tear our side down too — the user reconnects when ready.
   async function handleReboot() {
     try {
-      setStatus('Rebooting Teensy…')
+      setStatus('Rebooting adapter…')
       await client.reboot()
     } catch {
       // The firmware vanishes mid-response; a timeout or disconnect here
@@ -901,7 +901,7 @@ export default function App() {
     setVersion(null)
     setCapturing(null)
     trackingRef.current = null
-    setStatus('Teensy rebooted — click Connect when it re-enumerates')
+    setStatus('Adapter rebooted — click Connect when it re-enumerates')
     setTimeout(() => setStatus(''), 4000)
   }
 
@@ -1089,7 +1089,7 @@ function Header({
                 variant="outline"
                 size="sm"
                 onClick={onReboot}
-                title="Soft-reboot the Teensy. EEPROM is preserved; live USB host pool is reset."
+                title="Soft-reboot the adapter. Saved config is preserved; live USB host pool is reset."
               >
                 <Power className="h-4 w-4" />
                 Reboot
@@ -1122,7 +1122,7 @@ function ConnectGate({ supported, onConnect }: { supported: boolean; onConnect: 
           Connect to a fanadapter
         </CardTitle>
         <CardDescription>
-          Plug the Teensy into this computer via USB. WebSerial works in Chrome, Edge, and Brave on
+          Plug the adapter into this computer via USB. WebSerial works in Chrome, Edge, and Brave on
           desktop.
         </CardDescription>
       </CardHeader>
@@ -2274,10 +2274,10 @@ function OutputsView({
         <CardHeader>
           <CardTitle>Wheelbase pedal link</CardTitle>
           <CardDescription>
-            CSL Elite UART handshake state lives on Serial3. After a Teensy soft reboot the
-            wheelbase may stay in its prior streaming state and skip the next handshake — re-arming
-            forces a fresh Step 0 / 250000 baud attempt without unplugging USB. Check the Logs tab
-            for handshake progress.
+            CSL Elite UART handshake state lives on the adapter's pedal UART. After an adapter soft
+            reboot the wheelbase may stay in its prior streaming state and skip the next handshake —
+            re-arming forces a fresh Step 0 / 250000 baud attempt without unplugging USB. Check the
+            Logs tab for handshake progress.
           </CardDescription>
         </CardHeader>
         <CardContent>

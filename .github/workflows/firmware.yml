@@ -22,8 +22,12 @@ concurrency:
 # what the firmware is known to build & pass static checks with. Bump them
 # deliberately rather than letting an upstream release silently change CI.
 env:
-  TEENSY_CORE_VERSION: 1.61.0
+  ESP32_CORE_VERSION: 3.3.8
   ARDUINOJSON_VERSION: 7.4.3
+  # EspUsbHost has no Library Manager release with the multi-device + parsed
+  # gamepad API we use — only master. Pin a commit hash here so a force-push
+  # to master can't silently break our build.
+  ESPUSBHOST_GIT_URL: https://github.com/tanakamasayuki/EspUsbHost.git
 
 jobs:
   lint-and-static-analysis:
@@ -74,14 +78,19 @@ jobs:
         run: |
           arduino-cli config init --overwrite
           arduino-cli core update-index
-          arduino-cli config set board_manager.additional_urls https://www.pjrc.com/teensy/package_teensy_index.json
+          arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core update-index
-          arduino-cli core install teensy:avr@${TEENSY_CORE_VERSION}
+          arduino-cli core install esp32:esp32@${ESP32_CORE_VERSION}
           arduino-cli lib install ArduinoJson@${ARDUINOJSON_VERSION}
+          # EspUsbHost only available via git URL — Library Manager version
+          # (1.0.1) is too old. enable_unsafe_install is required for git URLs.
+          arduino-cli config set library.enable_unsafe_install true
+          arduino-cli lib install --git-url ${ESPUSBHOST_GIT_URL}
 
-      - name: Compile Teensy sketch with strict warnings-as-errors
+      - name: Compile ESP32-S3 sketch with strict warnings-as-errors
         run: |
-          arduino-cli compile --fqbn teensy:avr:teensy41 \
+          arduino-cli compile \
+            --fqbn "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,USBMode=hwcdc,CDCOnBoot=default" \
             --warnings all \
             --build-property compiler.c.extra_flags="-Werror" \
             --build-property compiler.cpp.extra_flags="-Werror" \

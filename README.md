@@ -1,10 +1,12 @@
 # fanadapter
 
-USB HID → Fanatec wheelbase adapter using a Teensy 4.1, combined with a browser-based WebSerial configuration UI.
+USB HID → Fanatec wheelbase adapter built on an **ESP32-S3** (N16R8), combined with a browser-based WebSerial configuration UI.
 
 An open-source adapter that lets arbitrary USB HID sim racing peripherals (H-pattern shifters, sequential shifters, handbrakes, and USB pedals — plus gamepads, D-pad/Hat controllers, and keyboards) connect to a Fanatec wheelbase as if they were native Fanatec gear. This is particularly valuable on game consoles (PS4/PS5/Xbox Series X|S) where third-party USB peripherals cannot be plugged directly into the console.
 
 From the perspective of the wheelbase, the adapter looks like genuine Fanatec hardware (supporting a digital UART pedal stream and analog/digital shifter and handbrake signals).
+
+> **Note on platform:** This project originally ran on a Teensy 4.1 (through version 0.6.0). Starting with **v0.7.0**, the firmware was ported to ESP32-S3 to lower the MCU cost and use a more available board. The webconfig WebSerial protocol is identical across both — the JSON wire shape didn't change. If you specifically need the Teensy build, check out a tag before v0.7.0 from git history.
 
 ---
 
@@ -12,9 +14,9 @@ From the perspective of the wheelbase, the adapter looks like genuine Fanatec ha
 
 ```
 USB H-pattern shifter ─┐
-USB sequential shifter ┼──► [Powered USB Hub] ──► [Teensy 4.1] ──► RJ12 ──► Fanatec Wheelbase
-USB handbrake ─────────┘                                    RJ12        (up to 3 ports)
-USB pedals ────────────┘                                    RJ12
+USB sequential shifter ┼──► [Powered USB Hub] ──► [ESP32-S3] ──► RJ12 ──► Fanatec Wheelbase
+USB handbrake ─────────┘                                  RJ12        (up to 3 ports)
+USB pedals ────────────┘                                  RJ12
 ```
 
 ---
@@ -34,9 +36,13 @@ USB pedals ────────────┘                              
   * Bases without dedicated handbrake ports (Pre-DD generation may share the handbrake with the pedal port).
 
 ### USB Hubs (Important)
-Because the Teensy 4.1 has a single onboard USB host port, a **powered USB 2.0 hub** is required to connect multiple peripherals. 
-* **Known Incompatible:** Sabrent 4-port USB 2.0 hub (VID `0x5E3`, PID `0x610`, Genesys Logic GL850G chip) — causes partial enumeration and detach cascades under Teensy's USB host stack. **Do not use this hub.**
-* **Recovery:** If devices stop responding, unplug the hub, connect it to a PC for 5 seconds to reset its state machine, and plug it back into the Teensy.
+The ESP32-S3 has a single native USB OTG port, so a **powered USB 2.0 hub** is required to connect multiple peripherals. The ESP-IDF USB host stack supports external hubs but is subject to a hard ~8-channel EHCI ceiling on this chip — see `firmware/README.md` for limits.
+
+> [!IMPORTANT]
+> Generic ESP32-S3 dev boards (Lonely Binary Gold Edition, YD-ESP32-S3, etc.) ship with the native USB port wired so VBUS is **input-only**. A one-time solder-jumper mod is required before any USB host operation will work — see `firmware/README.md` → Hardware setup. Without this mod, the firmware boots cleanly and the host stack initializes, but no downstream device ever enumerates because they have no 5V to power their controllers.
+
+### USB Host Stack
+The current firmware uses [EspUsbHost](https://github.com/tanakamasayuki/EspUsbHost) (master branch), an Arduino-friendly wrapper over ESP-IDF's `usb_host` library. It handles enumeration, hub support, and parses HID gamepad / keyboard reports into per-usage field values that we consume directly. The Teensy build used `USBHost_t36`; the wire-level behavior of the adapter is identical.
 
 ---
 
@@ -45,7 +51,7 @@ Because the Teensy 4.1 has a single onboard USB host port, a **powered USB 2.0 h
 The project is structured into three main directories:
 
 1. **[`firmware/`](firmware/README.md)**  
-   The Arduino sketch (Teensyduino) designed for the Teensy 4.1. It reads USB HID inputs from the devices pool via `USBHost_t36`, evaluates custom user mappings, manages calibration saved to EEPROM, and emulates CSL Elite V2 pedals along with driving shifter and handbrake ports.
+   The Arduino sketch (arduino-esp32 v3.3+) for the ESP32-S3. It reads USB HID inputs from the device pool via `EspUsbHost`, evaluates custom user mappings, manages calibration saved to NVS (Preferences), and emulates CSL Elite V2 pedals along with driving shifter and handbrake ports.
    
 2. **[`webconfig/`](webconfig/README.md)**  
    A beautiful, modern React 19 + TypeScript + Tailwind + shadcn/ui configuration interface. It runs directly in desktop Chromium-based browsers (Chrome, Edge, Brave) and communicates with the firmware over WebSerial (line-based JSON) to capture binds, calibrate axis deadzones, and test outputs.
@@ -67,8 +73,8 @@ The following features and improvements are planned for future updates:
 * **SimHub Integration** — Driving the same WebSerial JSON protocol from SimHub.
 * **0-5V Handbrake Scaler** — Incorporating an op-amp scaling stage (MCP6001 with ~1.52 gain) for native 0-5V analog voltage swing.
 * **Mode Switching on Shifter 1** — Software toggle between H-pattern and sequential modes on a single physical RJ12 port.
-* **Cheaper MCU Port** — Porting the firmware to RP2040 or ESP32-S3 to lower the MCU cost.
 * **Built-in USB Hub** — Designing a USB hub circuit directly onto the project's custom PCB to ensure maximum stability and compatibility.
+* **Onboard VBUS Supply** — Custom PCB rev would integrate a 5V-to-OTG-VBUS switching circuit so users don't need the solder-jumper mod on a generic ESP32-S3 dev board.
 
 ---
 

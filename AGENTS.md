@@ -4,12 +4,12 @@ This file provides guidance for AI coding agents working in this repository.
 
 ## What this repo is
 
-`fanadapter` is a USB HID → Fanatec wheelbase adapter (Teensy 4.1) plus a browser-based WebSerial UI for configuring it. Two halves that ship together:
+`fanadapter` is a USB HID → Fanatec wheelbase adapter (**ESP32-S3 N16R8**) plus a browser-based WebSerial UI for configuring it. Two halves that ship together:
 
-- **`firmware/`** — Arduino sketch (Teensyduino) that runs on the Teensy 4.1. Enumerates USB HID joysticks, gamepads, and multi-axis controllers via the native USB host port and drives Fanatec RJ12 ports (H-pattern PWM, sequential open-drain, handbrake PWM, pedal-port UART).
+- **`firmware/`** — Arduino sketch (arduino-esp32 v3.3+) that runs on an ESP32-S3-WROOM-1 dev board. Enumerates USB HID joysticks, gamepads, multi-axis controllers, and keyboards via the chip's native USB OTG port and drives Fanatec RJ12 ports (H-pattern PWM, sequential open-drain, handbrake PWM, pedal-port UART). The original Teensy 4.1 build lived here through version 0.6.0 — git history holds it if needed.
 - **`webconfig/`** — Vite + React 19 + TypeScript + Tailwind + shadcn/ui app that talks to the firmware over WebSerial (line-based JSON). Deployed to GitHub Pages by `.github/workflows/pages.yml` on push to `main`.
 
-Detailed hardware docs, port pinouts, protocol references, calibration guides: `firmware/README.md`. Webconfig deploy + dev: `webconfig/README.md`. This file only covers the parts that need cross-file context.
+Detailed hardware docs, port pinouts, protocol references, calibration guides, and the **one-time solder-jumper mod required to make USB host work**: `firmware/README.md`. Webconfig deploy + dev: `webconfig/README.md`. This file only covers the parts that need cross-file context.
 
 ## Commands
 
@@ -17,15 +17,25 @@ Detailed hardware docs, port pinouts, protocol references, calibration guides: `
 
 ```sh
 # Compile
-arduino-cli compile --fqbn teensy:avr:teensy41 firmware
+arduino-cli compile --fqbn "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,USBMode=hwcdc,CDCOnBoot=default" firmware
 
-# Flash (Teensy presents as a serial port; replace COM11 with the actual port)
-arduino-cli upload -p COM11 --fqbn teensy:avr:teensy41 firmware
+# Flash (board enumerates as a CH340 / CP2102 COM port via its UART USB-C port;
+# replace COM13 with the actual port — never use the OTG-side port, that's in
+# host mode at runtime and isn't a CDC serial device)
+arduino-cli upload -p COM13 --fqbn "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,USBMode=hwcdc,CDCOnBoot=default" firmware
 ```
 
-Required external library: **ArduinoJson** ≥ 7.0 — `arduino-cli lib install ArduinoJson`.
+Required external libraries:
+- **ArduinoJson** ≥ 7.0 — `arduino-cli lib install ArduinoJson`
+- **EspUsbHost** (master from git — Library Manager has only 1.0.1 which lacks the multi-device + parsed-gamepad API we use):
+  ```sh
+  arduino-cli config set library.enable_unsafe_install true
+  arduino-cli lib install --git-url https://github.com/tanakamasayuki/EspUsbHost.git
+  ```
 
-The flash uploader can't acquire the port while WebSerial is connected — the UI's **Disconnect** button must be hit first, or you get an "Access is denied" error (Windows). The firmware also exposes a `{"cmd":"reboot"}` JSON command (SCB AIRCR soft reset) so re-flashing isn't needed for a restart.
+ESP32 core: `arduino-cli core install esp32:esp32@3.3.8` (or newer 3.x).
+
+The flash uploader can't acquire the UART COM port while WebSerial is connected — the UI's **Disconnect** button must be hit first, or you get an "Access is denied" error (Windows). The firmware also exposes a `{"cmd":"reboot"}` JSON command (`ESP.restart()`) so re-flashing isn't needed for a restart.
 
 There are no firmware tests.
 
@@ -50,15 +60,18 @@ There are no webconfig tests.
 Five translation units, loop-dispatched in `firmware.ino` in this order — order matters:
 
 ```
-g_usb.Task() → pollUsbDriverStatus() → protocolTick() → mappingTick() → pedalsUpdate()
+protocolTick() → mappingTick() → pedalsUpdate()
 ```
 
-- `device_pool.{h,cpp}` — 8-slot pool of `GenericJoystickHID` consumers. Claims any joystick, gamepad, multi-axis controller, or keyboard HID collection (any VID/PID), first-come-first-served. Axis/button counts are discovered lazily from observed reports — they start at 0 and grow. Each slot also snapshots the device's USB **manufacturer / product** string descriptors at claim time (sanitised to printable ASCII so the protocol's JSON stays valid UTF-8), exposed via `manufacturerName()` / `productName()` and surfaced in `list_devices` / `device_attached`. The strings are read straight from `dev->strbuf` — populated before `claim_collection()` fires, so `mydevice = dev` plus the inherited `product()` accessor is enough. **Hat Switch (D-pad)** is a first-class input type alongside button and axis: each device tracks `m_hat` (0..7 direction, or `HAT_RELEASED = 0xFF`) and `m_hasHat` (set true on first hat report). Bindings of type `INPUT_HAT` match a specific direction strictly — diagonals don't fire cardinal bindings. For lenient matching (e.g. "N or NE" → shift up), bind multiple slots on the same channel. **Keyboards** are tracked similarly: up to `MAX_KEYS_PRESSED = 6` simultaneously-pressed scancodes are kept in `m_keys[]`, `m_hasKeyboard` set on first key event. Bindings of type `INPUT_KEY` carry the HID Keyboard/Keypad scancode in `index` (0x04 = A, …, 0xE0..0xE7 = modifiers) and fire while that scancode is in the pressed set.
-- `mapping.{h,cpp}` — `Config` schema, EEPROM I/O, `evalAxis` / `evalButton` evaluators, per-channel updaters that drive PWM pins and the pedal stream. **`Config` is 1060 bytes with `static_assert`-locked layout**; any field change without a matching size update is a compile error. Bump `CONFIG_VERSION` (`mapping.h`) on schema changes — EEPROMs from older versions are rejected and the firmware boots with defaults.
-- `protocol.{h,cpp}` — Line-based JSON command dispatcher over USB CDC Serial (`ArduinoJson v7`). Lines starting with `{` are JSON commands; other characters go to the CLI callback. Emits async events (`device_attached`, `device_detached`, `live`, `outputs`) — rate-limited to ~50 Hz inputs / ~30 Hz outputs.
-- `pedals.{h,cpp}` — CSL Elite V2 UART emulator on Serial3 (pins 14/15). State machine: STEP0 (250000 baud, expects `0x0A` → sends `0x1A`) → STEP1 (`0x05` → `0x15`) → STEP2 (switches to 115200, 12-byte framed query/response) → STREAMING (100 Hz pedal packets). **Boot warmup**: on startup we silently drain Serial3 for 2 s before engaging the handshake — gives the wheelbase a clean silence window to reset its end after a Teensy reboot (otherwise it hangs sending `0x0A` without following with `0x05`).
-- `name.c` — Custom USB descriptor overrides (`usb_names.h`). Declares the board's USB Manufacturer Name as `"fanadapter"` and Product Name as `"Fanadapter v0.6.0"` to replace the generic `"USB Serial"` device string. The version here must track the firmware version reported by `protocol.cpp` (`ver`) and the `firmware.ino` boot banner — bump all three together. `PRODUCT_NAME_LEN` is the character count and must match if the string length changes.
-- `firmware.ino` — orchestrator only. USB host instances (`USBHIDParser × 8`, `USBHub × 2`), pin/PWM setup (PIN_X=4, PIN_Y=5, PIN_SEQ_UP=6, PIN_SEQ_DOWN=7, PIN_HANDBRAKE=8, 12-bit PWM @ 36 kHz), minimal CLI (`u`/`p`/`X`/`?`).
+USB host work runs on its own FreeRTOS task spawned inside `EspUsbHost::begin()` — no `Task()`-style polling call needed in `loop()` (unlike the Teensy USBHost_t36 build's `g_usb.Task()`). The host task fires callbacks that update the device pool slots asynchronously; `mappingTick()` reads slot state every loop pass.
+
+- `device_pool.{h,cpp}` — 8-slot pool of `GenericJoystickHID` consumers. Wires EspUsbHost's `onDeviceConnected` / `onDeviceDisconnected` / `onGamepad` / `onKeyboard` callbacks to claim any non-hub device (any VID/PID), first-come-first-served. Slots track address → slot mapping by the USB address EspUsbHost assigns at enumeration. Axis/button counts are discovered lazily from observed reports — they start at 0 and grow. Each slot snapshots `vid`, `pid`, `manufacturer`, `product` from the `EspUsbHostDeviceInfo` at connect time (sanitised to printable ASCII so JSON stays valid UTF-8), exposed via `manufacturerName()` / `productName()` and surfaced in `list_devices` / `device_attached`. **Hat Switch (D-pad)** is a first-class input type alongside button and axis: each device tracks `m_hat` (0..7 direction, or `HAT_RELEASED = 0xFF`) and `m_hasHat` (set true on first hat report). Bindings of type `INPUT_HAT` match a specific direction strictly — diagonals don't fire cardinal bindings. For lenient matching (e.g. "N or NE" → shift up), bind multiple slots on the same channel. **Keyboards** are tracked similarly: up to `MAX_KEYS_PRESSED = 6` simultaneously-pressed scancodes are kept in `m_keys[]`, `m_hasKeyboard` set on first key event. Modifier keys (0xE0..0xE7) are derived from EspUsbHost's per-event `modifiers` mask via a diff against the slot's shadow. Bindings of type `INPUT_KEY` carry the HID Keyboard/Keypad scancode in `index` (0x04 = A, …, 0xE0..0xE7 = modifiers) and fire while that scancode is in the pressed set.
+- `mapping.{h,cpp}` — `Config` schema, NVS I/O via `Preferences` (single binary blob under namespace `"fanadapter"`, key `"config"`), `evalAxis` / `evalButton` evaluators, per-channel updaters that drive PWM pins (`ledcWrite`) and the pedal stream. **`Config` is 1132 bytes with `static_assert`-locked layout**; any field change without a matching size update is a compile error. Bump `CONFIG_VERSION` (`mapping.h`) on schema changes — saved blobs from older versions are rejected and the firmware boots with defaults.
+- `protocol.{h,cpp}` — Line-based JSON command dispatcher over `Serial` (UART0 → onboard USB-Serial bridge → UART USB-C port; **not** the native USB CDC, which is suppressed when USB OTG is in host mode). Uses `ArduinoJson v7`. Lines starting with `{` are JSON commands; other characters go to the CLI callback. Emits async events (`device_attached`, `device_detached`, `live`, `outputs`) — rate-limited to ~50 Hz inputs / ~30 Hz outputs.
+- `pedals.{h,cpp}` — CSL Elite V2 UART emulator on Serial1 (RX=GPIO 18, TX=GPIO 17). State machine: STEP0 (250000 baud, expects `0x0A` → sends `0x1A`) → STEP1 (`0x05` → `0x15`) → STEP2 (switches to 115200, 12-byte framed query/response) → STREAMING (100 Hz pedal packets). **Boot warmup**: on startup we silently drain Serial1 for 2 s before engaging the handshake — gives the wheelbase a clean silence window to reset its end after a chip reboot (otherwise it hangs sending `0x0A` without following with `0x05`).
+- `firmware.ino` — orchestrator only. EspUsbHost singleton, pin/PWM setup via `ledcAttach()` (PIN_X=4, PIN_Y=5, PIN_SEQ_UP=6, PIN_SEQ_DOWN=7, PIN_HANDBRAKE=8, 12-bit PWM @ 5 kHz), Serial1 pins (PEDAL_TX=17, PEDAL_RX=18), minimal CLI (`u`/`p`/`X`/`?`).
+
+(The Teensy build had a `name.c` for USB descriptor overrides. ESP32-S3 doesn't need it — the native USB CDC is off in host mode, so there's no device-side product string to override.)
 
 ### Channel model
 
@@ -108,12 +121,17 @@ Baseline accumulation lives in a `useRef` (not React state) to avoid render loop
 
 ## Things to know before editing
 
-- **`CONFIG_VERSION` bumps wipe user EEPROMs on next flash.** The firmware boots with empty bindings on version mismatch (defaults preserved for gear DAC voltages and pulse width). Mention this in commit messages when applicable.
+- **Hardware: the USB-OTG VBUS solder jumper is mandatory.** Generic ESP32-S3 dev boards (YD-ESP32-S3 / Lonely Binary Gold Edition / etc.) ship with the native USB port wired so VBUS is input-only — downstream devices have no 5V to power their controllers, no device asserts attach, and `list_devices` stays empty even with verbose IDF logs showing the host stack is up. Bridge the back-side `USB-OTG` solder jumper (or the equivalent SOD-123 diode) before expecting anything to enumerate. **After bridging, the OTG port is host-only — never plug it into a PC.** Full procedure in `firmware/README.md` → Hardware setup.
+- **PWM frequency cap on ESP32-S3 LEDC.** The Teensy build ran 12-bit @ 36 kHz. ESP32-S3's LEDC auto-clock can't sustain that combo (IDF spams `div_param=0` on every `ledcWrite`). We pinned `PWM_FREQ_HZ = 5000` in `mapping.h` — comfortably below the auto-clock ceiling and still 30× the RC filter cutoff so DAC ripple stays inaudible. Don't raise it without re-testing on every available LEDC clock source.
+- **EHCI channel ceiling.** ESP32-S3 USB host has a hard ~8 channel limit shared across all downstream interrupt endpoints + hub control pipes. Multi-interface devices (composite gamepads + consumer-control, keyboard receivers with HID++ vendor pages) can eat 2–3 channels each. The `u` CLI prints the live count; watch it when adding devices through a hub.
+- **`CONFIG_VERSION` bumps wipe user NVS on next flash.** The firmware boots with empty bindings on version mismatch (defaults preserved for gear DAC voltages and pulse width). Mention this in commit messages when applicable.
 - **Pedal handshake desync survives soft reboots.** A `{"cmd":"reboot"}` (or any firmware re-flash) doesn't reset the wheelbase's UART state. The 2-second boot warmup helps, but recovery sometimes needs the **Re-arm pedals handshake** button in the Outputs tab (calls `pedalsForceReset` → `cmd: reset_pedals`) or a physical USB replug.
 - **`0x7B`-framed bytes during STREAMING are normal.** The wheelbase keeps emitting stale STEP 2 queries even after handshake completes — don't interpret them as a re-handshake request. The `STATE_STREAMING` byte handler ignores them.
 - **Multiple devices can share a channel.** Conflict-clearing across channels was tried and removed — one physical input can deliberately drive multiple outputs (e.g. one button bound to both `gear_R` and `shift_down`). Defensive neutral handles the H-pattern multi-active case.
-- **Loop dispatch order.** `pedalsUpdate()` runs last in the main loop. If you add new long-running work to `mappingTick()` or `protocolTick()`, the pedal stream's 100 Hz cadence can slip and the wheelbase will drop pedals.
-- **WebSerial holds COM exclusively.** The firmware uploader and any other serial tool can't talk to the Teensy while the UI is connected. Disconnect first, or use the JSON `reboot` command if you just need a restart.
+- **Loop dispatch order.** `pedalsUpdate()` runs last in the main loop. If you add new long-running work to `mappingTick()` or `protocolTick()`, the pedal stream's 100 Hz cadence can slip and the wheelbase will drop pedals. (USB host is on its own FreeRTOS task spawned by EspUsbHost, so it doesn't compete with main loop time directly — but the device-pool callbacks run on the USB task, so any slow work there will block the next USB event poll.)
+- **`Serial` is UART0 (via the onboard USB-Serial bridge), not native USB CDC.** When USB OTG is in host mode (driven by EspUsbHost), the native USB Serial/JTAG controller is suppressed — `Serial` is wired to UART0 on GPIO 43/44 routed through the dev board's CH340 / CP2102 bridge on the UART USB-C port. WebSerial connects to *that* COM port. There's no DTR equivalent on a plain UART, so `if (!Serial)` is always true and the Teensy build's "drop subscriptions when host closes the port" logic is a no-op on this platform.
+- **Open-drain macro:** ESP32 Arduino uses `OUTPUT_OPEN_DRAIN` (underscore). The Teensy `OUTPUT_OPENDRAIN` macro doesn't exist here — wrong spelling silently compiles to push-pull and the sequential lines never float high again, eventually damaging the wheelbase pull-ups.
+- **WebSerial holds the COM port exclusively.** The UART port is shared between the flash uploader (esptool over UART) and WebSerial — only one client at a time. Disconnect WebSerial first, or use `{"cmd":"reboot"}` for a soft restart.
 - **No agent attribution on commits.** Do not add Co-Authored-By or similar attribution lines for AI assistants on commits in this repo.
 - **Repo root is the directory containing this file.** `firmware/` and `webconfig/` are siblings. The Arduino sketch convention requires `firmware/firmware.ino` (folder name = .ino name) — don't rename one without the other.
 - **Keep docs in sync with the code.** When a change affects something documented here or in a README, update both in the same commit. Things that warrant a doc edit:

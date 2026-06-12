@@ -2,7 +2,7 @@
 
 The browser-based configuration interface for the [fanadapter firmware](../firmware/). Built with Vite, React 19, TypeScript, Tailwind, and shadcn/ui.
 
-The webapp communicates with the Teensy 4.1 over WebSerial using a line-based JSON protocol. No native helper application or local daemon is required.
+The webapp communicates with the adapter (ESP32-S3 from v0.7.0; Teensy 4.1 through v0.6.0) over WebSerial using a line-based JSON protocol. No native helper application or local daemon is required.
 
 ---
 
@@ -42,7 +42,7 @@ npm run build
 npm run lint
 ```
 
-When running `npm run dev`, Vite will serve the application at `http://localhost:5173/fanadapter/`. Open this URL in Chrome, Edge, or Brave, click **Connect**, and choose the Teensy USB Serial CDC device from the browser permission pop-up.
+When running `npm run dev`, Vite will serve the application at `http://localhost:5173/fanadapter/`. Open this URL in Chrome, Edge, or Brave, click **Connect**, and choose the adapter's USB-Serial bridge device from the browser permission pop-up (CH340 or CP2102 on the ESP32-S3 build's UART USB-C port; native USB CDC on older Teensy builds).
 
 ### Custom Subfolder Deployment
 
@@ -95,7 +95,7 @@ To keep the web configurator aligned with the microcontroller's operation, three
 
 ### 2. FIFO Serial Request/Response Queue
 
-Because multiple UI modules can request details from the Teensy simultaneously, `SerialClient` (`webconfig/src/lib/serial.ts`) implements a FIFO queue over WebSerial:
+Because multiple UI modules can request details from the adapter simultaneously, `SerialClient` (`webconfig/src/lib/serial.ts`) implements a FIFO queue over WebSerial:
 
 - Commands (non-event JSON strings) are pushed to the queue and executed sequentially. When a JSON reply is returned, it is matched with the oldest pending promise.
 - Event packages (`{"event":"..."}`) are intercepted, bypassed, and fanned out to active UI subscribers.
@@ -105,7 +105,7 @@ Because multiple UI modules can request details from the Teensy simultaneously, 
 
 ### 3. Cross-File Code Invariants
 
-The web app shares four strict boundaries with the Teensy 4.1 C++ code. If a change is made to one, its twin file must be updated in the same commit:
+The web app shares four strict boundaries with the firmware C++ code. If a change is made to one, its twin file must be updated in the same commit:
 
 | Webconfig Component    | Firmware Code               | Matching Requirement                                               |
 | ---------------------- | --------------------------- | ------------------------------------------------------------------ |
@@ -124,9 +124,9 @@ The web app shares four strict boundaries with the Teensy 4.1 C++ code. If a cha
 ### Configurator refuses to connect
 
 - Ensure you are running Chrome, Edge, or Brave. Safari and Firefox are incompatible.
-- Ensure the Teensy's serial port is not occupied by another utility, such as a serial monitor, `arduino-cli upload`, or another open WebSerial browser tab.
+- Ensure the adapter's serial port is not occupied by another utility (serial monitor, `arduino-cli upload`, another open WebSerial browser tab).
 
 ### The preview bars move in the UI, but the wheelbase does not react
 
-- Verify that you clicked **Save to EEPROM** after completing mappings. Mappings in React are active temporarily on the Teensy's RAM but will revert or fail to handshake unless committed.
+- Verify that you clicked **Save** after completing mappings. Unsaved mappings live only in adapter RAM and revert on reboot.
 - Verify that your hardware cables match the pinouts described in the [Hardware & Schematics Reference](../schematics/README.md).

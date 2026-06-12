@@ -254,7 +254,7 @@ export const GEAR_KEYS: GearKey[] = [
 // a length-MAX_BINDINGS_PER_CHANNEL array, padding with NONE_BINDING when
 // the firmware sent a shorter list. Also accepts the legacy single-object
 // shape (firmware v0.2.0) and wraps it as a 1-element array so the UI keeps
-// rendering when the Teensy hasn't been reflashed yet.
+// rendering when the adapter hasn't been reflashed yet.
 export function getChannelBindings(config: Config, key: ChannelKey): ChannelBindings {
   let raw: unknown
   if (key.startsWith('gear_')) {

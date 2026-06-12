@@ -1,27 +1,83 @@
-// Dynamic input → output mapping, calibration, and EEPROM persistence.
+// Dynamic input → output mapping, calibration, and persistence.
 //
-// Layout is locked with static_asserts so the EEPROM schema can't drift
+// Layout is locked with static_asserts so the persisted schema can't drift
 // silently. Bump CONFIG_VERSION on any field change.
+//
+// ESP32-S3 port: storage backend is Preferences (NVS blob) instead of the
+// Teensy's byte-addressed EEPROM, but the in-memory Config struct and JSON
+// wire shape are identical so the webconfig UI works unchanged.
 
 #pragma once
 #include <Arduino.h>
 
 // ---------------- Pin & PWM configuration ----------------
-// Single source of truth — both the main sketch (for pinMode/PWM setup)
-// and the mapping engine (for analogWrite) include this header.
+// Single source of truth — both the main sketch (for pinMode/PWM setup) and
+// the mapping engine (for ledcWrite) include this header.
+//
+// Two targets are supported, selected by the IDF target macro:
+//   ESP32-S3  — original port. 8 USB host channels (DWC2 FS).
+//   ESP32-P4  — escapes the 8-channel wall: USB 2.0 HS host = 16 channels.
+//               On the Waveshare ESP32-P4-Module-DEV-KIT the HS-OTG fans out
+//               through an ONBOARD CH334F 4-port hub to the 4 USB Type-A
+//               jacks — so no external hub is needed; plug devices straight
+//               into the Type-A bank (set the board's USB-OTG jumper to HOST).
+//
+// USB host uses the chip's dedicated USB PHY pins on BOTH targets — none of
+// the GPIOs below are involved in enumeration, so the USB-host bring-up can
+// be validated before any of this output wiring exists.
 
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+// ESP32-P4 (Waveshare Module-DEV-KIT). PROVISIONAL pin map — these GPIOs are
+// in safe banks (not the GPIO14–19/54 P4↔C6 SDIO link, not strapping
+// GPIO34–38, not USB-JTAG GPIO24/25, not UART0 console GPIO37/38), but the
+// DEV-KIT's exact 40-pin header silkscreen is published only as an image.
+// VERIFY each pin against the printed header before wiring outputs.
+constexpr uint8_t PIN_X = 20;        // H-pattern X DAC (PWM via RC)
+constexpr uint8_t PIN_Y = 21;        // H-pattern Y DAC
+constexpr uint8_t PIN_HANDBRAKE = 22; // handbrake DAC
+constexpr uint8_t PIN_SEQ_UP = 23;   // sequential up pulse (open-drain)
+constexpr uint8_t PIN_SEQ_DOWN = 26; // sequential down pulse (open-drain)
+#else
+// ESP32-S3. GPIO numbers chosen to match the Teensy 4.1 build where possible
+// so the physical wiring carries over. All five output GPIOs are well clear
+// of strapping pins (0, 3, 45, 46), USB D+/D- (19, 20), the integrated octal
+// PSRAM bus (33–37), and UART0 (43, 44).
 constexpr uint8_t PIN_X = 4;         // H-pattern X DAC (PWM via RC)
 constexpr uint8_t PIN_Y = 5;         // H-pattern Y DAC
 constexpr uint8_t PIN_SEQ_UP = 6;    // sequential up pulse (open-drain)
 constexpr uint8_t PIN_SEQ_DOWN = 7;  // sequential down pulse
 constexpr uint8_t PIN_HANDBRAKE = 8; // handbrake DAC
+#endif
 
 constexpr uint8_t PWM_BITS = 12;
-constexpr uint32_t PWM_FREQ_HZ = 36000;
+// LEDC frequency. Empirically the IDF LEDC driver on arduino-esp32 v3.3.8
+// rejects 12-bit at anything > ~5 kHz with "div_param=0" — the divider
+// computation underflows because the auto-selected clock source isn't the
+// 80 MHz APB the math expects (probably XTAL_CLK at 40 MHz or lower).
+// 5 kHz at 12-bit is still 30× the RC-filter cutoff (159 Hz with the
+// wheelbase's 1k+1µF input network), so DAC ripple is small and the
+// gear-calib schema (12-bit 0..4095 values) stays byte-for-byte identical
+// to the Teensy build's. The Teensy ran 36 kHz only because its FlexPWM
+// peripheral could; nothing downstream actually cares.
+constexpr uint32_t PWM_FREQ_HZ = 5000;
+
+// Pedal-port UART (Serial1) pins. The wheelbase's RJ12 pedal cable carries
+// TX/RX/GND/VCC; on the adapter side we drive these two GPIOs as a 250000 →
+// 115200 baud UART (see pedals.cpp for the state machine).
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+// PROVISIONAL (see pin-map note above). NB: GPIO18 is the P4↔C6 SDIO bus on
+// this board, so the S3's pedal pins can't carry over — these are remapped.
+// If GPIO32 collides with Ethernet on your DEV-KIT variant, fall back to 33.
+constexpr uint8_t PEDAL_TX = 27;
+constexpr uint8_t PEDAL_RX = 32;
+#else
+constexpr uint8_t PEDAL_TX = 17;
+constexpr uint8_t PEDAL_RX = 18;
+#endif
 
 // Neutral transit time when shifting between two non-neutral gears.
-// Same value as the pre-refactor code; the wheelbase needs to see a
-// gear-release before the new gear is latched.
+// Same value as the Teensy build; the wheelbase needs to see a gear-release
+// before the new gear is latched.
 constexpr uint32_t NEUTRAL_TRANSIT_MS = 50;
 
 // ---------------- Config schema ----------------
@@ -158,17 +214,18 @@ static_assert(sizeof(OutputSnapshot) == 12, "OutputSnapshot layout size mismatch
 
 // ---------------- Lifecycle ----------------
 
-// Load Config from EEPROM. On magic/version/CRC mismatch, zero all bindings
-// (everything unmapped) and seed gearOut[] from GEAR_DEFAULT_OUT. EEPROM is
-// NOT written by this call — user must explicitly save_config.
+// Load Config from NVS. On magic/version/CRC mismatch (or first boot), zero
+// all bindings (everything unmapped) and seed gearOut[] from
+// GEAR_DEFAULT_OUT. NVS is NOT written by this call — user must explicitly
+// save_config.
 void mappingInit();
 
-// Write current Config to EEPROM. Returns true if the bytes verify after
+// Write current Config to NVS. Returns true if the bytes verify after
 // write-back.
 bool mappingSave();
 
 // Wipe bindings to INPUT_NONE, restore gearOut[] defaults and pulseMs.
-// Does NOT touch EEPROM — call mappingSave() to persist.
+// Does NOT touch NVS — call mappingSave() to persist.
 void mappingReset();
 
 // Recompute CRC and mark Config dirty (so a subsequent save_config picks it

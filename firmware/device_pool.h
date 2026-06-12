@@ -1,36 +1,28 @@
 // USB HID joystick device pool.
 //
-// Replaces the pre-refactor hardcoded GenericJoystickHID instances keyed by
-// VID/PID. Now: N=8 generic slots claim any Joystick HID collection
-// (topusage 0x10004) in connect order and record the actual VID/PID of the
-// device that landed there. The mapping engine looks up devices by VID/PID,
-// aggregating across multiple slots when needed (e.g. two same-VID/PID
-// combo devices).
+// 8-slot pool that claims any non-hub HID-like device EspUsbHost surfaces:
+// gamepads, joysticks, multi-axis controllers, keyboards. Slots are
+// first-come-first-served; the slot index has no semantic meaning, the
+// mapping engine looks devices up by VID/PID and aggregates across multiple
+// slots holding the same VID/PID.
 //
-// Axis/button counts are inferred lazily from observed HID reports — the
-// USBHIDInput API doesn't expose descriptor metadata after parsing. A freshly
-// attached device will show counts=0 until it sends its first input report.
+// Axis/button/hat presence is inferred lazily from observed reports —
+// counts start at 0 and grow as the device emits fields. Same semantics
+// as the Teensy build.
 
 #pragma once
 #include <Arduino.h>
-#include <USBHost_t36.h>
 
 #define DEVICE_POOL_SIZE 8
 #define DEVICE_MAX_AXES 8
-// USB string descriptors (manufacturer/product) are down-converted to ASCII
-// by USBHost_t36 and share a single 50-byte per-device buffer across all three
-// strings, so each individual string fits comfortably here.
-#define DEVICE_STR_LEN 48
+// Plenty of headroom for USB string descriptors (EspUsbHost stores them as
+// Strings; we copy into fixed buffers for stable c_str access from the
+// protocol layer's event emitters, which run on a different task context
+// than the USB host task).
+#define DEVICE_STR_LEN 64
 
-class GenericJoystickHID : public USBHIDInput {
+class GenericJoystickHID {
 public:
-  GenericJoystickHID();
-
-  static constexpr uint32_t TOPUSAGE_JOYSTICK = 0x10004;
-  static constexpr uint32_t TOPUSAGE_GAMEPAD = 0x10005;
-  static constexpr uint32_t TOPUSAGE_KEYBOARD = 0x10006;
-  static constexpr uint32_t TOPUSAGE_MULTIAXIS = 0x10008;
-
   // Hat Switch value when the D-pad is released / centred. Real directions
   // are 0..7 (N, NE, E, SE, S, SW, W, NW — clockwise from North per HID
   // Usage Tables).
@@ -38,21 +30,13 @@ public:
 
   // Standard HID boot-keyboard array holds up to 6 simultaneously pressed
   // keys; we use the same size for storage. Modifier keys (LCtrl/LShift/
-  // etc, scancodes 0xE0..0xE7) come through the same code path here, so
-  // they get a slot in the array just like printable keys.
+  // etc, scancodes 0xE0..0xE7) come through the same array, just appended
+  // when EspUsbHost reports their modifier-mask bits as set.
   static constexpr uint8_t MAX_KEYS_PRESSED = 6;
 
-  // USBHIDInput overrides
-  hidclaim_t claim_collection(USBHIDParser* driver, Device_t* dev, uint32_t topusage) override;
-  void disconnect_collection(Device_t* dev) override;
-  void hid_input_data(uint32_t usage, int32_t value) override;
-  bool hid_process_in_data(const Transfer_t*) override { return false; }
-  bool hid_process_out_data(const Transfer_t*) override { return false; }
-  void hid_input_begin(uint32_t, uint32_t, int, int) override {}
-  void hid_input_end() override {}
-
-  // State accessors
+  // ---- State accessors ----
   bool connected() const { return m_claimed; }
+  uint8_t address() const { return m_address; }
   uint16_t vid() const { return m_vid; }
   uint16_t pid() const { return m_pid; }
   uint32_t buttons() const { return m_buttons; }
@@ -72,7 +56,6 @@ public:
   }
   uint8_t buttonCount() const { return m_buttonCount; }
   uint8_t axisCount() const { return m_axisCount; }
-  uint8_t hubPort() const { return m_hubPort; }
 
   // USB string descriptors captured at claim time (sanitised to printable
   // ASCII, never null). Empty string when the device reports no such string.
@@ -84,8 +67,12 @@ public:
   // for the live_inputs stream without per-field comparisons.
   uint32_t changeSeq() const { return m_changeSeq; }
 
-private:
+  // ---- Internal API — invoked by device_pool.cpp's USB callback handlers
+  // ----
+  // (Not literally private because we want field access from free functions
+  // without friend declarations; treat as implementation detail.)
   bool m_claimed = false;
+  uint8_t m_address = 0;
   uint16_t m_vid = 0;
   uint16_t m_pid = 0;
   char m_manufacturer[DEVICE_STR_LEN] = {0};
@@ -96,13 +83,24 @@ private:
   bool m_hasHat = false;
   uint8_t m_keys[MAX_KEYS_PRESSED] = {0};
   bool m_hasKeyboard = false;
+  uint8_t m_modifierMask = 0;
   uint8_t m_buttonCount = 0;
   uint8_t m_axisCount = 0;
-  uint8_t m_hubPort = 0;
   uint32_t m_changeSeq = 0;
+  // Bitmask of USB interface numbers this slot has actually received HID
+  // reports on (bit N = interface N, capped at 8). A device that claims two
+  // HID interfaces but only ever emits reports on one tells us the other is
+  // an idle stub — a candidate to skip and reclaim its HCD channel. Set in
+  // the gamepad/keyboard handlers, surfaced in the channel-detail dump.
+  uint8_t m_seenIfaceMask = 0;
 };
 
 // ---------------- Pool API ----------------
+
+// Initialise the underlying USB host driver and wire callbacks into the
+// slot pool. Call from setup() AFTER Serial is up (so claim/disconnect
+// log lines actually print). Returns false if USB host init fails.
+bool devicePoolBegin();
 
 // Pool size is fixed at compile time.
 uint8_t devicePoolSize();
@@ -111,6 +109,35 @@ uint8_t devicePoolSize();
 // Caller checks .connected() before reading state.
 GenericJoystickHID* devicePoolSlot(uint8_t i);
 
-// Safely fetches and clears logged HID collections
+// Diagnostic: report every HID collection top-usage observed since the
+// last call. Used by the JSON protocol's stream of [USB/Info] log lines
+// so the user can see "unrecognised gamepad VID=… PID=…" for devices the
+// mapping engine won't claim. The current ESP32 port doesn't expose
+// per-collection topusages from EspUsbHost (the library hides them
+// behind the parsed gamepad/keyboard split), so this stays a stub for
+// API compatibility with the Teensy build's protocol layer.
 uint8_t devicePoolGetLoggedCollections(uint16_t* vids, uint16_t* pids, uint32_t* topusages,
                                        uint8_t maxCount);
+
+// Diagnostic: returns the number of EspUsbHost-tracked endpoint channels
+// currently in use (or 0 if the host isn't running yet). Surfaced via the
+// "u" CLI command so the user can see how close they are to the 8-channel
+// EHCI limit on ESP32-S3 — a known scaling cliff when going through hubs.
+uint8_t devicePoolEndpointChannels();
+
+// Total HCD channels the active USB host controller exposes (0 if host not
+// running). 8 on ESP32-S3 / P4 full-speed core, 16 on the P4 high-speed
+// core. Pairs with devicePoolEndpointChannels() for the "N / MAX" display.
+uint8_t devicePoolMaxChannels();
+
+// Diagnostic: dump the per-device USB interface + endpoint + HCD-channel
+// breakdown for every device EspUsbHost currently tracks (including hubs).
+// Prints which interface CLASS each device exposes (HID / CDC / vendor /
+// …) and whether each was claimed, plus the running channel total against
+// the ESP32-S3's hard 8-channel ceiling. This is the tool for answering
+// "why did the Nth device fail to enumerate" — composite devices that
+// expose CDC or vendor interfaces alongside their HID gamepad burn extra
+// channels we never use. Emitted automatically on each device attach (so
+// it shows up in webconfig's Logs tab without needing CLI access) and
+// also reachable via the "u" CLI command.
+void devicePoolDumpUsbDetail();

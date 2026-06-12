@@ -1,6 +1,8 @@
 #include "protocol.h"
 
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <string.h>
 
 #include "device_pool.h"
@@ -25,6 +27,10 @@ static bool g_liveInputs = false;
 static bool g_liveOutputs = false;
 static uint32_t g_lastInputsMs = 0;
 static uint32_t g_lastOutputsMs = 0;
+
+// Recursive mutex serialising Serial writes across the main loop task and
+// the USB host task. Created in protocolInit(); see protocol.h for why.
+static SemaphoreHandle_t g_serialMutex = nullptr;
 
 struct SlotShadow {
   bool connected = false;
@@ -115,12 +121,26 @@ static void readBindingFrom(JsonVariantConst v, InputBinding& b) {
     b.invert = v["invert"].as<bool>() ? 1 : 0;
 }
 
+void serialLockTake() {
+  if (g_serialMutex)
+    xSemaphoreTakeRecursive(g_serialMutex, portMAX_DELAY);
+}
+
+void serialLockGive() {
+  if (g_serialMutex)
+    xSemaphoreGiveRecursive(g_serialMutex);
+}
+
 static void emit(const JsonDocument& doc, bool isTelemetry = false) {
-  if (isTelemetry && Serial.availableForWrite() < 128) {
-    return;
+  serialLockTake();
+  // Telemetry (live/outputs) is droppable under back-pressure; command
+  // responses and events are not. Check inside the lock so availableForWrite
+  // reflects the buffer state at the moment we'd actually write.
+  if (!(isTelemetry && Serial.availableForWrite() < 128)) {
+    serializeJson(doc, Serial);
+    Serial.println();
   }
-  serializeJson(doc, Serial);
-  Serial.println();
+  serialLockGive();
 }
 
 static void sendOk() {
@@ -140,8 +160,13 @@ static void sendErr(const char* msg) {
 static void cmdVersion() {
   JsonDocument doc;
   doc["fw"] = "fanadapter";
-  doc["ver"] = "0.6.0";
+  doc["ver"] = "0.8.0";
   doc["protocol"] = 5;
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  doc["platform"] = "esp32p4";
+#else
+  doc["platform"] = "esp32s3";
+#endif
   doc["max_bindings_per_channel"] = MAX_BINDINGS_PER_CHANNEL;
   emit(doc);
 }
@@ -270,7 +295,7 @@ static void cmdSetGearMode(const JsonDocument& doc) {
 
 static void cmdSaveConfig() {
   if (!mappingSave()) {
-    sendErr("eeprom_verify_failed");
+    sendErr("nvs_verify_failed");
     return;
   }
   sendOk();
@@ -335,23 +360,21 @@ static void cmdTestGear(const JsonDocument& doc) {
   sendOk();
 }
 
-// Soft-reset the Teensy back into this sketch (NOT bootloader). Useful when
+// Soft-reset the ESP32 back into this sketch (NOT bootloader). Useful when
 // the wheelbase pedals UART desyncs or you want a clean reload of RAM state
-// without unplugging USB. Writes the standard ARM Cortex-M AIRCR
-// SYSRESETREQ — works on any Teensy 4.x without depending on Teensyduino
-// internals.
+// without unplugging USB. ESP.restart() triggers the chip's RTC watchdog
+// reset path and is safe to call from any task.
 static void cmdReboot() {
   sendOk();
-  Serial.flush(); // drain the OK before USB drops on reset
+  Serial.flush(); // drain the OK before the chip restarts
   delay(50);
-  // SCB->AIRCR: VECTKEY (0x05FA) | SYSRESETREQ (bit 2)
-  *((volatile uint32_t*)0xE000ED0C) = 0x05FA0004u;
+  ESP.restart();
   while (1) {
-  } // CPU resets before this loop runs
+  } // never reached
 }
 
 // Re-initialise the CSL Elite pedals UART state machine back to Step 0 at
-// 250000 baud. The Teensy reboot survives the wheelbase keeping its prior
+// 250000 baud. The chip reboot survives the wheelbase keeping its prior
 // state; this lets the user force a fresh handshake from the UI when the
 // wheelbase isn't re-initiating on its own.
 static void cmdResetPedals() {
@@ -500,6 +523,11 @@ static void emitLiveOutputs() {
 // ---------------- Public API ----------------
 
 void protocolInit() {
+  // Create the Serial mutex before the USB host task is spawned (devicePool
+  // Begin() runs after protocolInit() in setup()), so the first device's
+  // connect diagnostics are already serialised against any main-loop output.
+  if (!g_serialMutex)
+    g_serialMutex = xSemaphoreCreateRecursiveMutex();
   g_lineLen = 0;
   g_inJsonLine = false;
   g_liveInputs = false;
@@ -514,28 +542,32 @@ void protocolInit() {
 void protocolSetCliCallback(CliCharCallback cb) { g_cliCb = cb; }
 
 void protocolTick() {
-  // If host closed the port, drop live subscriptions and reset the line
-  // buffer so a reconnect starts clean.
-  if (!Serial) {
-    g_liveInputs = false;
-    g_liveOutputs = false;
-    g_lineLen = 0;
-    g_inJsonLine = false;
-    return;
-  }
+  // NB: on ESP32 the config UART is a plain hardware UART, so `Serial` is
+  // always "true" — there's no DTR equivalent that tells us the WebSerial
+  // client has disconnected. Live subscriptions stay on until the client
+  // sends live_inputs/live_outputs with on=false (or sends nothing, in
+  // which case we just keep emitting into the UART FIFO and the
+  // availableForWrite() guard in emit() drops telemetry if the buffer
+  // fills up). The Teensy build dropped subscriptions on USB CDC close;
+  // here, we don't have that signal.
 
-  // Safely check and print any newly detected USB HID collections
+  // Drain any pending HID-collection diagnostics from the device pool.
+  // On ESP32 this is currently a no-op stub (see device_pool.cpp comment).
   uint16_t vids[8];
   uint16_t pids[8];
   uint32_t topusages[8];
   uint8_t count = devicePoolGetLoggedCollections(vids, pids, topusages, 8);
-  for (uint8_t i = 0; i < count; ++i) {
-    Serial.print("[USB/Info] HID Collection: VID=0x");
-    Serial.print(vids[i], HEX);
-    Serial.print(" PID=0x");
-    Serial.print(pids[i], HEX);
-    Serial.print(" topusage=0x");
-    Serial.println(topusages[i], HEX);
+  if (count) {
+    serialLockTake();
+    for (uint8_t i = 0; i < count; ++i) {
+      Serial.print("[USB/Info] HID Collection: VID=0x");
+      Serial.print(vids[i], HEX);
+      Serial.print(" PID=0x");
+      Serial.print(pids[i], HEX);
+      Serial.print(" topusage=0x");
+      Serial.println(topusages[i], HEX);
+    }
+    serialLockGive();
   }
 
   // 1) Drain Serial bytes
@@ -583,6 +615,12 @@ void protocolTick() {
         s.pid = d->pid();
         s.lastChangeSeq = d->changeSeq();
         emitDeviceAttached(i, d);
+        // Print the running channel budget right after each attach. Lets
+        // the user see, in webconfig's Logs tab, exactly how many of the
+        // ESP32-S3's 8 HCD channels are spoken for and which interface
+        // classes are eating them — the answer to "why won't the next
+        // device enumerate".
+        devicePoolDumpUsbDetail();
       } else {
         emitDeviceDetached(i);
       }

@@ -6,7 +6,19 @@
 
 import type { Config, DeviceSlot, OutputsEvent, VersionInfo } from './types'
 
-const TEENSY_VID = 0x16c0
+// USB vendor IDs of every adapter platform variant we want to surface in
+// the browser's port chooser. The native USB CDC port of the Teensy 4.1 is
+// kept for backward compatibility with the original (v0.6.0 and earlier)
+// build; everything else is a USB-to-serial bridge sitting on the ESP32-S3
+// dev board's UART USB-C port. Adding a new VID here only widens the list
+// the chooser offers — it doesn't change anything the firmware sees.
+const ADAPTER_VIDS = [
+  0x16c0, // Teensy 4.1 native USB CDC (legacy)
+  0x1a86, // WCH CH340 / CH341 / CH343 (most common bridge on ESP32-S3 dev boards)
+  0x10c4, // Silicon Labs CP2102 / CP2104
+  0x0403, // FTDI FT232 (some boards)
+  0x303a, // Espressif native USB Serial/JTAG (if anyone later does an OTG-device build)
+] as const
 
 export type ProtocolEvent =
   | { type: 'log'; line: string }
@@ -94,7 +106,7 @@ export class SerialClient {
       )
     }
     const port = await navigator.serial.requestPort({
-      filters: [{ usbVendorId: TEENSY_VID }],
+      filters: ADAPTER_VIDS.map((usbVendorId) => ({ usbVendorId })),
     })
     await port.open({ baudRate: 115200 })
     this.port = port
@@ -354,7 +366,7 @@ export class SerialClient {
     await this.send({ cmd: 'test_gear', channel })
   }
 
-  // Triggers a soft-reset of the Teensy. The firmware sends `ok` and then
+  // Triggers a soft-reset of the adapter. The firmware sends `ok` and then
   // immediately drops USB, so the port disappears within ~100ms — callers
   // should disconnect() right after this resolves.
   async reboot(): Promise<void> {

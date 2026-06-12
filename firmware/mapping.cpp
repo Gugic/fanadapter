@@ -1,13 +1,16 @@
 #include "mapping.h"
 
-#include <EEPROM.h>
+#include <Preferences.h>
 #include <string.h>
 
 #include "device_pool.h"
 #include "pedals.h"
 
 // ---------------- Defaults ----------------
-// X/Y voltage table from the pre-refactor GEARS[] constants.
+// X/Y voltage table carried over from the Teensy build (which kept the
+// values from the pre-refactor GEARS[] constants). The webconfig UI can
+// recalibrate per-gear with set_gear_dac if a particular wheelbase needs
+// trimming.
 const GearOutputCalibration GEAR_DEFAULT_OUT[NUM_GEAR_OUTPUTS] = {
     {4095, 3430}, // R: X1, Y1
     {2790, 3430}, // 1: X2, Y1
@@ -27,6 +30,10 @@ const uint16_t DEFAULT_PULSE_MS = 50;
 static Config g_cfg;
 static OutputSnapshot g_outputs;
 static ChannelId g_currentGear = CH_GEAR_N;
+
+// NVS keys. Namespace is 15-char limited; key is also 15-char limited.
+static constexpr const char* PREFS_NAMESPACE = "fanadapter";
+static constexpr const char* PREFS_KEY_CONFIG = "config";
 
 // Test overrides — `test_*` JSON commands force an output for ~500 ms.
 constexpr uint32_t TEST_HOLD_MS = 500;
@@ -379,8 +386,8 @@ static void writeGearDac(ChannelId gear) {
   if (gear < CH_GEAR_R || gear > CH_GEAR_N)
     return;
   const GearOutputCalibration& g = g_cfg.gearOut[gear - CH_GEAR_R];
-  analogWrite(PIN_X, g.x);
-  analogWrite(PIN_Y, g.y);
+  ledcWrite(PIN_X, g.x);
+  ledcWrite(PIN_Y, g.y);
 }
 
 // Rising-edge shadow for latch mode — one bool per gear binding slot,
@@ -503,7 +510,7 @@ static void updateHandbrake() {
   // evalAxis already produces a 16-bit value.
   setPedalHandbrake(out);
   // DAC pin is 12-bit. Downscale 16→12.
-  analogWrite(PIN_HANDBRAKE, out >> 4);
+  ledcWrite(PIN_HANDBRAKE, out >> 4);
 
   g_outputs.handbrake = out;
 }
@@ -558,7 +565,7 @@ void mappingReset() {
   setPedalThrottle(0);
   setPedalBrake(0);
   setPedalClutch(0);
-  analogWrite(PIN_HANDBRAKE, 0);
+  ledcWrite(PIN_HANDBRAKE, 0);
 
   memset(&g_outputs, 0, sizeof(OutputSnapshot));
   g_outputs.gear = CH_GEAR_N;
@@ -569,26 +576,46 @@ void mappingRecomputeCrc() {
 }
 
 void mappingInit() {
-  // Read EEPROM bytes into a temp Config and validate before adopting.
-  // Value-initialise so cppcheck can see every member is defined before the
-  // EEPROM read loop overwrites them — otherwise it flags `tmp.magic` as
-  // uninitialised because it can't trace the byte-by-byte fill.
+  // Storage backend: ESP32 NVS via Preferences. We treat the entire Config
+  // struct as a single binary blob — matches the Teensy build's "snapshot
+  // the bytes, validate header+CRC" semantics without exposing the NVS
+  // key/value model up the stack.
+  Preferences prefs;
+  if (!prefs.begin(PREFS_NAMESPACE, /*readOnly=*/true)) {
+    Serial.println("[Config] NVS namespace missing — first boot; using defaults");
+    mappingReset();
+    return;
+  }
+
   Config tmp{};
-  uint8_t* p = (uint8_t*)&tmp;
-  for (size_t i = 0; i < sizeof(Config); ++i) {
-    p[i] = EEPROM.read(i);
+  const size_t n =
+      prefs.getBytes(PREFS_KEY_CONFIG, (void*)&tmp, sizeof(Config));
+  prefs.end();
+
+  if (n != sizeof(Config)) {
+    if (n == 0) {
+      Serial.println("[Config] NVS key absent — first boot; using defaults");
+    } else {
+      Serial.print("[Config] NVS blob size mismatch (have=");
+      Serial.print(n);
+      Serial.print(" expected=");
+      Serial.print(sizeof(Config));
+      Serial.println(") — using defaults");
+    }
+    mappingReset();
+    return;
   }
 
   const bool magicOk = (tmp.magic == CONFIG_MAGIC);
   const bool versionOk = (tmp.version == CONFIG_VERSION);
   uint32_t crcCalc = 0;
   if (magicOk && versionOk) {
-    crcCalc = crc32(p, sizeof(Config) - sizeof(uint32_t));
+    crcCalc = crc32((const uint8_t*)&tmp, sizeof(Config) - sizeof(uint32_t));
   }
 
   if (magicOk && versionOk && crcCalc == tmp.crc) {
     g_cfg = tmp;
-    Serial.println("[Config] loaded from EEPROM");
+    Serial.println("[Config] loaded from NVS");
     g_currentGear = CH_GEAR_N;
     writeGearDac(CH_GEAR_N); // start at neutral, gear updates apply over time
     memset(&g_outputs, 0, sizeof(OutputSnapshot));
@@ -597,34 +624,50 @@ void mappingInit() {
   }
 
   if (!magicOk) {
-    Serial.println("[Config] EEPROM magic missing — first boot or wiped; using defaults");
+    Serial.println("[Config] NVS magic missing — using defaults");
   } else if (!versionOk) {
-    Serial.print("[Config] EEPROM version mismatch (have=");
+    Serial.print("[Config] NVS version mismatch (have=");
     Serial.print(tmp.version);
     Serial.print(" expected=");
     Serial.print(CONFIG_VERSION);
     Serial.println(") — using defaults");
   } else {
-    Serial.println("[Config] EEPROM CRC mismatch — using defaults");
+    Serial.println("[Config] NVS CRC mismatch — using defaults");
   }
   mappingReset();
 }
 
 bool mappingSave() {
   mappingRecomputeCrc();
-  const uint8_t* p = (const uint8_t*)&g_cfg;
-  for (size_t i = 0; i < sizeof(Config); ++i) {
-    EEPROM.update(i, p[i]);
+
+  Preferences prefs;
+  if (!prefs.begin(PREFS_NAMESPACE, /*readOnly=*/false)) {
+    Serial.println("[Config] NVS open (rw) FAILED");
+    return false;
   }
-  // Verify the bytes round-trip.
-  for (size_t i = 0; i < sizeof(Config); ++i) {
-    if (EEPROM.read(i) != p[i]) {
-      Serial.print("[Config] EEPROM verify FAILED at byte ");
-      Serial.println(i);
-      return false;
-    }
+  const size_t written =
+      prefs.putBytes(PREFS_KEY_CONFIG, (const void*)&g_cfg, sizeof(Config));
+  if (written != sizeof(Config)) {
+    Serial.print("[Config] NVS putBytes wrote ");
+    Serial.print(written);
+    Serial.print(" of ");
+    Serial.print(sizeof(Config));
+    Serial.println(" bytes — FAILED");
+    prefs.end();
+    return false;
   }
-  Serial.println("[Config] saved to EEPROM");
+
+  // Verify the bytes round-trip — same defensive check the Teensy build
+  // did against EEPROM.
+  Config back{};
+  const size_t read =
+      prefs.getBytes(PREFS_KEY_CONFIG, (void*)&back, sizeof(Config));
+  prefs.end();
+  if (read != sizeof(Config) || memcmp(&back, &g_cfg, sizeof(Config)) != 0) {
+    Serial.println("[Config] NVS verify FAILED");
+    return false;
+  }
+  Serial.println("[Config] saved to NVS");
   return true;
 }
 

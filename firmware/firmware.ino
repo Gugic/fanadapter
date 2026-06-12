@@ -1,108 +1,43 @@
-// fanadapter — USB HID → Fanatec wheelbase adapter (Teensy 4.1)
+// fanadapter — USB HID → Fanatec wheelbase adapter (ESP32-S3 N16R8)
 //
-// Reads USB HID joystick devices through the host port and drives three
-// Fanatec shifter/handbrake outputs plus the CSL Elite V2 pedal UART. Input
-// → output assignment is configured at runtime via JSON over the USB CDC
-// Serial port (typically driven by the bundled webconfig WebSerial UI),
-// and persisted to EEPROM.
+// Reads USB HID joystick / gamepad / keyboard devices through the chip's
+// native USB OTG port (configured as host) and drives three Fanatec shifter
+// / handbrake DACs plus the CSL Elite V2 pedal UART. Input → output
+// assignment is configured at runtime via JSON over UART0 (typically driven
+// by the bundled webconfig WebSerial UI, which talks to the dev board's
+// onboard USB-Serial bridge on the "UART" port), and persisted to NVS.
 //
-// This .ino file is just the orchestrator: USB host bring-up, pin/PWM
-// setup, the minimal serial CLI, and the loop dispatch. Everything else
-// lives in the side modules:
+// This .ino file is just the orchestrator: USB host bring-up, pin / PWM /
+// UART setup, the minimal serial CLI, and the loop dispatch. Everything
+// else lives in the side modules:
 //
-//   device_pool.h/cpp   USB HID joystick slot pool (claims-any, 8 slots)
-//   mapping.h/cpp       Config schema, EEPROM I/O, input → output engine
+//   device_pool.h/cpp   USB HID joystick slot pool (claims-any, 8 slots,
+//                        EspUsbHost-backed)
+//   mapping.h/cpp       Config schema, NVS I/O, input → output engine
 //   protocol.h/cpp      JSON command parser, live event emitter
-//   pedals.h/cpp        Fanatec pedal-port UART state machine (unchanged)
+//   pedals.h/cpp        Fanatec pedal-port UART state machine (Serial1)
+//
+// Wiring summary (see mapping.h for the literal GPIO numbers and the
+// firmware README for the corresponding RJ12 pinout):
+//   PIN_X / PIN_Y           — H-pattern X/Y DACs (PWM via RC low-pass)
+//   PIN_SEQ_UP / PIN_SEQ_DOWN — sequential up/down (open-drain, idle high)
+//   PIN_HANDBRAKE           — handbrake DAC
+//   PEDAL_TX / PEDAL_RX     — pedal-port UART (Serial1)
+//   UART0 (Serial)          — config UART, surfaces as a COM port on the
+//                             dev board's onboard USB-Serial bridge
 
 #include <Arduino.h>
-#include <USBHost_t36.h>
 
 #include "device_pool.h"
 #include "mapping.h"
 #include "pedals.h"
 #include "protocol.h"
 
-// ---------------- USB host ----------------
-
-USBHost g_usb;
-USBHub g_hub1(g_usb);
-USBHub g_hub2(g_usb);
-
-// One USBHIDParser per claimable HID interface. The Logitech RS H-Shifter
-// alone exposes two interfaces (HID1 + HID2), and the SP Pro adds a third,
-// so 8 covers the current build with headroom.
-USBHIDParser g_hid1(g_usb);
-USBHIDParser g_hid2(g_usb);
-USBHIDParser g_hid3(g_usb);
-USBHIDParser g_hid4(g_usb);
-USBHIDParser g_hid5(g_usb);
-USBHIDParser g_hid6(g_usb);
-USBHIDParser g_hid7(g_usb);
-USBHIDParser g_hid8(g_usb);
-
-USBDriver* const g_usbDrivers[] = {
-    &g_hub1, &g_hub2, &g_hid1, &g_hid2, &g_hid3, &g_hid4, &g_hid5, &g_hid6, &g_hid7, &g_hid8,
-};
-constexpr uint8_t g_usbDriverCount = sizeof(g_usbDrivers) / sizeof(g_usbDrivers[0]);
-bool g_usbDriverActive[g_usbDriverCount] = {false};
-
-static const char* driverName(USBDriver* d) {
-  if (d == &g_hub1)
-    return "Hub1";
-  if (d == &g_hub2)
-    return "Hub2";
-  if (d == &g_hid1)
-    return "HID1";
-  if (d == &g_hid2)
-    return "HID2";
-  if (d == &g_hid3)
-    return "HID3";
-  if (d == &g_hid4)
-    return "HID4";
-  if (d == &g_hid5)
-    return "HID5";
-  if (d == &g_hid6)
-    return "HID6";
-  if (d == &g_hid7)
-    return "HID7";
-  if (d == &g_hid8)
-    return "HID8";
-  return "?";
-}
-
-// Log driver attach/detach. Per-slot HID claim/disconnect events come from
-// device_pool.cpp itself. The protocol layer additionally emits JSON
-// device_attached/detached events when a WebSerial client is connected.
-static void pollUsbDriverStatus() {
-  for (uint8_t i = 0; i < g_usbDriverCount; ++i) {
-    const bool nowActive = (*g_usbDrivers[i]);
-    if (nowActive == g_usbDriverActive[i])
-      continue;
-    g_usbDriverActive[i] = nowActive;
-    Serial.print("[USB] ");
-    Serial.print(driverName(g_usbDrivers[i]));
-    if (nowActive) {
-      Serial.print(" attached  VID=0x");
-      Serial.print(g_usbDrivers[i]->idVendor(), HEX);
-      Serial.print("  PID=0x");
-      Serial.println(g_usbDrivers[i]->idProduct(), HEX);
-    } else {
-      Serial.println(" detached");
-    }
-  }
-}
-
 // ---------------- Minimal serial CLI ----------------
-// Everything beyond u/p/X/? lives in the JSON protocol now.
-
-// Array of HID parser pointers for diagnostic access.
-static USBHIDParser* const g_hidParsers[] = {
-    &g_hid1, &g_hid2, &g_hid3, &g_hid4, &g_hid5, &g_hid6, &g_hid7, &g_hid8,
-};
-constexpr uint8_t g_hidParserCount = sizeof(g_hidParsers) / sizeof(g_hidParsers[0]);
+// Everything beyond u / p / X / ? lives in the JSON protocol now.
 
 static void printUsbStatus() {
+  serialLockTake();
   Serial.println();
   Serial.println("Device pool (joystick HID slots):");
   for (uint8_t i = 0; i < devicePoolSize(); ++i) {
@@ -111,21 +46,23 @@ static void printUsbStatus() {
     Serial.print(i);
     Serial.print(": ");
     if (d->connected()) {
-      Serial.print("VID=0x");
+      Serial.print("addr=");
+      Serial.print(d->address());
+      Serial.print(" VID=0x");
       Serial.print(d->vid(), HEX);
       Serial.print(" PID=0x");
       Serial.print(d->pid(), HEX);
-      Serial.print("  \"");
+      Serial.print(" \"");
       Serial.print(d->productName());
-      Serial.print("\"  buttons=0x");
+      Serial.print("\" buttons=0x");
       Serial.print(d->buttons(), HEX);
-      Serial.print("  axes=[");
+      Serial.print(" axes=[");
       for (uint8_t j = 0; j < d->axisCount(); ++j) {
         if (j)
           Serial.print(',');
         Serial.print(d->axis(j));
       }
-      Serial.print("]  ac=");
+      Serial.print("] ac=");
       Serial.print(d->axisCount());
       Serial.print(" bc=");
       Serial.println(d->buttonCount());
@@ -134,22 +71,17 @@ static void printUsbStatus() {
     }
   }
 
-  Serial.println("USB drivers (bus state):");
-  for (uint8_t i = 0; i < g_usbDriverCount; ++i) {
-    Serial.print("  ");
-    Serial.print(driverName(g_usbDrivers[i]));
-    Serial.print(": ");
-    if (*g_usbDrivers[i]) {
-      Serial.print("VID=0x");
-      Serial.print(g_usbDrivers[i]->idVendor(), HEX);
-      Serial.print(" PID=0x");
-      Serial.println(g_usbDrivers[i]->idProduct(), HEX);
-    } else {
-      Serial.println("idle");
-    }
-  }
+  // EHCI channel count — ESP32-S3 has a hard ceiling of 8 channels shared
+  // across every device's interrupt endpoint plus hub control pipes. Get
+  // close to that ceiling and new device enumeration starts failing in
+  // ways that look a lot like the Teensy hub bug we just left behind, so
+  // make it visible at a glance.
+  Serial.print("USB endpoint channels in use: ");
+  Serial.print(devicePoolEndpointChannels());
+  Serial.print(" / ");
+  Serial.println(devicePoolMaxChannels());
 
-  Serial.print("Pedals (Serial3): ");
+  Serial.print("Pedals (Serial1): ");
   Serial.print(getPedalsStateName());
   Serial.print(" | T=");
   Serial.print(((uint32_t)getPedalThrottle() * 100) / 65535);
@@ -161,86 +93,28 @@ static void printUsbStatus() {
   Serial.print(((uint32_t)getPedalHandbrake() * 100) / 65535);
   Serial.println("%");
   Serial.println();
-}
 
-// Dump HID parser diagnostic info — descriptor size, first bytes, etc.
-// Invoked via 'd' CLI command. Useful for debugging devices that attach
-// at the bus level but never get claimed by the device pool.
-static void printHidDiag() {
-  Serial.println();
-  Serial.println("HID parser diagnostics:");
-  for (uint8_t i = 0; i < g_hidParserCount; ++i) {
-    USBHIDParser* hid = g_hidParsers[i];
-    Serial.print("  HID");
-    Serial.print(i + 1);
-    Serial.print(": ");
-    if (!(*hid)) {
-      Serial.println("idle");
-      continue;
-    }
-    Serial.print("VID=0x");
-    Serial.print(hid->idVendor(), HEX);
-    Serial.print(" PID=0x");
-    Serial.print(hid->idProduct(), HEX);
-    Serial.print("  descSize=");
-    uint16_t dsize = hid->getHIDReportDescriptorSize();
-    Serial.print(dsize);
-    Serial.print("  subClass=");
-    Serial.print(hid->interfaceSubClass());
-    Serial.print("  protocol=");
-    Serial.print(hid->interfaceProtocol());
-    Serial.print("  inSize=");
-    Serial.print(hid->inSize());
-    Serial.print("  outSize=");
-    Serial.println(hid->outSize());
-
-    // Hex dump report descriptor (up to 128 bytes)
-    const uint8_t* desc = hid->getHIDReportDescriptor();
-    if (desc && dsize > 0) {
-      uint16_t dumpLen = (dsize < 128) ? dsize : 128;
-      Serial.print("    desc[");
-      Serial.print(dsize);
-      Serial.print(" bytes, showing ");
-      Serial.print(dumpLen);
-      Serial.println("]:");
-      for (uint16_t j = 0; j < dumpLen; ++j) {
-        if (j % 16 == 0)
-          Serial.print("    ");
-        if (desc[j] < 0x10)
-          Serial.print('0');
-        Serial.print(desc[j], HEX);
-        Serial.print(' ');
-        if (j % 16 == 15 || j == dumpLen - 1)
-          Serial.println();
-      }
-    } else {
-      Serial.println("    (no descriptor data)");
-    }
-  }
-  Serial.println();
+  // Per-device interface / endpoint / channel breakdown — the detail behind
+  // the "channels in use" summary above. (Recursive lock: this nested
+  // take/give keeps the whole `u` dump atomic against the USB task.)
+  devicePoolDumpUsbDetail();
+  serialLockGive();
 }
 
 static void printHelp() {
+  serialLockTake();
   Serial.println();
   Serial.println("Minimal serial CLI (everything else is JSON / WebSerial):");
   Serial.println("  u    print USB host + device pool status");
-  Serial.println("  d    dump HID parser diagnostics (descriptors)");
   Serial.println("  p    force pedal handshake reset (back to Step 0)");
-  Serial.println("  X    CPU soft-reset");
+  Serial.println("  X    CPU soft-reset (ESP.restart)");
   Serial.println("  ?    this help");
   Serial.println();
-  Serial.println("JSON commands: send a single line starting with '{' to");
-  Serial.println("the same Serial port. See protocol.cpp for the full list,");
-  Serial.println("or use the webconfig WebSerial UI.");
+  Serial.println("JSON commands: send a single line starting with '{' to the");
+  Serial.println("same UART. See protocol.cpp for the full list, or use the");
+  Serial.println("webconfig WebSerial UI.");
   Serial.println();
-}
-
-static inline void cpuSoftReset() {
-  Serial.flush();
-  delay(50);
-  (*((volatile uint32_t*)0xE000ED0C)) = 0x5FA0004;
-  while (true) {
-  }
+  serialLockGive();
 }
 
 // CliCharCallback registered with the protocol layer. The layer forwards
@@ -251,17 +125,17 @@ static void handleCliChar(char c) {
     case 'U':
       printUsbStatus();
       break;
-    case 'd':
-    case 'D':
-      printHidDiag();
-      break;
     case 'p':
     case 'P':
       pedalsForceReset();
       break;
     case 'X':
+      serialLockTake();
       Serial.println("[CPU] Manual soft-reset.");
-      cpuSoftReset();
+      Serial.flush();
+      serialLockGive();
+      delay(50);
+      ESP.restart();
       break;
     case '?':
     case 'h':
@@ -269,64 +143,91 @@ static void handleCliChar(char c) {
       printHelp();
       break;
     default:
+      serialLockTake();
       Serial.print("Unknown CLI char '");
       Serial.print(c);
       Serial.println("' (type ? for help, or send a JSON command)");
+      serialLockGive();
       break;
   }
 }
 
 // ---------------- Setup / loop ----------------
 
+static void setupPwmPin(uint8_t pin) {
+  // Use the explicit LEDC API rather than analogWrite() — the v3
+  // analogWrite path silently no-ops analogWriteFrequency calls before
+  // attach and ends up running channels at unintended frequencies. With
+  // ledcAttach we get a definitive bool back and can log if the requested
+  // freq/resolution combo is infeasible on whatever clock IDF picks.
+  if (!ledcAttach(pin, PWM_FREQ_HZ, PWM_BITS)) {
+    Serial.print("[PWM] ledcAttach FAILED on pin ");
+    Serial.print(pin);
+    Serial.print(" (freq=");
+    Serial.print(PWM_FREQ_HZ);
+    Serial.print("Hz, bits=");
+    Serial.print(PWM_BITS);
+    Serial.println(")");
+    return;
+  }
+  ledcWrite(pin, 0);
+}
+
 static void printBanner() {
+  serialLockTake();
   Serial.println();
-  Serial.println("=== fanadapter — USB HID → Fanatec wheelbase ===");
-  Serial.print("=== fw 0.6.0  protocol 5  config v");
+#if defined(CONFIG_IDF_TARGET_ESP32P4)
+  Serial.println("=== fanadapter — USB HID → Fanatec wheelbase (ESP32-P4) ===");
+#else
+  Serial.println("=== fanadapter — USB HID → Fanatec wheelbase (ESP32-S3) ===");
+#endif
+  Serial.print("=== fw 0.8.0  protocol 5  config v");
   Serial.print(CONFIG_VERSION);
   Serial.println(" ===");
   Serial.println("Configure via WebSerial (see webconfig/). '?' for the CLI.");
   Serial.println();
+  serialLockGive();
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(500); // let the USB CDC enumeration settle before the banner
+  // No DTR equivalent on UART; small fixed wait so the host's terminal /
+  // WebSerial client catches the banner even if it opens the port a beat
+  // after boot.
+  delay(500);
 
-  // PWM resolution is global; set once.
-  analogWriteResolution(PWM_BITS);
+  // H-pattern X/Y DACs (PWM through 1k+1µF RC) and handbrake DAC.
+  setupPwmPin(PIN_X);
+  setupPwmPin(PIN_Y);
+  setupPwmPin(PIN_HANDBRAKE);
 
-  // H-pattern X/Y DACs (PWM through 1k+1µF RC)
-  pinMode(PIN_X, OUTPUT);
-  pinMode(PIN_Y, OUTPUT);
-  analogWriteFrequency(PIN_X, PWM_FREQ_HZ);
-  analogWriteFrequency(PIN_Y, PWM_FREQ_HZ);
-
-  // Sequential pins — open-drain, idle high (wheelbase has internal pull-up)
-  pinMode(PIN_SEQ_UP, OUTPUT_OPENDRAIN);
-  pinMode(PIN_SEQ_DOWN, OUTPUT_OPENDRAIN);
+  // Sequential pins — open-drain, idle high (wheelbase has internal
+  // pull-up). NB: ESP32 Arduino uses OUTPUT_OPEN_DRAIN (underscore),
+  // distinct from Teensyduino's OUTPUT_OPENDRAIN — wrong macro silently
+  // gives push-pull and the sequential output never floats high again.
+  pinMode(PIN_SEQ_UP, OUTPUT_OPEN_DRAIN);
+  pinMode(PIN_SEQ_DOWN, OUTPUT_OPEN_DRAIN);
   digitalWrite(PIN_SEQ_UP, HIGH);
   digitalWrite(PIN_SEQ_DOWN, HIGH);
 
-  // Handbrake DAC
-  pinMode(PIN_HANDBRAKE, OUTPUT);
-  analogWriteFrequency(PIN_HANDBRAKE, PWM_FREQ_HZ);
-  analogWrite(PIN_HANDBRAKE, 0);
-
-  // Order: pedals first (initializes Serial3), then mapping (loads EEPROM
-  // and snaps DACs / pedal stream to neutral), then protocol.
+  // Order: pedals first (initializes Serial1 with the 2 s warmup),
+  // mapping next (loads NVS and snaps DACs / pedal stream to neutral),
+  // protocol after, then USB host. We start the host last so the
+  // EspUsbHost task is the last thing spawned — fewer race windows
+  // before the main loop is ticking.
   pedalsInit();
   mappingInit();
   protocolInit();
   protocolSetCliCallback(&handleCliChar);
-
-  g_usb.begin();
+  devicePoolBegin();
 
   printBanner();
 }
 
 void loop() {
-  g_usb.Task();
-  pollUsbDriverStatus();
+  // EspUsbHost runs its own FreeRTOS task — no need to call a Task()-like
+  // tick here. The device pool's callbacks update slot state asynchronously
+  // and mappingTick() reads it on each loop pass.
   protocolTick(); // drain Serial → dispatch JSON / CLI, emit live events
   mappingTick();  // read device pool → drive DACs / sequential / pedal stream
   pedalsUpdate(); // Fanatec pedal-port UART state machine
