@@ -1,0 +1,237 @@
+
+========================================
+  fanadapter STM32H743 USB host enumerator
+  host    = OTG_FS / rhport0 (PA11/PA12 = USB-C / A11-A12 header)
+  console = USART1 PA9/PA10 @115200 8E1  +  USB CDC on OTG_HS PB14/PB15
+  CLI: 'dfu' -> ROM bootloader (hands-free flash) | 'reboot' | '?'
+  core 64 MHz / USB 48 MHz / TinyUSB 0.18.0
+  host channels: OTG_FS=16  OTG_HS=16
+  current mode: OTG_FS=host  OTG_HS=device
+  waiting for devices on the hub...
+========================================
+    HID iface mounted: addr=1 instance=0 protocol=0 VID:PID=046D:C278
+    report_desc: len=48
+
+      000: 05 01 09 04 A1 01 85 06 05 09 19 01 29 03 65 00
+      016: 15 00 25 01 75 01 95 03 81 02 75 01 95 05 81 03
+      032: 05 01 09 32 15 00 26 FF 03 75 10 95 01 81 02 C0
+    coarse parse: 1 report(s)
+      [0] report_id=6 usage_page=0001 usage=04
+    HID iface mounted: addr=1 instance=1 protocol=0 VID:PID=046D:C278
+    report_desc: len=54
+
+      000: 06 00 FF 09 01 A1 01 85 10 75 08 95 06 15 00 26
+      016: FF 00 09 01 81 00 09 01 91 00 C0 06 00 FF 09 02
+      032: A1 01 85 11 75 08 95 13 15 00 26 FF 00 09 02 81
+      048: 00 09 02 91 00 C0
+    coarse parse: 2 report(s)
+      [0] report_id=16 usage_page=FF00 usage=01
+      [1] report_id=17 usage_page=FF00 usage=02
+
+[+] device attached, address 1
+    VID:PID = 046D:C278  class=0  USB 2.00
+    manufacturer: Logitech
+    product:      RS Shifter & Handbrake
+
+========================================
+  fanadapter STM32H743 USB host enumerator
+  host    = OTG_FS / rhport0 (PA11/PA12 = USB-C / A11-A12 header)
+  console = USART1 PA9/PA10 @115200 8E1  +  USB CDC on OTG_HS PB14/PB15
+  CLI: 'dfu' -> ROM bootloader (hands-free flash) | 'reboot' | '?'
+  core 64 MHz / USB 48 MHz / TinyUSB 0.18.0
+  host channels: OTG_FS=16  OTG_HS=16
+  current mode: OTG_FS=host  OTG_HS=device
+  waiting for devices on the hub...
+========================================
+    HID iface mounted: addr=1 instance=0 protocol=0 VID:PID=046D:C278
+    report_desc: len=48
+
+      000: 05 01 09 04 A1 01 85 06 05 09 19 01 29 03 65 00
+      016: 15 00 25 01 75 01 95 03 81 02 75 01 95 05 81 03
+      032: 05 01 09 32 15 00 26 FF 03 75 10 95 01 81 02 C0
+    coarse parse: 1 report(s)
+      [0] report_id=6 usage_page=0001 usage=04
+    HID iface mounted: addr=1 instance=1 protocol=0 VID:PID=046D:C278
+    report_desc: len=54
+
+      000: 06 00 FF 09 01 A1 01 85 10 75 08 95 06 15 00 26
+      016: FF 00 09 01 81 00 09 01 91 00 C0 06 00 FF 09 02
+      032: A1 01 85 11 75 08 95 13 15 00 26 FF 00 09 02 81
+      048: 00 09 02 91 00 C0
+    coarse parse: 2 report(s)
+      [0] report_id=16 usage_page=FF00 usage=01
+      [1] report_id=17 usage_page=FF00 usage=02
+
+[+] device attached, address 1
+    VID:PID = 046D:C278  class=0  USB 2.00
+    manufacturer: Logitech
+    product:      RS Shifter & Handbrake
+    HID iface mounted: addr=2 instance=2 protocol=0 VID:PID=046D:C26B
+    report_desc: len=27
+
+      000: 05 01 09 04 A1 01 85 03 05 09 19 01 29 08 65 00
+      016: 15 00 25 01 75 01 95 08 81 02 C0
+    coarse parse: 1 report(s)
+      [0] report_id=3 usage_page=0001 usage=04
+    HID iface mounted: addr=2 instance=3 protocol=0 VID:PID=046D:C26B
+    report_desc: len=54
+
+      000: 06 00 FF 09 01 A1 01 85 10 75 08 95 06 15 00 26
+      016: FF 00 09 01 81 00 09 01 91 00 C0 06 00 FF 09 02
+      032: A1 01 85 11 75 08 95 13 15 00 26 FF 00 09 02 81
+      048: 00 09 02 91 00 C0
+    coarse parse: 2 report(s)
+      [0] report_id=16 usage_page=FF00 usage=01
+      [1] report_id=17 usage_page=FF00 usage=02
+
+[+] device attached, address 2
+    VID:PID = 046D:C26B  class=0  USB 2.00
+    manufacturer: Logitech
+    product:      RS H-Shifter
+    HID iface mounted: addr=3 instance=4 protocol=0 VID:PID=046D:C278
+    report_desc: len=48
+
+      000: 05 01 09 04 A1 01 85 06 05 09 19 01 29 03 65 00
+      016: 15 00 25 01 75 01 95 03 81 02 75 01 95 05 81 03
+      032: 05 01 09 32 15 00 26 FF 03 75 10 95 01 81 02 C0
+    coarse parse: 1 report(s)
+      [0] report_id=6 usage_page=0001 usage=04
+    HID iface mounted: addr=3 instance=5 protocol=0 VID:PID=046D:C278
+    report_desc: len=54
+
+      000: 06 00 FF 09 01 A1 01 85 10 75 08 95 06 15 00 26
+      016: FF 00 09 01 81 00 09 01 91 00 C0 06 00 FF 09 02
+      032: A1 01 85 11 75 08 95 13 15 00 26 FF 00 09 02 81
+      048: 00 09 02 91 00 C0
+    coarse parse: 2 report(s)
+      [0] report_id=16 usage_page=FF00 usage=01
+      [1] report_id=17 usage_page=FF00 usage=02
+
+[+] device attached, address 3
+    VID:PID = 046D:C278  class=0  USB 2.00
+    manufacturer: Logitech
+    product:      RS Shifter & Handbrake
+    HID iface mounted: addr=4 instance=6 protocol=0 VID:PID=CAFE:A301
+    report_desc: len=189
+
+      000: 05 01 09 04 A1 01 A1 00 85 01 09 30 09 31 09 32
+      016: 15 00 26 FF 0F 35 00 46 FF 0F 75 10 95 03 81 02
+      032: 06 00 FF 09 01 75 08 95 12 81 02 09 02 75 08 95
+      048: 3F 91 02 C0 A1 02 06 01 FF 85 F1 75 08 95 3F 09
+      064: F1 B1 02 85 F2 75 08 95 3F 09 F2 B1 02 85 F3 75
+      080: 08 95 3F 09 F3 B1 02 85 F4 75 08 95 3F 09 F4 B1
+      096: 02 85 F5 75 08 95 3F 09 F5 B1 02 85 F6 75 08 95
+      112: 3F 09 F6 B1 02 85 F7 75 08 95 3F 09 F7 B1 02 85
+      128: F8 75 08 95 3F 09 F8 B1 02 85 F9 75 08 95 3F 09
+      144: F9 B1 02 85 FA 75 08 95 3F 09 FA B1 02 85 FB 75
+      160: 08 95 3F 09 FB B1 02 85 FC 75 08 95 3F 09 FC B1
+      176: 02 85 FD 75 08 95 3F 09 FD B1 02 C0 C0
+    coarse parse: 1 report(s)
+      [0] report_id=253 usage_page=0001 usage=04
+
+[+] device attached, address 4
+    VID:PID = CAFE:A301  class=0  USB 1.10
+    manufacturer: Simnet
+    product:      SP Pro Pedal
+
+========================================
+  fanadapter STM32H743 USB host enumerator
+  host    = OTG_FS / rhport0 (PA11/PA12 = USB-C / A11-A12 header)
+  console = USART1 PA9/PA10 @115200 8E1  +  USB CDC on OTG_HS PB14/PB15
+  CLI: 'dfu' -> ROM bootloader (hands-free flash) | 'reboot' | '?'
+  core 64 MHz / USB 48 MHz / TinyUSB 0.18.0
+  host channels: OTG_FS=16  OTG_HS=16
+  current mode: OTG_FS=host  OTG_HS=device
+  waiting for devices on the hub...
+========================================
+    HID iface mounted: addr=1 instance=0 protocol=0 VID:PID=046D:C278
+    report_desc: len=48
+
+      000: 05 01 09 04 A1 01 85 06 05 09 19 01 29 03 65 00
+      016: 15 00 25 01 75 01 95 03 81 02 75 01 95 05 81 03
+      032: 05 01 09 32 15 00 26 FF 03 75 10 95 01 81 02 C0
+    coarse parse: 1 report(s)
+      [0] report_id=6 usage_page=0001 usage=04
+    HID iface mounted: addr=1 instance=1 protocol=0 VID:PID=046D:C278
+    report_desc: len=54
+
+      000: 06 00 FF 09 01 A1 01 85 10 75 08 95 06 15 00 26
+      016: FF 00 09 01 81 00 09 01 91 00 C0 06 00 FF 09 02
+      032: A1 01 85 11 75 08 95 13 15 00 26 FF 00 09 02 81
+      048: 00 09 02 91 00 C0
+    coarse parse: 2 report(s)
+      [0] report_id=16 usage_page=FF00 usage=01
+      [1] report_id=17 usage_page=FF00 usage=02
+
+[+] device attached, address 1
+    VID:PID = 046D:C278  class=0  USB 2.00
+    manufacturer: Logitech
+    product:      RS Shifter & Handbrake
+    HID iface mounted: addr=2 instance=2 protocol=0 VID:PID=046D:C26B
+    report_desc: len=27
+
+      000: 05 01 09 04 A1 01 85 03 05 09 19 01 29 08 65 00
+      016: 15 00 25 01 75 01 95 08 81 02 C0
+    coarse parse: 1 report(s)
+      [0] report_id=3 usage_page=0001 usage=04
+    HID iface mounted: addr=2 instance=3 protocol=0 VID:PID=046D:C26B
+    report_desc: len=54
+
+      000: 06 00 FF 09 01 A1 01 85 10 75 08 95 06 15 00 26
+      016: FF 00 09 01 81 00 09 01 91 00 C0 06 00 FF 09 02
+      032: A1 01 85 11 75 08 95 13 15 00 26 FF 00 09 02 81
+      048: 00 09 02 91 00 C0
+    coarse parse: 2 report(s)
+      [0] report_id=16 usage_page=FF00 usage=01
+      [1] report_id=17 usage_page=FF00 usage=02
+
+[+] device attached, address 2
+    VID:PID = 046D:C26B  class=0  USB 2.00
+    manufacturer: Logitech
+    product:      RS H-Shifter
+    HID iface mounted: addr=3 instance=4 protocol=0 VID:PID=046D:C278
+    report_desc: len=48
+
+      000: 05 01 09 04 A1 01 85 06 05 09 19 01 29 03 65 00
+      016: 15 00 25 01 75 01 95 03 81 02 75 01 95 05 81 03
+      032: 05 01 09 32 15 00 26 FF 03 75 10 95 01 81 02 C0
+    coarse parse: 1 report(s)
+      [0] report_id=6 usage_page=0001 usage=04
+    HID iface mounted: addr=3 instance=5 protocol=0 VID:PID=046D:C278
+    report_desc: len=54
+
+      000: 06 00 FF 09 01 A1 01 85 10 75 08 95 06 15 00 26
+      016: FF 00 09 01 81 00 09 01 91 00 C0 06 00 FF 09 02
+      032: A1 01 85 11 75 08 95 13 15 00 26 FF 00 09 02 81
+      048: 00 09 02 91 00 C0
+    coarse parse: 2 report(s)
+      [0] report_id=16 usage_page=FF00 usage=01
+      [1] report_id=17 usage_page=FF00 usage=02
+
+[+] device attached, address 3
+    VID:PID = 046D:C278  class=0  USB 2.00
+    manufacturer: Logitech
+    product:      RS Shifter & Handbrake
+    HID iface mounted: addr=4 instance=6 protocol=0 VID:PID=CAFE:A301
+    report_desc: len=189
+
+      000: 05 01 09 04 A1 01 A1 00 85 01 09 30 09 31 09 32
+      016: 15 00 26 FF 0F 35 00 46 FF 0F 75 10 95 03 81 02
+      032: 06 00 FF 09 01 75 08 95 12 81 02 09 02 75 08 95
+      048: 3F 91 02 C0 A1 02 06 01 FF 85 F1 75 08 95 3F 09
+      064: F1 B1 02 85 F2 75 08 95 3F 09 F2 B1 02 85 F3 75
+      080: 08 95 3F 09 F3 B1 02 85 F4 75 08 95 3F 09 F4 B1
+      096: 02 85 F5 75 08 95 3F 09 F5 B1 02 85 F6 75 08 95
+      112: 3F 09 F6 B1 02 85 F7 75 08 95 3F 09 F7 B1 02 85
+      128: F8 75 08 95 3F 09 F8 B1 02 85 F9 75 08 95 3F 09
+      144: F9 B1 02 85 FA 75 08 95 3F 09 FA B1 02 85 FB 75
+      160: 08 95 3F 09 FB B1 02 85 FC 75 08 95 3F 09 FC B1
+      176: 02 85 FD 75 08 95 3F 09 FD B1 02 C0 C0
+    coarse parse: 1 report(s)
+      [0] report_id=253 usage_page=0001 usage=04
+
+[+] device attached, address 4
+    VID:PID = CAFE:A301  class=0  USB 1.10
+    manufacturer: Simnet
+    product:      SP Pro Pedal
+
