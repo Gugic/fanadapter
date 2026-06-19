@@ -6,7 +6,11 @@
 
 import type { Config, DeviceSlot, OutputsEvent, VersionInfo } from './types'
 
-const TEENSY_VID = 0x16c0
+// No port-picker VID filter. The firmware can arrive over a Teensy CDC (0x16c0), an STM32 native CDC
+// (pid.codes 0x1209), or an external USB-UART bridge (e.g. a WCH CH340 carrying USART1 — and bridge
+// chips vary by VID/PID/brand, e.g. CH340K is 0x1a86/0x7522). Rather than chase an allowlist that can
+// silently exclude a valid bridge, show ALL serial ports and let the user pick — the device label
+// (e.g. "USB-SERIAL CH340K (COM16)") makes the right one obvious.
 
 export type ProtocolEvent =
   | { type: 'log'; line: string }
@@ -93,11 +97,22 @@ export class SerialClient {
         'WebSerial is not supported in this browser. Use Chrome, Edge, or Brave on desktop.',
       )
     }
-    const port = await navigator.serial.requestPort({
-      filters: [{ usbVendorId: TEENSY_VID }],
-    })
-    await port.open({ baudRate: 115200 })
+    const port = await navigator.serial.requestPort()
+    // 8E1: the STM32 USART1 console runs 8-data / EVEN-parity / 1-stop (it shares the format with the
+    // ROM bootloader so one bridge config carries both console + flashing). Parity is ignored by a
+    // native USB CDC (Teensy / STM32-CDC), so this is harmless there and required over the UART bridge.
+    await port.open({ baudRate: 115200, dataBits: 8, parity: 'even', stopBits: 1 })
     this.port = port
+
+    // A USB-UART bridge (CH340) auto-resets the downstream MCU-facing side when the port opens; some
+    // bridges (the ESP32-S3 one) also reboot themselves. Deassert DTR/RTS and let it settle so the
+    // first command isn't swallowed during the ~1.5s bridge reset. No-op / harmless on native CDC.
+    try {
+      await port.setSignals({ dataTerminalReady: false, requestToSend: false })
+    } catch {
+      /* setSignals unsupported on this port — ignore */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000))
 
     // WebSerial spec: writable / readable are non-null once open() resolves,
     // but the types stay `WritableStream | null` / `ReadableStream | null`.
@@ -354,6 +369,31 @@ export class SerialClient {
     await this.send({ cmd: 'test_gear', channel })
   }
 
+  // ---------- Direct output control (PC/SimHub drive) ----------
+  // These command the adapter's outputs directly and override the USB-device mapping for the channels
+  // they touch (sticky until releaseOutputs). set_outputs is the streaming pedal/handbrake path.
+
+  async setGear(gear: string): Promise<void> {
+    await this.send({ cmd: 'set_gear', gear })
+  }
+
+  async setOutputs(outputs: {
+    throttle?: number
+    brake?: number
+    clutch?: number
+    handbrake?: number
+  }): Promise<void> {
+    await this.send({ cmd: 'set_outputs', ...outputs })
+  }
+
+  async pulseShift(direction: 'up' | 'down'): Promise<void> {
+    await this.send({ cmd: 'pulse_shift', direction })
+  }
+
+  async releaseOutputs(): Promise<void> {
+    await this.send({ cmd: 'release_outputs' })
+  }
+
   // Triggers a soft-reset of the Teensy. The firmware sends `ok` and then
   // immediately drops USB, so the port disappears within ~100ms — callers
   // should disconnect() right after this resolves.
@@ -384,7 +424,14 @@ export interface PedalsStatus {
 // isSupported(); but TypeScript still needs a minimal declaration.
 declare global {
   interface SerialPort {
-    open(options: { baudRate: number }): Promise<void>
+    open(options: {
+      baudRate: number
+      dataBits?: number
+      parity?: 'none' | 'even' | 'odd'
+      stopBits?: number
+      flowControl?: 'none' | 'hardware'
+    }): Promise<void>
+    setSignals(signals: { dataTerminalReady?: boolean; requestToSend?: boolean }): Promise<void>
     close(): Promise<void>
     readable: ReadableStream<Uint8Array> | null
     writable: WritableStream<Uint8Array> | null

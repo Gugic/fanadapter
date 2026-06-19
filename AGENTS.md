@@ -8,6 +8,7 @@ This file provides guidance for AI coding agents working in this repository.
 
 - **`firmware/`** — Arduino sketch (Teensyduino) that runs on the Teensy 4.1. Enumerates USB HID joysticks, gamepads, and multi-axis controllers via the native USB host port and drives Fanatec RJ12 ports (H-pattern PWM, sequential open-drain, handbrake PWM, pedal-port UART).
 - **`webconfig/`** — Vite + React 19 + TypeScript + Tailwind + shadcn/ui app that talks to the firmware over WebSerial (line-based JSON). Deployed to GitHub Pages by `.github/workflows/pages.yml` on push to `main`.
+- **`firmware-stm32/`** — in-progress **C** port of the firmware to an STM32H743 (FK743M3 board): PlatformIO + STM32Cube HAL + TinyUSB. Speaks the same WebSerial JSON protocol and byte-identical `Config` schema as `firmware/`, so one `webconfig` serves both; it adds a **direct-output** command set (`set_gear` / `set_outputs` / `pulse_shift` / `release_outputs`) for PC/SimHub-driven output that overrides the USB-device mapping. Status, milestones, board quirks, and the flash/connect workflow are in **`firmware-stm32/PORT-STATUS.md` — read that before touching the STM32 port.**
 
 Detailed hardware docs, port pinouts, protocol references, calibration guides: `firmware/README.md`. Webconfig deploy + dev: `webconfig/README.md`. This file only covers the parts that need cross-file context.
 

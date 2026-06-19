@@ -26,6 +26,8 @@
 #include "stm32h7xx_hal.h"
 #include "tusb.h"
 
+#include "mapping.h"
+#include "outputs.h"
 #include "protocol.h"
 #include "usb_input.h"
 
@@ -259,13 +261,25 @@ int console_printf(const char *fmt, ...) {
   HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)len, 100);
 
   // 2) USB CDC on OTG_HS — only once a host PC has enumerated it (i.e. a board where OTG_HS is
-  //    wired). Non-blocking: write only what currently fits so logging never stalls the host.
+  //    wired). Drain with backpressure so large multi-chunk responses (get_config ≈ 8 KB) aren't
+  //    truncated: write what fits, then flush + pump tud_task() to let the host drain the FIFO, and
+  //    retry. A spin guard bounds the wait so a stalled/disconnected host drops the tail instead of
+  //    hanging. (On the FK743M3 bring-up board OTG_HS is unwired, so tud_cdc_connected() is false
+  //    and this whole leg is skipped — the USART1 leg above is the one that carries output here.)
   if (tud_cdc_connected()) {
-    uint32_t avail = tud_cdc_write_available();
-    uint32_t w     = (len < avail) ? len : avail;
-    if (w) {
-      tud_cdc_write(buf, w);
-      tud_cdc_write_flush();
+    uint32_t sent  = 0;
+    uint32_t guard = 0;
+    while (sent < len && guard++ < 1000u) {
+      uint32_t avail = tud_cdc_write_available();
+      if (avail) {
+        uint32_t w = (len - sent < avail) ? (len - sent) : avail;
+        tud_cdc_write(buf + sent, w);
+        sent += w;
+        tud_cdc_write_flush();
+      } else {
+        tud_cdc_write_flush();
+        tud_task(); // service the device so the host can empty the FIFO
+      }
     }
   }
   return n;
@@ -502,8 +516,10 @@ int main(void) {
   SystemClock_Config();
   usb_hw_init();
   console_init();
-  usb_input_init(); // register the USB HID device pool as an InputSource
+  usb_input_init(); // register the USB HID device pool as the input source (USB devices in standalone mode)
   protocol_init();
+  mapping_init();   // load Config from flash (or seed defaults on magic/version/CRC mismatch)
+  outputs_init();   // DAC1 on PA4/PA5 for the H-pattern X/Y; snaps to neutral (needs gearOut[])
 
   tusb_rhport_init_t host_init = {.role = TUSB_ROLE_HOST, .speed = TUSB_SPEED_FULL};
   tusb_rhport_init_t dev_init  = {.role = TUSB_ROLE_DEVICE, .speed = TUSB_SPEED_FULL};
@@ -520,6 +536,7 @@ int main(void) {
     console_cli_poll(); // drain inbound console -> CLI (dfu/reboot/?) + JSON protocol commands
 
     uint32_t now = HAL_GetTick();
+    mapping_tick();     // read inputs, evaluate bindings, drive outputs (no-op until M3)
     protocol_tick(now); // emit device attach/detach + rate-limited live events when streaming
 
     if (now - last_blink >= 1000u) { // slow 0.5 Hz heartbeat

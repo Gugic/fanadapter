@@ -289,6 +289,8 @@ def main():
                     help="only sync + Get + Get-ID (no erase/write) — proves the bootloader is reachable")
     ap.add_argument("--read-ob", action="store_true",
                     help="read + decode the FLASH option-byte registers via Read Memory (no write)")
+    ap.add_argument("--read", metavar="ADDR:LEN", action="append", default=[],
+                    help="hexdump LEN bytes from ADDR (e.g. 0x08100000:32), no write. Repeatable.")
     ap.add_argument("--go", action="store_true", help="issue Go to 0x08000000 after flashing")
     ap.add_argument("--wait", type=float, default=0.0,
                     help="poll for the bootloader up to N seconds — launch the command, THEN press "
@@ -296,8 +298,8 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
-    if not args.probe and not args.read_ob and not args.bin:
-        ap.error("--bin is required unless --probe / --read-ob is given")
+    if not args.probe and not args.read_ob and not args.read and not args.bin:
+        ap.error("--bin is required unless --probe / --read-ob / --read is given")
 
     bl = STBootloader(args.port, args.baud, verbose=args.verbose)
     try:
@@ -351,6 +353,16 @@ def main():
             log(f"[ob] BOOT_CUR  : ADD0=0x{add0(boot_cur):08X}  ADD1=0x{add1(boot_cur):08X}")
             log(f"[ob] BOOT_PRG  : ADD0=0x{add0(boot_prg):08X}  ADD1=0x{add1(boot_prg):08X}")
             log("[ob] healthy defaults: RDP=L0(0xAA)  BOOT_ADD0=0x08000000  BOOT_ADD1=0x1FF00000  WPSN=0x...FFF")
+            return 0
+
+        if args.read:
+            for spec in args.read:
+                astr, _, lstr = spec.partition(":")
+                addr = int(astr, 0)
+                length = int(lstr, 0) if lstr else 32
+                data = bl.read_memory(addr, length)
+                hexs = " ".join(f"{b:02X}" for b in data)
+                log(f"[read] 0x{addr:08X} ({length}B): {hexs}")
             return 0
 
         flash_image(bl, args.bin, args.go)

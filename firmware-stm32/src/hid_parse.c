@@ -216,23 +216,21 @@ static uint32_t extract_bits(const uint8_t *p, uint16_t off, uint8_t n) {
   return v;
 }
 
-static uint16_t normalize_axis(uint32_t raw, const hid_field_t *f) {
-  int32_t lo = f->logical_min, hi = f->logical_max;
-  int32_t val;
-  if (lo < 0 && f->bit_size < 32u) { // signed field — sign-extend raw from bit_size
+// Decode an axis field to its NATIVE logical value (matches the Teensy device_pool, which stores the
+// raw HID value verbatim: `m_axes[i] = (uint16_t)value`). Keeping native resolution means the live
+// display shows the device's true range (a 10-bit handbrake reads 0..1023, a 12-bit pedal 0..4095)
+// in clean steps of 1, instead of being upscaled to 16 bits (which produced the confusing 16/64-count
+// jumps). The mapping layer's scaleAxis maps [rawMin,rawMax] — also native units, learned by the
+// Listen calibration — to 0..65535 at eval time, so the real physical travel still spans full output.
+// Signed fields are sign-extended from bit_size then cast to uint16 (negatives wrap, exactly like the
+// Teensy cast); almost all wheel/pedal axes are unsigned, so that's the common path.
+static uint16_t decode_axis(uint32_t raw, const hid_field_t *f) {
+  if (f->logical_min < 0 && f->bit_size > 0u && f->bit_size < 32u) {
     uint32_t signbit = 1u << (f->bit_size - 1u);
-    if (raw & signbit) val = (int32_t)(raw | ~((signbit << 1) - 1u));
-    else val = (int32_t)raw;
-  } else {
-    val = (int32_t)raw;
+    int32_t  val     = (raw & signbit) ? (int32_t)(raw | ~((signbit << 1) - 1u)) : (int32_t)raw;
+    return (uint16_t)val;
   }
-  if (hi <= lo) { // malformed range — left-justify to 16 bits
-    if (f->bit_size >= 16u) return (uint16_t)(raw & 0xFFFFu);
-    return (uint16_t)(raw << (16u - f->bit_size));
-  }
-  if (val <= lo) return 0;
-  if (val >= hi) return 65535u;
-  return (uint16_t)(((int64_t)(val - lo) * 65535) / (hi - lo));
+  return (uint16_t)raw;
 }
 
 bool hid_decode_report(const hid_layout_t *layout, const uint8_t *report, uint16_t len,
@@ -284,7 +282,7 @@ bool hid_decode_report(const hid_layout_t *layout, const uint8_t *report, uint16
       }
     } else if (f->usage_page == UP_DESKTOP) {
       if (f->usage >= 0x30 && f->usage <= 0x37) {
-        st->axes[f->usage - 0x30] = normalize_axis(raw, f);
+        st->axes[f->usage - 0x30] = decode_axis(raw, f);
       } else if (f->usage == 0x39) { // hat switch
         int32_t hv = (int32_t)raw - f->logical_min;
         if (hv >= 0 && hv < 8 && (int32_t)raw <= f->logical_max) st->hat = (uint8_t)hv;

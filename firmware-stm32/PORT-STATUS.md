@@ -9,7 +9,7 @@ Porting the `fanadapter` firmware to an **FK743M3‑VGT6** (STM32H743VGT6) core 
 the adapter-logic port is now underway, tracked as milestones M0–M7 (plan:
 `C:\Users\Gugic\.claude\plans\shimmering-hatching-noodle.md`).
 
-**Status: M0 + M1 DONE and HARDWARE-VALIDATED (June 2026).**
+**Status: M0–M4 DONE and HARDWARE-VALIDATED (June 2026). Remaining: M5 handbrake-PWM, M6 pedal UART, M7 polish.**
 - **M0 — plumbing/test-rig:** USART1 RX (interrupt + 16-byte FIFO, ISR drains it, priority **5 = above
   USB** so command bursts don't overrun); console switched to **8E1** to match the ROM bootloader;
   `lib/cherryusb` deleted. DAC + TIM HAL were already enabled in the active PlatformIO conf — no override.
@@ -18,8 +18,31 @@ the adapter-logic port is now underway, tracked as milestones M0–M7 (plan:
   (`input_source.c` — the cornerstone), and `protocol.c` (`version`, `list_devices`, `live_inputs` +
   `device_attached`/`device_detached`/`live` events, shapes matched to webconfig). **Verified on the
   4-device / 7-interface hardware:** `list_devices` correct; H-shifter buttons `0x3F`; sequential
-  shifter buttons `0x3`; handbrake (C278 multi-mode, axis mode) axis 2 sweeps full 0…65535; pedal axis
-  tracks. All decode paths confirmed against real reports (raw-byte capture cross-checked vs live events).
+  shifter buttons `0x3`; handbrake (C278 multi-mode, axis mode) axis 2; pedal axis tracks.
+- **Axis fidelity (HW-validated):** `hid_parse.c` stores the **raw native** logical value (`decode_axis`,
+  matching the Teensy `m_axes[i]=(uint16_t)value`) — a 10-bit handbrake reads 0..1023, a 12-bit pedal
+  0..4095, clean step-of-1. (An earlier version normalized to 0..65535 → confusing 16/64-count jumps.)
+  `scaleAxis` maps `[rawMin,rawMax]` (native, from Listen calibration) → 0..65535 at eval. Calibration is
+  still needed — declared range ≠ physical travel, plus invert/deadzone.
+- **M2 — Config + flash + get/set/save/reset (HW-validated):** `mapping.{c,h}` (Config byte-identical,
+  **1132 B, CONFIG_VERSION 3**, `_Static_assert` locks; `crc32` verbatim = `webconfig/.../crc32.ts`;
+  evaluators via `input_fold_*`), `json_min.{c,h}` (zero-alloc JSON reader, ArduinoJson replacement),
+  `config_store.{c,h}` (internal flash). Commands `get_config` (streamed in small chunks — USART1 blocks
+  until sent so no truncation), `set_binding`/`set_gear_dac`/`set_pulse_ms`/`set_gear_mode`/`save_config`/
+  `reset_config`. Save→verify confirmed on HW. **Two flash-store bugs that cost a bench session (see below).**
+- **M3 — DAC H-pattern + transit FSM (HW-validated):** `outputs.{c,h}` — **DAC1 ch1=PA4 (X), ch2=PA5 (Y)**,
+  codes map 1:1 to the schematics voltage table (output buffer on; only Reverse X1=3.30V/4095 clamps ~3.1V).
+  Non-blocking neutral-transit FSM (replaces the Teensy `delay(50)`); `update_shifter` hold+latch + test
+  override. Commands `test_gear`, `live_outputs`, `outputs` event. **Sequential pulse added here too**
+  (was M5): open-drain **PC6 (up)/PC7 (down)**, idle HIGH, non-blocking FSM (confirm those pins are
+  broken out before wiring).
+- **M4 — direct output control (HW-validated; REPLACED the earlier "serial virtual-device inject" idea):**
+  the PC (SimHub / the web app) owns the input→action mapping and commands outputs directly; the adapter
+  applies them. Commands: **`set_gear {gear}`**, **`set_outputs {throttle?,brake?,clutch?,handbrake?}`**
+  (0..65535, the 100 Hz pedal/handbrake hot path), **`pulse_shift {direction}`**, **`release_outputs`**.
+  Semantics = **command override**: a PC-set channel wins over the USB mapping, sticky until
+  `release_outputs`. State in `mapping.c` (`g_ovr_*`). (Standalone mode — USB devices → in-firmware
+  mapping → outputs — is unchanged.) `input_serial.{c,h}` + `inject_*` were removed.
 
 USB host is on **OTG_FS**; the console is exposed **two ways at once** — a **USB CDC device on OTG_HS
 (B14/B15)** for capable boards, plus the **USART1 UART** (8E1) fallback used here via the ESP32-S3
@@ -98,20 +121,41 @@ Implemented June 2026, **builds clean** (37.9 KB flash). What landed:
    assumed valid), FS‑PHY init only sets `PWRDWN`, and `hcd_dwc2.c` writes `HPRT_POWER`. So the host
    doesn't gate on a VBUS pin and PA9 is free for USART1; no GCCFG poking needed.
 
-## NEXT STEP — M2: Config + flash storage + get/set/save/reset (M1 is DONE)
+## NEXT STEP — M5/M6 (output hardware), M7 (polish)
 
-Per the plan (`shimmering-hatching-noodle.md`), the remaining milestones port the Teensy adapter logic:
-- **M2 (next):** port `mapping.h` `Config` **byte-identical** (1132 B, CONFIG_VERSION 3, `_Static_assert`
-  locks), `crc32()` verbatim (matches `webconfig/src/lib/crc32.ts`), the `scaleAxis`/`evalAxis`/`evalButton`
-  evaluators wired through the **InputSource folds** (`input_fold_buttons/axis/...` already exist), and
-  `config_store.c` = **STM32H7 internal-flash emulation** (pin `FLASH_BANK_2` + its real top 128 KB
-  sector — verify the exact address for the 1 MB VG part vs RM0433; the linker lies about 2 MB; H7
-  programs in 256-bit flashwords; invalidate D-cache before readback). Then the JSON commands
-  `get_config`/`set_binding`/`set_gear_dac`/`set_pulse_ms`/`set_gear_mode`/`save_config`/`reset_config`.
-  **Watch `get_config` ≈ 8 KB JSON** → must stream with CDC backpressure, not one buffer (see plan).
-- **M3** DAC H-pattern (PA4/PA5) + non-blocking neutral-transit FSM + `test_gear`.
-- **M4** serial InputSource + `inject_*` (the cornerstone payoff — abstraction already in place).
-- **M5** sequential FSM + handbrake PWM. **M6** pedal UART (USART2). **M7** polish + docs + commit.
+M0–M4 are done (above). Remaining, per the plan (`shimmering-hatching-noodle.md`):
+- **M5 — handbrake PWM fallback** (the sequential pulse already landed in M3). A TIM PWM channel on a
+  free pin outside the heartbeat set + RC; handbrake's primary path is still the pedal stream.
+- **M6 — pedal UART (USART2):** the CSL Elite emulator. This is what makes `set_outputs` and USB-mapped
+  pedals/handbrake *electrically* reach the wheelbase — today those values stop at the `outputs`
+  snapshot/event. Port the handshake state machine, 2 s warmup, 100 Hz framing, lenient STEP2 collector.
+- **M7 — polish:** `reboot`/`reset_pedals`/`pedals_status`/`test_axis`/`test_pulse` commands, DAC gear
+  recal against the real wheelbase, doc/README sync.
+
+### Flash config store — TWO bugs that cost a bench session (FIXED; do not reintroduce)
+1. **The config sector MUST be in a DIFFERENT flash bank than the running code.** Code runs from bank 1;
+   config is **bank 2, sector 0 @ `0x08100000`** (`FLASH_BANK_2`/`FLASH_SECTOR_0`). The H7 can't fetch
+   instructions from a bank while it's being erased — a bank-1 config sector HARD-FAULTS the core on the
+   128 KB erase. Bank 2 sector 0 physically exists on the 1 MB VG and is NOT aliased to bank 1 (verified
+   by reading `0x08000000` vs `0x08100000` over the ROM bootloader: `stm32_uart_flash.py --read
+   0x08100000:32` → all `0xFF`, distinct from the bank-1 vector table). `DUAL_BANK` is defined for
+   STM32H743xx, so the HAL unlocks both banks + waits on `QW_BANK2`. Erase ~1 s; 36 × 256-bit flashwords.
+2. **NEVER call `SCB_InvalidateDCache_by_Addr()` with the D-cache DISABLED** (this build never enables it).
+   That faulted the core right after a clean erase+program. Removed — with D-cache off, memory-mapped
+   flash reads are already coherent. (If D-cache is ever enabled, re-add it guarded.) The flash op is
+   wrapped in `__disable_irq()`/`__enable_irq()` (defensive; the erase busy-waits ~1 s, but save_config is
+   rare so the brief USB/console pause is fine).
+
+### webconfig now talks to THIS board (over the bridge)
+Native USB CDC is dead here, so the web UI connects over the **S3 bridge / CH340 = COM16**. `serial.ts`:
+**no port-picker VID filter** (show all ports — bridge chips vary; the CH340K here is `0x1a86/0x7522`),
+`port.open` at **8E1** + a `setSignals` DTR/RTS-low + ~2 s settle (the bridge resets on open; expect a
+one-time garbled boot-noise burst in the Logs tab — that's the S3's ROM chatter, not a framing problem).
+New wrappers `setGear/setOutputs/pulseShift/releaseOutputs` + a **"Direct output control"** card in the
+Outputs tab. Dev server: `$env:PATH="...fnm\aliases\default;$env:PATH"; npm run dev` →
+`http://localhost:5173/fanadapter/` (Chromium); WebSerial holds COM16 exclusively, so **Disconnect before
+flashing**. (A future board with OTG_HS wired uses the STM32's own CDC directly — VID `1209` PID `FA00`,
+nicely named — no bridge.)
 
 ## Reproduce — flash & read (current workflow, 8E1)
 
