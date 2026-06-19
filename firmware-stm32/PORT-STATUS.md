@@ -120,7 +120,8 @@ use even parity. On the FK743M3 the OTG_HS CDC console is dormant, so use the US
 
 1. **S3 bridge** (`tools/esp32s3_uart_bridge/`, already 8E1): `arduino-cli compile --upload -p COM16
    --fqbn esp32:esp32:esp32s3 tools/esp32s3_uart_bridge` (I can run this — S3 = CH340 = **COM16**).
-2. **Flash the STM32 via DFU** (hands-free UART flashing is PARKED — see below): cable to the board's
+2. **Flash:** normally over the S3 with `tools/flash.ps1` (see "UART flashing — WORKING" below). USB DFU
+   is a fallback only — cable to the board's
    USB‑C, **hub off A11/A12**, hold BOOT0 + tap RST + release BOOT0, then
    `python -m platformio run -d ... -e weact_h743 -t upload`. (One USB‑C cable is shared between the
    board's DFU port and the S3 — move it to the board to flash, back to the S3 to read.)
@@ -131,12 +132,19 @@ use even parity. On the FK743M3 the OTG_HS CDC console is dormant, so use the US
    and prefix a `\n` to flush any stale line buffer. **The user is NOT watching the live session — ping
    and get an explicit "I'm on it" before any timed capture that needs them to actuate controls.**
 
-### Hands-free UART flashing — implemented but PARKED (unresolved)
-`jump_to_bootloader()` + the CLI verb **`dfu`** jump to the ROM bootloader (the message prints), but the
-ROM gives **no 0x79 ACK** to a 0x7F autobaud over the S3 bridge, and CubeProgrammer over COM16 resets
-the S3 (CH340 DTR). So flashing falls back to manual DFU for now. To revisit: scope PA9/PA10 during a
-`dfu` jump, or move the S3 to its **native-USB** port (no CH340 auto-reset; mirror CDC line coding).
-See `[[reference-stm32-uart-bootloader]]` memory.
+### UART flashing — WORKING (`tools/flash.ps1` + `tools/stm32_uart_flash.py`)
+The DTR-safe AN3155 flasher flashes over the S3 bridge — no CubeProgrammer, no DTR juggling, no USB-C swap.
+**You press the button:** run `flash.ps1` (build -> flash -> boot the app), and when it prints
+`>>> PRESS BOOT0 + RST <<<`, **HOLD BOOT0 down + tap RST** (keep holding a beat). Now that
+`BOOT_CM7_ADD0` = flash, a *plain* RST boots the app, so BOOT0 must be high through the reset to reach the
+bootloader (it boots `BOOT_ADD1` = system memory). The flasher (`stm32_uart_flash.py`) does autobaud/Get/
+Get-ID/Extended-Erase/Write/Go + `--wait N` (poll for the bootloader), `--probe`, `--read-ob`.
+**Full hands-free auto-entry is NOT possible on this board:** the H7 ROM serves USART only via the
+*hardware* boot path (a software jump comes up USB-DFU-only), the option-byte `BOOT_ADD0` trick is BANNED
+(it strands the board into the bootloader — DFU-only recovery), and BOOT0 has no pad to wire the S3 to.
+**USB DFU fallback** (recovery / option bytes, board USB-C to PC, BOOT0+RST -> DFU chime):
+`STM32_Programmer_CLI -c port=usb1 -w firmware.elf -v -ob BOOT_CM7_ADD0=0x0800`. Full saga (incl. the
+"garbled console = S3 boot-noise while stuck in the bootloader" ghost): `[[reference-stm32-uart-bootloader]]`.
 
 (On a board where OTG_HS **is** wired, skip the S3 entirely: plug the PC into the OTG_HS port and open
 the CDC COM port — VID `1209` PID `FA00` — directly.)
