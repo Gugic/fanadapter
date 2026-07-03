@@ -18,6 +18,7 @@
 param(
   [string]$Port = "COM16",
   [switch]$NoBuild,
+  [switch]$MassErase,   # wipe the saved config too (default: bank-1 erase, config preserved)
   [int]$Wait = 30
 )
 $ErrorActionPreference = "Stop"
@@ -41,4 +42,5 @@ $objcopy = (Get-ChildItem "$env:USERPROFILE\.platformio\packages\toolchain-gccar
 & $objcopy -O binary $elf $raw
 
 Write-Host "[flash] >>> PRESS BOOT0 + RST on the board now <<<" -ForegroundColor Yellow
-python (Join-Path $toolsDir "stm32_uart_flash.py") --port $Port --bin $raw --enter manual --wait $Wait --go
+$eraseArg = if ($MassErase) { @("--mass-erase") } else { @() }
+python (Join-Path $toolsDir "stm32_uart_flash.py") --port $Port --bin $raw --enter manual --wait $Wait --go @eraseArg

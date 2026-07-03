@@ -171,7 +171,9 @@ const OutputSnapshot *mapping_outputs(void);
 
 // ---------------- Test overrides (500 ms holds) ----------------
 
-void mapping_test_gear(ChannelId ch); // force gear_R..gear_N onto the DAC for ~500 ms
+void mapping_test_gear(ChannelId ch);                  // force gear_R..gear_N onto the DAC for ~500 ms
+void mapping_test_axis(ChannelId ch, uint16_t value);  // force a handbrake/throttle/brake/clutch level
+void mapping_test_pulse(bool up);                      // fire one sequential shift pulse (test)
 
 // ---------------- Direct output control (PC / SimHub over serial) ----------------
 // The PC computes its own input->action mapping and commands the adapter's outputs directly. These

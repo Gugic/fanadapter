@@ -193,13 +193,25 @@ class STBootloader:
             + ("  (STM32H743 OK)" if pid == H743_PID else f"  (expected 0x{H743_PID:03X}!)"))
         return pid
 
-    def mass_erase(self):
-        """Extended Erase (0x44): mass-erase via the 0xFFFF special code."""
-        log("[erase] extended mass erase...")
+    def _ext_erase(self, code, what):
+        """Extended Erase (0x44) special-code erase. AN3155 codes: 0xFFFF = global mass erase,
+        0xFFFE = bank 1 only, 0xFFFD = bank 2 only."""
         self._cmd(0x44, timeout=2.0)
-        frame = bytes([0xFF, 0xFF])
+        frame = bytes([(code >> 8) & 0xFF, code & 0xFF])
         self._w(frame + bytes([self._xor(frame)]))
-        self._ack(timeout=40.0, what="mass erase")   # H7 mass erase can take many seconds
+        self._ack(timeout=40.0, what=what)           # H7 erase can take many seconds
+
+    def mass_erase(self):
+        """Global mass erase — wipes BOTH banks (the app AND the saved config in bank 2)."""
+        log("[erase] global mass erase (wipes saved config)...")
+        self._ext_erase(0xFFFF, "mass erase")
+        log("[erase] done")
+
+    def bank1_erase(self):
+        """Erase bank 1 only (where the ~58 KB app lives) — leaves bank 2 @ 0x08100000 intact, so the
+        saved config survives the reflash. The app never approaches bank 1's 512 KB, so this is safe."""
+        log("[erase] bank-1 erase (preserving config in bank 2)...")
+        self._ext_erase(0xFFFE, "bank1 erase")
         log("[erase] done")
 
     def write_memory(self, addr, data):
@@ -247,7 +259,7 @@ class STBootloader:
         self.ser.flush()
 
 
-def flash_image(bl, path, do_go):
+def flash_image(bl, path, do_go, mass=False):
     with open(path, "rb") as f:
         image = f.read()
     if len(image) % FLASHWORD:
@@ -256,7 +268,20 @@ def flash_image(bl, path, do_go):
         log(f"[image] padded to {len(image)} bytes (multiple of {FLASHWORD})")
     log(f"[image] {len(image)} bytes -> 0x{FLASH_BASE:08X}")
 
-    bl.mass_erase()
+    if mass:
+        bl.mass_erase()
+    else:
+        # Default: preserve the saved config (bank 2). Fall back to a global erase if this bootloader
+        # rejects the bank-1 special code, so flashing never breaks.
+        try:
+            bl.bank1_erase()
+        except BLError as e:
+            log(f"[erase] bank-1 erase rejected ({e}) — falling back to global mass erase")
+            try:
+                bl.ser.reset_input_buffer()
+            except Exception:
+                pass
+            bl.mass_erase()
 
     total = len(image)
     written = 0
@@ -292,6 +317,9 @@ def main():
     ap.add_argument("--read", metavar="ADDR:LEN", action="append", default=[],
                     help="hexdump LEN bytes from ADDR (e.g. 0x08100000:32), no write. Repeatable.")
     ap.add_argument("--go", action="store_true", help="issue Go to 0x08000000 after flashing")
+    ap.add_argument("--mass-erase", action="store_true",
+                    help="force a global mass erase (wipes the saved config in bank 2). Default erases "
+                         "bank 1 only, preserving config across reflashes.")
     ap.add_argument("--wait", type=float, default=0.0,
                     help="poll for the bootloader up to N seconds — launch the command, THEN press "
                          "BOOT0+RST on the board (the middle-ground hands-free-ish flow)")
@@ -365,7 +393,7 @@ def main():
                 log(f"[read] 0x{addr:08X} ({length}B): {hexs}")
             return 0
 
-        flash_image(bl, args.bin, args.go)
+        flash_image(bl, args.bin, args.go, mass=args.mass_erase)
         log("[done] flash successful.")
         return 0
 

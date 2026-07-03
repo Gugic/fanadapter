@@ -27,3 +27,9 @@ ChannelId outputs_current_gear(void);
 // up or down line. Idle HIGH (the wheelbase provides the pull-up). Advanced by outputs_tick().
 void outputs_pulse_shift(bool up, uint16_t duration_ms);
 bool outputs_shift_active(bool up); // pulse currently asserted (for the outputs snapshot)
+
+// Handbrake PWM fallback (M5): drive a TIM3_CH3 PWM duty (PC8) from a 0..65535 level, for an RC
+// low-pass into an analog handbrake input. This is the FALLBACK leg — modern Fanatec firmware reads
+// the handbrake from the pedal stream (pedals.c), which mapping.c writes in parallel; this PWM pin
+// may never be wired. value is mapped 16-bit -> 12-bit duty (value >> 4 against ARR = 4095).
+void outputs_set_handbrake_pwm(uint16_t value);

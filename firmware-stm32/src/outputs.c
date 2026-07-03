@@ -44,6 +44,16 @@ typedef struct {
 static pulse_t s_seq_up   = {SEQ_UP_PORT, SEQ_UP_PIN, 0, false};
 static pulse_t s_seq_down = {SEQ_DOWN_PORT, SEQ_DOWN_PIN, 0, false};
 
+// Handbrake PWM fallback on TIM3_CH3 = PC8 (AF2). ARR = 4095, PSC = 0 -> 64 MHz / 4096 ≈ 15.6 kHz
+// carrier (clean for an RC low-pass). Outside the heartbeat set and clear of PC6/PC7 (sequential).
+// This is the FALLBACK handbrake leg; the primary path is the pedal stream (dual-written in mapping).
+#define HB_PWM_PORT    GPIOC
+#define HB_PWM_PIN     GPIO_PIN_8
+#define HB_PWM_CHANNEL TIM_CHANNEL_3
+#define HB_PWM_ARR     4095u
+static TIM_HandleTypeDef s_hb_tim;
+static bool              s_hb_pwm_ok;
+
 static void pulse_start(pulse_t *p, uint16_t dur_ms) {
   HAL_GPIO_WritePin(p->port, p->pin, GPIO_PIN_RESET); // pull LOW = shift asserted
   p->end_ms = HAL_GetTick() + (dur_ms ? dur_ms : SEQ_DEFAULT_MS);
@@ -82,6 +92,34 @@ void outputs_init(void) {
   HAL_GPIO_Init(GPIOC, &gp);
   HAL_GPIO_WritePin(SEQ_UP_PORT, SEQ_UP_PIN, GPIO_PIN_SET); // idle released (HIGH)
   HAL_GPIO_WritePin(SEQ_DOWN_PORT, SEQ_DOWN_PIN, GPIO_PIN_SET);
+
+  // Handbrake PWM fallback on TIM3_CH3 / PC8. Non-fatal on failure — the pedal stream is the primary
+  // handbrake path, and a TIM fault must not brick the USB-host primary function.
+  __HAL_RCC_TIM3_CLK_ENABLE();
+  gp.Pin       = HB_PWM_PIN;
+  gp.Mode      = GPIO_MODE_AF_PP;
+  gp.Pull      = GPIO_NOPULL;
+  gp.Speed     = GPIO_SPEED_FREQ_LOW;
+  gp.Alternate = GPIO_AF2_TIM3;
+  HAL_GPIO_Init(HB_PWM_PORT, &gp);
+
+  s_hb_tim.Instance               = TIM3;
+  s_hb_tim.Init.Prescaler         = 0;
+  s_hb_tim.Init.CounterMode       = TIM_COUNTERMODE_UP;
+  s_hb_tim.Init.Period            = HB_PWM_ARR;
+  s_hb_tim.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
+  s_hb_tim.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&s_hb_tim) == HAL_OK) {
+    TIM_OC_InitTypeDef oc = {0};
+    oc.OCMode     = TIM_OCMODE_PWM1;
+    oc.Pulse      = 0; // start at 0% (handbrake released)
+    oc.OCPolarity = TIM_OCPOLARITY_HIGH;
+    oc.OCFastMode = TIM_OCFAST_DISABLE;
+    if (HAL_TIM_PWM_ConfigChannel(&s_hb_tim, &oc, HB_PWM_CHANNEL) == HAL_OK &&
+        HAL_TIM_PWM_Start(&s_hb_tim, HB_PWM_CHANNEL) == HAL_OK)
+      s_hb_pwm_ok = true;
+  }
+  if (!s_hb_pwm_ok) console_printf("[outputs] handbrake PWM init failed (non-fatal)\r\n");
 
   s_dac.Instance = DAC1;
   if (HAL_DAC_Init(&s_dac) != HAL_OK) {
@@ -152,3 +190,8 @@ void outputs_pulse_shift(bool up, uint16_t duration_ms) {
 }
 
 bool outputs_shift_active(bool up) { return (up ? &s_seq_up : &s_seq_down)->active; }
+
+void outputs_set_handbrake_pwm(uint16_t value) {
+  if (!s_hb_pwm_ok) return;
+  __HAL_TIM_SET_COMPARE(&s_hb_tim, HB_PWM_CHANNEL, (uint32_t)(value >> 4)); // 16-bit -> 12-bit duty
+}

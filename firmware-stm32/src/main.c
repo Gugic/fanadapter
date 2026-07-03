@@ -28,6 +28,7 @@
 
 #include "mapping.h"
 #include "outputs.h"
+#include "pedals.h"
 #include "protocol.h"
 #include "usb_input.h"
 
@@ -520,6 +521,8 @@ int main(void) {
   protocol_init();
   mapping_init();   // load Config from flash (or seed defaults on magic/version/CRC mismatch)
   outputs_init();   // DAC1 on PA4/PA5 for the H-pattern X/Y; snaps to neutral (needs gearOut[])
+  pedals_init();    // CSL Elite pedal-port UART emulator on USART2 (PA2/PA3) — the throttle/brake/
+                    // clutch/handbrake sink. Arms a 2 s warmup, then drives the handshake.
 
   tusb_rhport_init_t host_init = {.role = TUSB_ROLE_HOST, .speed = TUSB_SPEED_FULL};
   tusb_rhport_init_t dev_init  = {.role = TUSB_ROLE_DEVICE, .speed = TUSB_SPEED_FULL};
@@ -536,8 +539,10 @@ int main(void) {
     console_cli_poll(); // drain inbound console -> CLI (dfu/reboot/?) + JSON protocol commands
 
     uint32_t now = HAL_GetTick();
-    mapping_tick();     // read inputs, evaluate bindings, drive outputs (no-op until M3)
+    mapping_tick();     // read inputs, evaluate bindings, drive DAC/sequential/handbrake-PWM + refresh pedal levels
     protocol_tick(now); // emit device attach/detach + rate-limited live events when streaming
+    pedals_update();    // CSL Elite UART handshake + 100 Hz pedal stream. LAST: it relies on the
+                        // levels mapping_tick() just set, and blocking work ahead of it slips cadence.
 
     if (now - last_blink >= 1000u) { // slow 0.5 Hz heartbeat
       last_blink = now;

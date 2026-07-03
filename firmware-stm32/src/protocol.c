@@ -10,6 +10,8 @@
 #include "input_source.h"
 #include "json_min.h"
 #include "mapping.h"
+#include "pedals.h"
+#include "stm32h7xx_hal.h" // NVIC_SystemReset
 
 extern int console_printf(const char *fmt, ...);
 
@@ -334,6 +336,58 @@ static void cmd_release_outputs(void) {
   send_ok();
 }
 
+// --- test / maintenance (M7) -------------------------------------------------------------------
+static void cmd_test_axis(const json_kv *kv, int n) {
+  char ch_name[16];
+  if (!json_get_str(kv, n, "channel", ch_name, sizeof(ch_name))) {
+    send_err("missing_channel");
+    return;
+  }
+  ChannelId ch = mapping_channel_by_name(ch_name);
+  if (ch != CH_HANDBRAKE && ch != CH_THROTTLE && ch != CH_BRAKE && ch != CH_CLUTCH) {
+    send_err("not_an_axis_channel");
+    return;
+  }
+  long v = 0;
+  json_get_int(kv, n, "value", &v); // optional, defaults to 0
+  mapping_test_axis(ch, (uint16_t)v);
+  send_ok();
+}
+
+static void cmd_test_pulse(const json_kv *kv, int n) {
+  char dir[8];
+  if (!json_get_str(kv, n, "direction", dir, sizeof(dir))) {
+    send_err("missing_direction");
+    return;
+  }
+  if (!strcmp(dir, "up")) mapping_test_pulse(true);
+  else if (!strcmp(dir, "down")) mapping_test_pulse(false);
+  else {
+    send_err("invalid_direction");
+    return;
+  }
+  send_ok();
+}
+
+// Soft-reset back into this firmware (SYSRESETREQ). Surviving the wheelbase's pedal-UART state, so a
+// reset_pedals re-arm is often still needed after — the warmup helps. The ok is flushed first.
+static void cmd_reboot(void) {
+  send_ok();
+  for (volatile uint32_t d = 0; d < 800000u; d++) __NOP(); // let the ok + any CDC FIFO drain
+  NVIC_SystemReset();
+}
+
+static void cmd_reset_pedals(void) {
+  pedals_force_reset();
+  send_ok();
+}
+
+static void cmd_pedals_status(void) {
+  console_printf("{\"state\":\"%s\",\"throttle\":%u,\"brake\":%u,\"clutch\":%u,\"handbrake\":%u}\r\n",
+                 pedals_state_name(), pedals_get_throttle(), pedals_get_brake(), pedals_get_clutch(),
+                 pedals_get_handbrake());
+}
+
 // ---------------- events ------------------------------------------------------------------------
 static void emit_attached(const InputDeviceInfo *d) {
   char mbuf[DEVICE_STR_LEN * 2], pbuf[DEVICE_STR_LEN * 2];
@@ -408,6 +462,11 @@ void protocol_handle_line(const char *line) {
   else if (!strcmp(cmd, "set_outputs")) cmd_set_outputs(kv, n);
   else if (!strcmp(cmd, "pulse_shift")) cmd_pulse_shift(kv, n);
   else if (!strcmp(cmd, "release_outputs")) cmd_release_outputs();
+  else if (!strcmp(cmd, "test_axis")) cmd_test_axis(kv, n);
+  else if (!strcmp(cmd, "test_pulse")) cmd_test_pulse(kv, n);
+  else if (!strcmp(cmd, "reboot")) cmd_reboot();
+  else if (!strcmp(cmd, "reset_pedals")) cmd_reset_pedals();
+  else if (!strcmp(cmd, "pedals_status")) cmd_pedals_status();
   else send_err("unknown_cmd");
 }
 

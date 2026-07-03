@@ -9,7 +9,11 @@ Porting the `fanadapter` firmware to an **FK743M3‑VGT6** (STM32H743VGT6) core 
 the adapter-logic port is now underway, tracked as milestones M0–M7 (plan:
 `C:\Users\Gugic\.claude\plans\shimmering-hatching-noodle.md`).
 
-**Status: M0–M4 DONE and HARDWARE-VALIDATED (June 2026). Remaining: M5 handbrake-PWM, M6 pedal UART, M7 polish.**
+**Status: M0–M7 DONE and HARDWARE-VALIDATED on the real wheelbase (June 2026). The full chain works:
+H-pattern gears (DAC), sequential, handbrake PWM, and the CSL Elite pedal-UART stream all drive the
+wheelbase; the pedal handshake holds; a wheelbase power-cycle auto-recovers (restart re-arm); and saved
+config survives a reflash (bank-1-only erase). Feature parity with the Teensy reached. Remaining is
+polish only: a DAC gear-voltage recal pass and the future dual-USB board (native CDC, no S3 bridge).**
 - **M0 — plumbing/test-rig:** USART1 RX (interrupt + 16-byte FIFO, ISR drains it, priority **5 = above
   USB** so command bursts don't overrun); console switched to **8E1** to match the ROM bootloader;
   `lib/cherryusb` deleted. DAC + TIM HAL were already enabled in the active PlatformIO conf — no override.
@@ -43,6 +47,39 @@ the adapter-logic port is now underway, tracked as milestones M0–M7 (plan:
   Semantics = **command override**: a PC-set channel wins over the USB mapping, sticky until
   `release_outputs`. State in `mapping.c` (`g_ovr_*`). (Standalone mode — USB devices → in-firmware
   mapping → outputs — is unchanged.) `input_serial.{c,h}` + `inject_*` were removed.
+- **M5 — handbrake PWM fallback (HW-validated):** `outputs.c` adds a TIM3_CH3 PWM
+  leg on **PC8** (AF2), ARR=4095 / PSC=0 → ~15.6 kHz carrier for an RC low-pass. `outputs_set_handbrake_pwm(v)`
+  maps a 0..65535 level to a 12-bit duty (`v >> 4`). Init is non-fatal (a TIM fault won't brick the USB
+  host). This is the FALLBACK handbrake; the primary path is the pedal stream — `mapping.c` dual-writes
+  the handbrake to both. **Bench-verified by metering PC8 (a DC meter reads the duty average) — it tracks
+  the handbrake level.** In a wheelbase build, leave the dedicated handbrake RJ12 unplugged (handbrake
+  rides the pedal stream); PC8/RC is only for a rig without the pedal port.
+- **M6 — CSL Elite pedal UART (HW-VALIDATED on the wheelbase — the keystone):** `pedals.{c,h}` on
+  **USART2 (PA2=TX, PA3=RX), 8N1** — a faithful port of the Teensy `pedals.cpp` state machine
+  (INIT→STEP0→STEP1→STEP2→STREAMING), same handshake bytes (0x0A→0x1A, 0x05→0x15), 250000↔115200 baud
+  switch, 2 s warmup drain, lenient any-order STEP2 collector (ack 0x00/0x02/0x03, transition on the
+  0x03 version-identity ack), CRC-8 (poly 0x8C), and 100 Hz 12-byte `0x7B..0x7D` frames. **RX** is a
+  register-level RXNE interrupt ring (`USART2_IRQHandler`, priority 5 = above USB, FIFO enabled) drained
+  in `pedals_update()`; **TX** is blocking `HAL_UART_Transmit` (12 B ≈ 1 ms at 115200, gated to 100 Hz —
+  the proven Teensy approach; IT/DMA is a possible future optimization). `mapping.c` `update_axes` now
+  pushes throttle/brake/clutch/handbrake into the stream every tick; `pedals_update()` runs **LAST** in
+  the main loop. **This is what makes `set_outputs` and USB-mapped pedals electrically reach the
+  wheelbase** — before M6 those values stopped at the snapshot/event. **HW-verified:** the wheelbase
+  enumerates "ClubSport Pedals V3", the handshake walks to `STREAMING_115K`, and pedal/handbrake levels
+  register in-app.
+  - **Wheelbase-restart auto-recovery (in `pedals.c`):** once STREAMING we ignore RX, so a POWER-CYCLED
+    wheelbase (which re-initiates its handshake at 250000 while we're camped at 115200) used to leave us
+    stuck streaming into a wheelbase that had fallen back to analog → jitter. The mismatched baud arrives
+    as a burst of UART framing/overrun errors; the RX ISR tallies them and STREAMING re-arms the
+    handshake on a burst (`RESTART_ERR_THRESHOLD = 32`, 1 Hz decay so isolated glitches don't trip it).
+    **HW-verified:** a wheelbase power-cycle now re-establishes the session on its own. (This dead-end
+    carried over from the Teensy, which only recovered via the manual re-arm button.)
+- **M7 — polish (HW-validated):** new JSON commands `test_axis` (500 ms axis-level
+  override), `test_pulse` (one sequential pulse), `reboot` (`NVIC_SystemReset`), `reset_pedals`
+  (`pedals_force_reset` — re-arm the handshake now, skipping warmup), `pedals_status`
+  (`{state,throttle,brake,clutch,handbrake}`). All shapes match the Teensy + the existing
+  `webconfig/src/lib/serial.ts` wrappers (`testAxis/testPulse/reboot/resetPedals/pedalsStatus`) — **no
+  webconfig change was needed**. DAC gear recal against the real wheelbase still pending (M3/M7 note).
 
 USB host is on **OTG_FS**; the console is exposed **two ways at once** — a **USB CDC device on OTG_HS
 (B14/B15)** for capable boards, plus the **USART1 UART** (8E1) fallback used here via the ESP32-S3
@@ -121,16 +158,40 @@ Implemented June 2026, **builds clean** (37.9 KB flash). What landed:
    assumed valid), FS‑PHY init only sets `PWRDWN`, and `hcd_dwc2.c` writes `HPRT_POWER`. So the host
    doesn't gate on a VBUS pin and PA9 is free for USART1; no GCCFG poking needed.
 
-## NEXT STEP — M5/M6 (output hardware), M7 (polish)
+## Bench session — ALL milestones validated on the real wheelbase (June 2026)
 
-M0–M4 are done (above). Remaining, per the plan (`shimmering-hatching-noodle.md`):
-- **M5 — handbrake PWM fallback** (the sequential pulse already landed in M3). A TIM PWM channel on a
-  free pin outside the heartbeat set + RC; handbrake's primary path is still the pedal stream.
-- **M6 — pedal UART (USART2):** the CSL Elite emulator. This is what makes `set_outputs` and USB-mapped
-  pedals/handbrake *electrically* reach the wheelbase — today those values stop at the `outputs`
-  snapshot/event. Port the handshake state machine, 2 s warmup, 100 Hz framing, lenient STEP2 collector.
-- **M7 — polish:** `reboot`/`reset_pedals`/`pedals_status`/`test_axis`/`test_pulse` commands, DAC gear
-  recal against the real wheelbase, doc/README sync.
+M0–M7 are done and confirmed end-to-end against the wheelbase (a DD+). What was verified:
+
+- **Pins (confirmed broken out + wired):** gears **PA4/PA5** (DAC, direct — no RC), sequential
+  **PC6/PC7**, handbrake PWM **PC8 (TIM3_CH3)**, pedal UART **USART2 PA2 (TX) / PA3 (RX)**. The pedal
+  port's GND pins 1/2/3 all tied to the common ground.
+- **Gears:** metered PA4/PA5 per gear against the schematics table (via the sticky `set_gear` override,
+  which holds steady — `test_gear` is only a 500 ms pulse). Direct DAC → shifter port; no RC filter (a
+  cap on the DAC buffer output can oscillate — don't add one). Reverse's near-rail X reads ~0.2 V low
+  (output-buffer clamp) — expected, the wheelbase normalizes it in shifter calibration.
+- **Sequential + handbrake PWM:** sequential shifts register (the wheelbase supplies the open-drain
+  pull-up); PC8 PWM duty tracks the handbrake level (a DC meter reads the duty average).
+- **Pedal UART:** enumerates "ClubSport Pedals V3", `pedals_status` walks to `STREAMING_115K`, pedal
+  levels register in-app. Wheelbase power-cycle auto-recovers (restart re-arm). `reboot`/`reset_pedals`/
+  `test_*` all work.
+- **Config survives reflash** (bank-1-only erase — see the flash section below).
+
+### ⚠️ Pedal-UART line integrity (gotcha that ate a debug session)
+The pedal port is **unforgiving about wire integrity — suspect the wiring before the firmware.** A
+marginal jumper (especially the **ground**, or the TX line PA2→pedal Pin 5) CRC-corrupts the 100 Hz
+frames; the wheelbase then rejects them and falls back to analog pedal sensing, and (pre-fix) the
+adapter kept streaming into the void → jitter on the now-analog pins. Symptom: handshake completes,
+pedals show in the Fanatec app for ~2 s, then drop to analog + jitter, repeating. **Fix was re-seating
+the wire, not a code change.** The console `[pedals]` trace is the diagnostic: it showed the adapter
+reaching `STREAMING` and staying (so the drop was wheelbase-side), and a burst of RX framing errors —
+which is exactly what a flaky line (or a genuine wheelbase restart) produces. If the flap ever returns
+on a solid line, only then suspect the restart-detector threshold (`RESTART_ERR_THRESHOLD`).
+
+### Remaining (polish only)
+- **DAC gear recalibration** against the exact wheelbase voltages if any column reads off (`set_gear_dac`
+  per gear, then `save_config`). The defaults engaged all gears cleanly here.
+- **Future dual-USB board:** native STM32 CDC (VID 1209 / PID FA00), no S3 bridge — WebSerial connects
+  directly.
 
 ### Flash config store — TWO bugs that cost a bench session (FIXED; do not reintroduce)
 1. **The config sector MUST be in a DIFFERENT flash bank than the running code.** Code runs from bank 1;
@@ -145,6 +206,17 @@ M0–M4 are done (above). Remaining, per the plan (`shimmering-hatching-noodle.m
    flash reads are already coherent. (If D-cache is ever enabled, re-add it guarded.) The flash op is
    wrapped in `__disable_irq()`/`__enable_irq()` (defensive; the erase busy-waits ~1 s, but save_config is
    rare so the brief USB/console pause is fine).
+
+### Config survives a reflash (bank-1-only erase) — HW-verified
+The flasher (`stm32_uart_flash.py`) used to do a **global** mass erase (`0xFFFF`), which wiped bank 2 →
+saved bindings gone on every flash. Now it defaults to a **bank-1-only erase** (AN3155 special code
+`0xFFFE`): the ~58 KB app lives entirely in bank 1 (nowhere near its 512 KB), so erasing bank 1 alone
+leaves the config in bank 2 @ `0x08100000` intact. **Confirmed on the H743 ROM bootloader** — it accepts
+`0xFFFE` (log line `[erase] bank-1 erase (preserving config in bank 2)... done`), and bindings saved
+before a reflash are still present after. `flash.ps1 -MassErase` (→ `--mass-erase`) forces the old full
+wipe — use it after a `CONFIG_VERSION` bump (a preserved older-version blob is rejected → boots defaults
+anyway) or to deliberately reset config. The flasher auto-falls-back to a global erase if a bootloader
+ever rejects `0xFFFE`, so flashing can't break.
 
 ### webconfig now talks to THIS board (over the bridge)
 Native USB CDC is dead here, so the web UI connects over the **S3 bridge / CH340 = COM16**. `serial.ts`:

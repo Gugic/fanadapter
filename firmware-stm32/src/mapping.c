@@ -6,6 +6,7 @@
 #include "config_store.h"
 #include "input_source.h"
 #include "outputs.h"
+#include "pedals.h"
 #include "stm32h7xx_hal.h" // HAL_GetTick
 
 extern int console_printf(const char *fmt, ...);
@@ -31,10 +32,12 @@ const uint16_t DEFAULT_PULSE_MS = 50;
 static Config         g_cfg;
 static OutputSnapshot g_outputs;
 
-// Test overrides — test_gear forces a gear onto the DAC for ~500 ms.
+// Test overrides — test_gear forces a gear onto the DAC, test_axis an axis level, both for ~500 ms.
 #define TEST_HOLD_MS 500u
 static ChannelId g_test_gear_override = CH_GEAR_N;
 static uint32_t  g_test_gear_until    = 0;
+static uint16_t  g_test_axis_value[CH_COUNT];
+static uint32_t  g_test_axis_until[CH_COUNT];
 
 // Rising-edge shadow for latch mode — one bool per gear binding slot, so a held binding only
 // switches the gear once per press.
@@ -281,22 +284,33 @@ static void update_shifter(void) {
   g_outputs.gear = outputs_current_gear();
 }
 
-// Axis output value for a channel: the PC override if active, else the USB-device mapping (MAX across
-// bindings). Used for handbrake/throttle/brake/clutch.
+// Axis output value for a channel. Priority: test-axis override (500 ms) > PC command override
+// (sticky) > USB-device mapping (MAX across bindings). Used for handbrake/throttle/brake/clutch.
 static uint16_t axis_out(ChannelId ch) {
+  if (ch < CH_COUNT && g_test_axis_until[ch] != 0) {
+    if ((int32_t)(HAL_GetTick() - g_test_axis_until[ch]) < 0) return g_test_axis_value[ch];
+    g_test_axis_until[ch] = 0; // expired
+  }
   if (ch < CH_COUNT && g_ovr_axis_active[ch]) return g_ovr_axis_value[ch];
   ChannelBindings *cb = mapping_channel_bindings(ch);
   return cb ? eval_channel_axis(cb) : 0;
 }
 
-// Pedal + handbrake levels into the output snapshot. The actual hardware sinks — handbrake PWM (M5)
-// and the CSL Elite pedal stream (M6) — read these; until then the values surface via the `outputs`
-// event so the UI reflects both USB-mapped and PC-commanded levels.
+// Pedal + handbrake levels into the output snapshot AND the physical sinks: the handbrake PWM
+// fallback (M5) and the CSL Elite pedal stream (M6). Handbrake is dual-written to both (modern
+// Fanatec firmware reads it from the pedal stream); throttle/brake/clutch go to the stream only. The
+// snapshot still drives the `outputs` event so the UI reflects USB-mapped + PC-commanded levels.
 static void update_axes(void) {
   g_outputs.handbrake = axis_out(CH_HANDBRAKE);
   g_outputs.throttle  = axis_out(CH_THROTTLE);
   g_outputs.brake     = axis_out(CH_BRAKE);
   g_outputs.clutch    = axis_out(CH_CLUTCH);
+
+  outputs_set_handbrake_pwm(g_outputs.handbrake);
+  pedals_set_throttle(g_outputs.throttle);
+  pedals_set_brake(g_outputs.brake);
+  pedals_set_clutch(g_outputs.clutch);
+  pedals_set_handbrake(g_outputs.handbrake);
 }
 
 // Sequential shifts from USB bindings: rising edge on shift_up/shift_down fires a pulse. (PC-driven
@@ -331,6 +345,14 @@ void mapping_test_gear(ChannelId ch) {
   g_test_gear_override = ch;
   g_test_gear_until    = HAL_GetTick() + TEST_HOLD_MS;
 }
+
+void mapping_test_axis(ChannelId ch, uint16_t value) {
+  if (ch != CH_HANDBRAKE && ch != CH_THROTTLE && ch != CH_BRAKE && ch != CH_CLUTCH) return;
+  g_test_axis_value[ch] = value;
+  g_test_axis_until[ch] = HAL_GetTick() + TEST_HOLD_MS;
+}
+
+void mapping_test_pulse(bool up) { outputs_pulse_shift(up, mapping_config()->pulseMs); }
 
 // ---------------- Direct output control ----------------
 
@@ -372,6 +394,8 @@ void mapping_reset(void) {
   // (it may be pre-init at boot); with bindings wiped, the next mapping_tick drives neutral.
   g_test_gear_until    = 0;
   g_test_gear_override = CH_GEAR_N;
+  memset(g_test_axis_until, 0, sizeof(g_test_axis_until));
+  memset(g_test_axis_value, 0, sizeof(g_test_axis_value));
   memset(g_gear_prev_pressed, 0, sizeof(g_gear_prev_pressed));
   g_ovr_gear_active = false;
   g_ovr_gear        = CH_GEAR_N;
