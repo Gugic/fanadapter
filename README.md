@@ -56,7 +56,7 @@ The project is structured into five main directories:
    A beautiful, modern React 19 + TypeScript + Tailwind + shadcn/ui configuration interface. It runs directly in desktop Chromium-based browsers (Chrome, Edge, Brave) and communicates with the firmware over WebSerial (line-based JSON) to capture binds, calibrate axis deadzones, and test outputs.
    
 4. **[`simhub-plugin/`](simhub-plugin/README.md)**  
-   A [SimHub](https://www.simhubdash.com/) plugin (C# / .NET Framework 4.8 / WPF) that speaks the same JSON protocol over a COM port. Devices plugged into the **PC** are captured and mapped by SimHub's own input system, and the plugin turns the result into direct output commands to the wheelbase; devices plugged into the **adapter's own USB hub** are configured through a mirror of the webconfig UI. *Work in progress.*
+   A [SimHub](https://www.simhubdash.com/) plugin (C# / .NET Framework 4.8 / WPF) that speaks the same JSON protocol over a COM port. Devices plugged into the **PC** are captured and mapped by SimHub's own input system, and the plugin turns the result into direct output commands to the wheelbase; devices plugged into the **adapter's own USB hub** are configured through a mirror of the webconfig UI. Also publishes the adapter's live state as SimHub properties for dashboards.
 
 5. **[`schematics/`](schematics/README.md)**  
    Detailed hardware pinouts, port protocols, wiring diagrams, Bill of Materials (BoM), and step-by-step physical assembly and pre-flight multimeter tests.
@@ -72,7 +72,7 @@ The following features and improvements are planned for future updates:
 * **Custom PCB Design** — A small, custom-routed KiCad PCB to replace the breadboard.
 * **3D-Printed Enclosure** — A robust case with panel-mounted RJ12 jacks and a secure powered USB hub integration.
 * **OLED Display & Buttons** — On-board configuration interface for status reports, calibration, and profile-switching without a computer.
-* **SimHub Integration** — *In progress:* the [`simhub-plugin/`](simhub-plugin/README.md) drives the same JSON protocol from SimHub, so a shifter or pedal set attached to the PC can command the wheelbase through the adapter.
+* ~~**SimHub Integration**~~ — **Done:** the [`simhub-plugin/`](simhub-plugin/README.md) drives the same JSON protocol from SimHub, so a shifter or pedal set attached to the PC can command the wheelbase through the adapter, and the adapter's own mapping can be configured without leaving SimHub.
 * **0-5V Handbrake Scaler** — Incorporating an op-amp scaling stage (MCP6001 with ~1.52 gain) for native 0-5V analog voltage swing.
 * **Mode Switching on Shifter 1** — Software toggle between H-pattern and sequential modes on a single physical RJ12 port.
 * ~~**Cheaper MCU Port**~~ — **Done:** the [STM32H743 build](firmware-stm32/README.md) is a cheaper, easier-to-source alternative to the Teensy at full feature parity. (An RP2040 or ESP32-S3 port would go cheaper still; the ESP32 attempt is shelved on the `esp32` branch.)
