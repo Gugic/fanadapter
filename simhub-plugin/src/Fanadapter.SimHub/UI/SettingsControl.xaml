@@ -331,8 +331,135 @@
                 </styles:SHTabItem>
 
                 <styles:SHTabItem Header="Outputs">
-                    <TextBlock Margin="8" TextWrapping="Wrap"
-                               Text="Test outputs and calibrate gear voltages. Coming in a later milestone." />
+                    <StackPanel Margin="8">
+
+                        <styles:SHSubSection Title="What the wheelbase is being sent">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                    <TextBlock Text="Gear" Width="90" />
+                                    <TextBlock Text="{Binding OutputGear}" FontWeight="Bold" MinWidth="70" />
+                                    <TextBlock Text="Shift up" Margin="12,0,4,0" />
+                                    <TextBlock Text="{Binding OutputShiftUp}" MinWidth="50" />
+                                    <TextBlock Text="Shift down" Margin="12,0,4,0" />
+                                    <TextBlock Text="{Binding OutputShiftDown}" MinWidth="50" />
+                                </StackPanel>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
+                                    <TextBlock Text="Throttle" Width="90" />
+                                    <ProgressBar Value="{Binding OutputThrottle, Mode=OneWay}" Maximum="100"
+                                                 Width="240" Height="10" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding OutputThrottle, StringFormat=' {0} %'}" Margin="8,0,0,0" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
+                                    <TextBlock Text="Brake" Width="90" />
+                                    <ProgressBar Value="{Binding OutputBrake, Mode=OneWay}" Maximum="100"
+                                                 Width="240" Height="10" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding OutputBrake, StringFormat=' {0} %'}" Margin="8,0,0,0" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
+                                    <TextBlock Text="Clutch" Width="90" />
+                                    <ProgressBar Value="{Binding OutputClutch, Mode=OneWay}" Maximum="100"
+                                                 Width="240" Height="10" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding OutputClutch, StringFormat=' {0} %'}" Margin="8,0,0,0" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Handbrake" Width="90" />
+                                    <ProgressBar Value="{Binding OutputHandbrake, Mode=OneWay}" Maximum="100"
+                                                 Width="240" Height="10" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding OutputHandbrake, StringFormat=' {0} %'}" Margin="8,0,0,0" />
+                                </StackPanel>
+                            </StackPanel>
+                        </styles:SHSubSection>
+
+                        <styles:SHSectionSeparator />
+
+                        <styles:SHSubSection Title="Pedal port link">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="State" Width="90" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding PedalLinkState}" FontWeight="Bold"
+                                               VerticalAlignment="Center" MinWidth="180" />
+                                    <styles:SHButtonSecondary Command="{Binding RearmPedalsCommand}">Re-arm handshake</styles:SHButtonSecondary>
+                                </StackPanel>
+                                <TextBlock Margin="0,6,0,0" Opacity="0.7" TextWrapping="Wrap"
+                                           Text="STREAMING means the wheelbase is accepting pedal data. The handshake can desync if the wheelbase is power-cycled or the adapter reboots; re-arming restarts it from step 0." />
+                            </StackPanel>
+                        </styles:SHSubSection>
+
+                        <styles:SHSectionSeparator />
+
+                        <styles:SHSubSection Title="H-pattern gear voltages">
+                            <StackPanel>
+                                <TextBlock Opacity="0.7" TextWrapping="Wrap" Margin="0,0,0,8"
+                                           Text="The H-pattern port reads a pair of voltages rather than a gear number, so each position is an (X, Y) DAC code from 0 to 4095. Adjust these if a gear won't register, and use Test to hold the position for half a second." />
+                                <ItemsControl ItemsSource="{Binding GearDacs}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                                <TextBlock Text="{Binding Label}" Width="80" VerticalAlignment="Center" />
+                                                <TextBlock Text="X" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                                <TextBox Text="{Binding X}" Width="70" VerticalAlignment="Center" />
+                                                <TextBlock Text="Y" Margin="10,0,4,0" VerticalAlignment="Center" />
+                                                <TextBox Text="{Binding Y}" Width="70" VerticalAlignment="Center" />
+                                                <styles:SHLinkButtonSmall Margin="12,0,0,0"
+                                                    Command="{Binding DataContext.TestGearCommand,
+                                                        RelativeSource={RelativeSource AncestorType=ScrollViewer}}"
+                                                    CommandParameter="{Binding Gear}">Test</styles:SHLinkButtonSmall>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </styles:SHSubSection>
+
+                        <styles:SHSectionSeparator />
+
+                        <styles:SHSubSection Title="Sequential pulse">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Pulse width" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <TextBox Text="{Binding PulseMs}" Width="70" VerticalAlignment="Center" />
+                                <TextBlock Text="ms" VerticalAlignment="Center" Margin="4,0,0,0" />
+                                <styles:SHButtonSecondary Margin="16,0,0,0"
+                                    Command="{Binding TestPulseCommand}" CommandParameter="up">Test up</styles:SHButtonSecondary>
+                                <styles:SHButtonSecondary Margin="6,0,0,0"
+                                    Command="{Binding TestPulseCommand}" CommandParameter="down">Test down</styles:SHButtonSecondary>
+                            </StackPanel>
+                        </styles:SHSubSection>
+
+                        <styles:SHSectionSeparator />
+
+                        <styles:SHSubSection Title="Test axes">
+                            <StackPanel>
+                                <TextBlock Opacity="0.7" TextWrapping="Wrap" Margin="0,0,0,8"
+                                           Text="Drives one channel to a fixed value for half a second, then hands it back to the mapping. Useful for checking wiring without a foot on the pedal." />
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="Throttle" Width="80" VerticalAlignment="Center" />
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="throttle:0" Margin="0,0,8,0">0 %</styles:SHLinkButtonSmall>
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="throttle:50" Margin="0,0,8,0">50 %</styles:SHLinkButtonSmall>
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="throttle:100">100 %</styles:SHLinkButtonSmall>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="Brake" Width="80" VerticalAlignment="Center" />
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="brake:0" Margin="0,0,8,0">0 %</styles:SHLinkButtonSmall>
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="brake:50" Margin="0,0,8,0">50 %</styles:SHLinkButtonSmall>
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="brake:100">100 %</styles:SHLinkButtonSmall>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="Clutch" Width="80" VerticalAlignment="Center" />
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="clutch:0" Margin="0,0,8,0">0 %</styles:SHLinkButtonSmall>
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="clutch:50" Margin="0,0,8,0">50 %</styles:SHLinkButtonSmall>
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="clutch:100">100 %</styles:SHLinkButtonSmall>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Handbrake" Width="80" VerticalAlignment="Center" />
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="handbrake:0" Margin="0,0,8,0">0 %</styles:SHLinkButtonSmall>
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="handbrake:50" Margin="0,0,8,0">50 %</styles:SHLinkButtonSmall>
+                                    <styles:SHLinkButtonSmall Command="{Binding TestAxisCommand}" CommandParameter="handbrake:100">100 %</styles:SHLinkButtonSmall>
+                                </StackPanel>
+                            </StackPanel>
+                        </styles:SHSubSection>
+
+                    </StackPanel>
                 </styles:SHTabItem>
 
                 <styles:SHTabItem Header="Logs">

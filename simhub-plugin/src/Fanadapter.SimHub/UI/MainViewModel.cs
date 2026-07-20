@@ -53,6 +53,12 @@ namespace Fanadapter.SimHub.UI
             ClearBindingCommand = new ParameterCommand(ClearBinding, () => IsConnected);
             CancelCaptureCommand = new RelayCommand(CancelCapture, () => IsCapturing);
 
+            TestGearCommand = new ParameterCommand(TestGear, () => IsConnected);
+            TestPulseCommand = new ParameterCommand(TestPulse, () => IsConnected);
+            TestAxisCommand = new ParameterCommand(TestAxis, () => IsConnected);
+            RearmPedalsCommand = new RelayCommand(RearmPedals, () => IsConnected);
+            _session.Outputs += OnOutputs;
+
             BuildAxisEditors();
             ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => CanStream);
             RefreshPropertyListCommand = new RelayCommand(RefreshPropertyList);
@@ -708,11 +714,18 @@ namespace Fanadapter.SimHub.UI
             AppendLog("outputs released — the adapter's own mapping is back in control.");
         }
 
+        private int _tickCount;
+
         private void OnTick()
         {
             ApplyPendingLive();
             PumpCapture();
             UpdateReadouts();
+            RaiseOutputProperties();
+
+            // The pedal link state changes rarely and costs a round-trip, so it
+            // is polled every couple of seconds rather than every tick.
+            if (++_tickCount % 40 == 0) _ = RefreshPedalStateAsync();
         }
 
         private void UpdateReadouts()
@@ -734,6 +747,157 @@ namespace Fanadapter.SimHub.UI
             OnPropertyChanged(nameof(StreamingStatus));
         }
 
+        // ---------- Outputs (what the wheelbase is being told) ----------
+
+        public ObservableCollection<GearDacViewModel> GearDacs { get; } =
+            new ObservableCollection<GearDacViewModel>();
+
+        private OutputsState _lastOutputs = new OutputsState { Gear = "gear_N" };
+
+        public string OutputGear => HidNames.Channel(_lastOutputs.Gear ?? "gear_N");
+        public bool OutputShiftUp => _lastOutputs.ShiftUp;
+        public bool OutputShiftDown => _lastOutputs.ShiftDown;
+        public double OutputThrottle => Percent(_lastOutputs.Throttle);
+        public double OutputBrake => Percent(_lastOutputs.Brake);
+        public double OutputClutch => Percent(_lastOutputs.Clutch);
+        public double OutputHandbrake => Percent(_lastOutputs.Handbrake);
+
+        private static double Percent(int raw) => Math.Round(raw * 100.0 / 65535.0, 1);
+
+        private int _pulseMs = 50;
+        public int PulseMs
+        {
+            get => _pulseMs;
+            set { _pulseMs = value; OnPropertyChanged(); _ = SetPulseMsAsync(value); }
+        }
+
+        public RelayCommand TestGearCommand { get; private set; }
+        public RelayCommand TestPulseCommand { get; private set; }
+        public RelayCommand TestAxisCommand { get; private set; }
+        public RelayCommand RearmPedalsCommand { get; private set; }
+
+        private string _pedalLinkState = "unknown";
+        public string PedalLinkState
+        {
+            get => _pedalLinkState;
+            private set { _pedalLinkState = value; OnPropertyChanged(); }
+        }
+
+        private void OnOutputs(OutputsState state) => _lastOutputs = state;
+
+        private void RaiseOutputProperties()
+        {
+            OnPropertyChanged(nameof(OutputGear));
+            OnPropertyChanged(nameof(OutputShiftUp));
+            OnPropertyChanged(nameof(OutputShiftDown));
+            OnPropertyChanged(nameof(OutputThrottle));
+            OnPropertyChanged(nameof(OutputBrake));
+            OnPropertyChanged(nameof(OutputClutch));
+            OnPropertyChanged(nameof(OutputHandbrake));
+        }
+
+        private void LoadOutputsFromConfig()
+        {
+            var config = _session.Config;
+            if (config == null) return;
+
+            _pulseMs = config.PulseMs;
+            OnPropertyChanged(nameof(PulseMs));
+
+            GearDacs.Clear();
+            foreach (var gear in Schema.GearKeys)
+            {
+                var dac = config.GetGearDac(gear);
+                GearDacs.Add(new GearDacViewModel(gear, dac, PushGearDac));
+            }
+        }
+
+        private void PushGearDac(GearDacViewModel vm)
+        {
+            if (!IsConnected) return;
+            _ = RunGuardedAsync(
+                () => _session.Protocol.SetGearDacAsync(vm.Gear, vm.X, vm.Y),
+                "could not set the " + vm.Label + " voltages");
+        }
+
+        private async Task SetPulseMsAsync(int value)
+        {
+            if (!IsConnected) return;
+            await RunGuardedAsync(() => _session.Protocol.SetPulseMsAsync(value),
+                "could not set the pulse width");
+        }
+
+        /// <summary>
+        /// Runs an adapter command, turning a failure into a log line rather
+        /// than an unobserved task exception. Bench-test buttons are fire and
+        /// forget by nature — there is nothing to await them.
+        /// </summary>
+        private async Task RunGuardedAsync(Func<Task> work, string failureMessage)
+        {
+            try
+            {
+                await work();
+                IsDirty = true;
+            }
+            catch (Exception ex)
+            {
+                AppendLog(failureMessage + ": " + ex.Message);
+            }
+        }
+
+        private void TestGear(object parameter)
+        {
+            var gear = parameter as string;
+            if (gear == null || !IsConnected) return;
+            _ = RunGuardedAsync(() => _session.Protocol.TestGearAsync(gear), "gear test failed");
+        }
+
+        private void TestPulse(object parameter)
+        {
+            if (!IsConnected) return;
+            var direction = (parameter as string) == "down" ? ShiftDirection.Down : ShiftDirection.Up;
+            _ = RunGuardedAsync(() => _session.Protocol.TestPulseAsync(direction), "pulse test failed");
+        }
+
+        /// <summary>Parameter is "channel:percent", e.g. "throttle:50".</summary>
+        private void TestAxis(object parameter)
+        {
+            var spec = parameter as string;
+            if (spec == null || !IsConnected) return;
+
+            var parts = spec.Split(':');
+            if (parts.Length != 2) return;
+
+            int percent;
+            if (!int.TryParse(parts[1], out percent)) return;
+
+            int value = (int)Math.Round(percent * 65535.0 / 100.0);
+            _ = RunGuardedAsync(() => _session.Protocol.TestAxisAsync(parts[0], value), "axis test failed");
+        }
+
+        private void RearmPedals()
+        {
+            if (!IsConnected) return;
+            _ = RunGuardedAsync(() => _session.Protocol.ResetPedalsAsync(), "could not re-arm the pedal handshake");
+            AppendLog("pedal handshake re-armed.");
+        }
+
+        private async Task RefreshPedalStateAsync()
+        {
+            if (!IsConnected) return;
+            try
+            {
+                var status = await _session.Protocol.GetPedalsStatusAsync();
+                PedalLinkState = status.State ?? "unknown";
+            }
+            catch
+            {
+                // Polled on a timer; a transient failure isn't worth logging
+                // every tick.
+                PedalLinkState = "unknown";
+            }
+        }
+
         // ---------- Logs ----------
 
         public ObservableCollection<string> LogLines { get; } = new ObservableCollection<string>();
@@ -748,14 +912,21 @@ namespace Fanadapter.SimHub.UI
 
         // ---------- Plumbing ----------
 
-        private void OnSessionStateChanged() => RunOnUi(SyncFromSession);
+        private void OnSessionStateChanged() => SyncFromSession();
 
-        private void SyncFromSession()
+        /// <summary>
+        /// Marshalled as a whole, not just its notifications: it rebuilds the
+        /// mapping and output editors, and WPF rejects changes to a bound
+        /// ObservableCollection from any thread but the dispatcher's. Callers
+        /// reach this from async continuations that resume on the pool.
+        /// </summary>
+        private void SyncFromSession() => RunOnUi(() =>
         {
-            // The config arrives with the connection, so the mapping editors are
-            // rebuilt whenever session state changes rather than on a separate
-            // signal that could arrive first.
+            // The config arrives with the connection, so the editors are rebuilt
+            // whenever session state changes rather than on a separate signal
+            // that could arrive first.
             LoadChannelsFromConfig();
+            LoadOutputsFromConfig();
 
             OnPropertyChanged(nameof(IsConnected));
             OnPropertyChanged(nameof(StatusMessage));
@@ -767,7 +938,7 @@ namespace Fanadapter.SimHub.UI
             OnPropertyChanged(nameof(StreamingButtonText));
             OnPropertyChanged(nameof(StreamingStatus));
             RaiseCommandStates();
-        }
+        });
 
         private void RaiseCommandStates() => RunOnUi(() =>
         {
@@ -801,6 +972,7 @@ namespace Fanadapter.SimHub.UI
             _session.LogLine -= OnLogLine;
             _session.DevicesChanged -= OnDevicesChanged;
             _session.LiveInput -= OnLiveInput;
+            _session.Outputs -= OnOutputs;
         }
 
         public event PropertyChangedEventHandler PropertyChanged;
