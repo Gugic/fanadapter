@@ -4,7 +4,7 @@ namespace Fanadapter.SimHub.UI
 {
     public partial class SettingsControl : UserControl
     {
-        public FanadapterPlugin Plugin { get; }
+        public MainViewModel ViewModel { get; }
 
         public SettingsControl()
         {
@@ -13,7 +13,13 @@ namespace Fanadapter.SimHub.UI
 
         public SettingsControl(FanadapterPlugin plugin) : this()
         {
-            Plugin = plugin;
+            ViewModel = new MainViewModel(plugin);
+            DataContext = ViewModel;
+
+            // SimHub builds a fresh settings control each time the pane is
+            // opened, so the old one has to stop listening or every session
+            // event fans out to a growing pile of dead view models.
+            Unloaded += (s, e) => ViewModel.Detach();
         }
     }
 }

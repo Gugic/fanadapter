@@ -6,18 +6,83 @@
              xmlns:styles="clr-namespace:SimHub.Plugins.Styles;assembly=SimHub.Plugins"
              mc:Ignorable="d">
     <ScrollViewer>
-        <StackPanel>
+        <StackPanel Margin="0,0,0,16">
 
             <styles:SHSection Title="ADAPTER" ShowSeparator="True">
-                <TextBlock Text="Not connected." />
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Port" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox ItemsSource="{Binding Ports}"
+                                  SelectedItem="{Binding SelectedPort}"
+                                  DisplayMemberPath="Description"
+                                  MinWidth="280"
+                                  VerticalAlignment="Center" />
+                        <styles:SHButtonSecondary Command="{Binding RefreshPortsCommand}"
+                                                  Margin="8,0,0,0">Refresh</styles:SHButtonSecondary>
+                        <styles:SHButtonPrimary Command="{Binding ConnectCommand}"
+                                                Margin="8,0,0,0">Connect</styles:SHButtonPrimary>
+                        <styles:SHButtonSecondary Command="{Binding DisconnectCommand}"
+                                                  Margin="8,0,0,0">Disconnect</styles:SHButtonSecondary>
+                    </StackPanel>
+
+                    <TextBlock Text="{Binding StatusMessage}" Margin="0,0,0,2" />
+                    <TextBlock Text="{Binding FirmwareBadge}" Opacity="0.7" Margin="0,0,0,2" />
+                    <TextBlock Text="{Binding DirectOutputNote}" Opacity="0.7" TextWrapping="Wrap" />
+
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <styles:SHButtonPrimary Command="{Binding SaveCommand}">Save to adapter</styles:SHButtonPrimary>
+                        <styles:SHButtonSecondary Command="{Binding ResetCommand}"
+                                                  Margin="8,0,0,0">Reset to defaults</styles:SHButtonSecondary>
+                        <styles:SHButtonSecondary Command="{Binding RebootCommand}"
+                                                  Margin="8,0,0,0">Reboot adapter</styles:SHButtonSecondary>
+                    </StackPanel>
+
+                    <TextBlock Margin="0,6,0,0" Opacity="0.7" TextWrapping="Wrap"
+                               Text="Changes apply to the adapter immediately but live in its RAM until saved. Reset also only takes effect after a save." />
+                </StackPanel>
             </styles:SHSection>
 
             <styles:SHTabControl>
-                <styles:SHTabItem Header="SimHub drive" />
-                <styles:SHTabItem Header="Devices" />
-                <styles:SHTabItem Header="Mappings" />
-                <styles:SHTabItem Header="Outputs" />
-                <styles:SHTabItem Header="Logs" />
+                <styles:SHTabItem Header="SimHub drive">
+                    <TextBlock Margin="8" TextWrapping="Wrap"
+                               Text="Map a shifter or pedals attached to this PC and drive the wheelbase through the adapter. Coming in the next milestone." />
+                </styles:SHTabItem>
+
+                <styles:SHTabItem Header="Devices">
+                    <TextBlock Margin="8" TextWrapping="Wrap"
+                               Text="Live view of the devices plugged into the adapter's own USB hub. Coming in a later milestone." />
+                </styles:SHTabItem>
+
+                <styles:SHTabItem Header="Mappings">
+                    <TextBlock Margin="8" TextWrapping="Wrap"
+                               Text="Bind the adapter's own USB devices to wheelbase outputs. Coming in a later milestone." />
+                </styles:SHTabItem>
+
+                <styles:SHTabItem Header="Outputs">
+                    <TextBlock Margin="8" TextWrapping="Wrap"
+                               Text="Test outputs and calibrate gear voltages. Coming in a later milestone." />
+                </styles:SHTabItem>
+
+                <styles:SHTabItem Header="Logs">
+                    <DockPanel Margin="8">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock VerticalAlignment="Center" Opacity="0.7"
+                                       Text="Console output from the adapter (non-JSON lines)." />
+                            <styles:SHLinkButtonSmall Command="{Binding ClearLogCommand}"
+                                                      Margin="12,0,0,0">Clear</styles:SHLinkButtonSmall>
+                        </StackPanel>
+                        <ListBox ItemsSource="{Binding LogLines}"
+                                 Height="320"
+                                 FontFamily="Consolas"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" />
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
+                </styles:SHTabItem>
             </styles:SHTabControl>
 
         </StackPanel>
