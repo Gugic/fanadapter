@@ -53,11 +53,11 @@ static pool_slot_t *find_slot(uint8_t daddr, uint8_t instance) {
   return 0;
 }
 
-void usb_input_on_mount(uint8_t daddr, uint8_t instance, const uint8_t *report_desc, uint16_t len) {
+bool usb_input_on_mount(uint8_t daddr, uint8_t instance, const uint8_t *report_desc, uint16_t len) {
   pool_slot_t *s = 0;
   for (uint8_t i = 0; i < USB_POOL_SIZE; i++)
     if (!g_pool[i].in_use) { s = &g_pool[i]; break; }
-  if (!s) return; // pool full
+  if (!s) return false; // pool full
 
   memset(s, 0, sizeof(*s));
   s->in_use   = true;
@@ -75,8 +75,21 @@ void usb_input_on_mount(uint8_t daddr, uint8_t instance, const uint8_t *report_d
     hid_parse_descriptor(report_desc, len, &s->layout);
     hid_layout_summary(&s->layout, &s->axis_count, &s->button_count, &s->has_hat, &s->has_keyboard);
   }
+
+  // Drop interfaces that expose nothing bindable. Composite controllers commonly present a second
+  // HID interface with no axes/buttons/hat/keys (the Logitech RS Shifter & Handbrake and RS
+  // H-Shifter each do), which showed up as phantom duplicate devices in list_devices — 4 physical
+  // devices filling 7 of the 8 slots. These counts come straight from the report descriptor and are
+  // never revised from observed reports, so such an interface can never become bindable; keeping it
+  // only burns a pool slot. Release it and leave the slot for a real device.
+  if (!s->axis_count && !s->button_count && !s->has_hat && !s->has_keyboard) {
+    s->in_use = false;
+    return false;
+  }
+
   g_change_seq++;
   s->change_seq++;
+  return true;
 }
 
 void usb_input_on_umount(uint8_t daddr, uint8_t instance) {

@@ -32,8 +32,14 @@
 #include "protocol.h"
 #include "usb_input.h"
 
-#define HOST_RHPORT   0u // OTG_FS (PA11/PA12 = USB-C / A11-A12 header) — hub + devices
-#define DEVICE_RHPORT 1u // OTG_HS (PB14/PB15)                         — USB CDC serial console
+// rhport is fixed by hardware regardless of role: OTG_FS is always rhport 0, OTG_HS always rhport 1.
+#define OTGFS_RHPORT  0u // on-board USB-C (PA11/PA12)
+#define OTGHS_RHPORT  1u // PB14/PB15 header
+// Role assignment. The USB-C is a DEVICE receptacle (UFP/Rd) — a hub plugged into it never
+// attaches — so the PC side lives there (console + webconfig + DFU + power, no adapter) and the
+// host hangs off the PB14/PB15 breakout wired straight to a self-powered hub.
+#define DEVICE_RHPORT OTGFS_RHPORT // USB-C -> PC: CDC console + webconfig (also the DFU port)
+#define HOST_RHPORT   OTGHS_RHPORT // PB14/PB15 breakout -> powered hub -> wheel devices
 
 // Heartbeat so we can CONFIRM the board is running our code at a glance, independent of the
 // console. The user-LED pin varies across these H743 clones and is still unidentified, so
@@ -261,13 +267,16 @@ int console_printf(const char *fmt, ...) {
   // 1) USART1 — always present (the universal fallback console).
   HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)len, 100);
 
-  // 2) USB CDC on OTG_HS — only once a host PC has enumerated it (i.e. a board where OTG_HS is
-  //    wired). Drain with backpressure so large multi-chunk responses (get_config ≈ 8 KB) aren't
-  //    truncated: write what fits, then flush + pump tud_task() to let the host drain the FIFO, and
-  //    retry. A spin guard bounds the wait so a stalled/disconnected host drops the tail instead of
-  //    hanging. (On the FK743M3 bring-up board OTG_HS is unwired, so tud_cdc_connected() is false
-  //    and this whole leg is skipped — the USART1 leg above is the one that carries output here.)
-  if (tud_cdc_connected()) {
+  // 2) USB CDC on OTG_FS (the on-board USB-C). Gate on tud_mounted() — "the host has enumerated
+  //    us" — NOT tud_cdc_connected(), which ALSO requires the host to assert DTR. webconfig
+  //    deliberately DEASSERTS DTR on connect (so opening the port can't reset an MCU sitting behind
+  //    a CH340 bridge), and plenty of serial terminals never raise it either. Gating output on DTR
+  //    made the firmware happily receive and execute commands but never transmit the reply, so
+  //    every webconfig request died with "command timeout". Drain with backpressure so large
+  //    multi-chunk responses (get_config ~8 KB) aren't truncated: write what fits, then flush +
+  //    pump tud_task() to let the host drain the FIFO, and retry. A spin guard bounds the wait so a
+  //    stalled host drops the tail instead of hanging.
+  if (tud_mounted()) {
     uint32_t sent  = 0;
     uint32_t guard = 0;
     while (sent < len && guard++ < 1000u) {
@@ -289,8 +298,8 @@ int console_printf(const char *fmt, ...) {
 static void print_banner(void) {
   console_printf("\r\n========================================\r\n");
   console_printf("  fanadapter STM32H743 USB host enumerator\r\n");
-  console_printf("  host    = OTG_FS / rhport0 (PA11/PA12 = USB-C / A11-A12 header)\r\n");
-  console_printf("  console = USART1 PA9/PA10 @115200 8E1  +  USB CDC on OTG_HS PB14/PB15\r\n");
+  console_printf("  host    = OTG_HS / rhport1 (PB14/PB15 header -> powered hub -> devices)\r\n");
+  console_printf("  console = USB CDC on OTG_FS (on-board USB-C, also DFU)  +  USART1 PA9/PA10 8E1\r\n");
   console_printf("  CLI: 'dfu' -> ROM bootloader (hands-free flash) | 'reboot' | '?'\r\n");
   console_printf("  core %lu MHz / USB 48 MHz / TinyUSB %d.%d.%d\r\n",
                  (unsigned long)(HAL_RCC_GetSysClockFreq() / 1000000u),
@@ -378,8 +387,13 @@ void tuh_hid_mount_cb(uint8_t daddr, uint8_t instance, uint8_t const *report_des
   tuh_vid_pid_get(daddr, &vid, &pid);
   console_printf("    HID mounted: addr=%u inst=%u proto=%u %04X:%04X desc_len=%u\r\n", daddr,
                  instance, tuh_hid_interface_protocol(daddr, instance), vid, pid, len);
-  usb_input_on_mount(daddr, instance, report_desc, len);
-  tuh_hid_receive_report(daddr, instance); // arm the interrupt pipe
+  if (usb_input_on_mount(daddr, instance, report_desc, len)) {
+    tuh_hid_receive_report(daddr, instance); // arm the interrupt pipe
+  } else {
+    // Rejected: pool full, or the descriptor exposes nothing bindable (a composite controller's
+    // spare HID interface). Leave the pipe unarmed so it doesn't hold a host channel either.
+    console_printf("      -> not claimed (no bindable inputs)\r\n");
+  }
 }
 
 void tuh_hid_umount_cb(uint8_t daddr, uint8_t instance) {
@@ -457,27 +471,46 @@ static void cli_dispatch(const char *line) {
   }
 }
 
+// One inbound console byte -> the line assembler. Shared by BOTH inbound sources (the USART1 RX
+// ring and the USB CDC console) so a command works identically from either.
+static void console_feed_byte(int c) {
+  if (c == '\r' || c == '\n') {
+    if (s_line_len) {
+      s_line[s_line_len] = '\0';
+      cli_dispatch(s_line);
+      s_line_len = 0;
+    }
+    s_line_json = false;
+  } else if (c == 0x08 || c == 0x7F) { // backspace / delete
+    if (s_line_len) {
+      s_line_len--;
+      if (!s_line_json) console_printf("\b \b");
+    }
+  } else if (s_line_len < sizeof(s_line) - 1) {
+    if (s_line_len == 0 && c == '{') s_line_json = true;
+    s_line[s_line_len++] = (char)c;
+    if (!s_line_json) console_printf("%c", (char)c); // echo interactive typing (not protocol lines)
+  }
+}
+
 static void console_cli_poll(void) {
+  // 1) USART1 RX ring — the universal fallback console.
   while (console_rx_available()) {
     int c = console_read_byte();
     if (c < 0) break;
-    if (c == '\r' || c == '\n') {
-      if (s_line_len) {
-        s_line[s_line_len] = '\0';
-        cli_dispatch(s_line);
-        s_line_len = 0;
-      }
-      s_line_json = false;
-    } else if (c == 0x08 || c == 0x7F) { // backspace / delete
-      if (s_line_len) {
-        s_line_len--;
-        if (!s_line_json) console_printf("\b \b");
-      }
-    } else if (s_line_len < sizeof(s_line) - 1) {
-      if (s_line_len == 0 && c == '{') s_line_json = true;
-      s_line[s_line_len++] = (char)c;
-      if (!s_line_json) console_printf("%c", (char)c); // echo interactive typing (not protocol lines)
-    }
+    console_feed_byte(c);
+  }
+
+  // 2) USB CDC console (OTG_FS, the on-board USB-C). WITHOUT THIS the CDC is transmit-only:
+  //    console_printf() writes to it, but commands sent from webconfig/WebSerial are read by
+  //    nobody, so every request times out ("command timeout: version"). The gap went unnoticed
+  //    through the whole M0-M7 bring-up because the FK743M3 board's second USB controller was
+  //    unusable (PB15 a dead via) — the CDC never enumerated, so this inbound half was never
+  //    exercised until a board with two working USB controllers showed up.
+  while (tud_cdc_available()) {
+    uint8_t b;
+    if (tud_cdc_read(&b, 1) != 1) break;
+    console_feed_byte((int)b);
   }
 }
 
@@ -485,8 +518,8 @@ static void console_cli_poll(void) {
 // Interrupt handlers
 //--------------------------------------------------------------------+
 // rhport is fixed by hardware regardless of role: OTG_FS = rhport 0, OTG_HS = rhport 1.
-void OTG_FS_IRQHandler(void) { tusb_int_handler(HOST_RHPORT, true); }
-void OTG_HS_IRQHandler(void) { tusb_int_handler(DEVICE_RHPORT, true); }
+void OTG_FS_IRQHandler(void) { tusb_int_handler(OTGFS_RHPORT, true); }
+void OTG_HS_IRQHandler(void) { tusb_int_handler(OTGHS_RHPORT, true); }
 
 // Inbound console bytes (USART1 RXNE) -> ring buffer. Drops on overflow rather than clobbering
 // unread data. Error flags (ORE/FE/NE/PE) are cleared so a glitch can't wedge the RXNE.

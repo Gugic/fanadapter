@@ -23,17 +23,18 @@ extern int console_printf(const char *fmt, ...);
 #define CFG_TUSB_DEBUG_PRINTF  console_printf
 
 // Two USB controllers, two roles (dwc2 maps rhport 0 = OTG_FS, rhport 1 = OTG_HS on STM32H7):
-//   rhport 0 = OTG_FS (PA11/PA12 = USB-C / A11-A12 header) -> USB HOST   = hub + wheel devices
-//   rhport 1 = OTG_HS (PB14/PB15)                          -> USB DEVICE = CDC serial console
-// The CDC console is the recommended path for open-source boards where BOTH USB ports are
-// broken out: plug a second cable into the OTG_HS port and the device list shows up as a COM
-// port — no UART bridge needed. On boards where OTG_HS is unwired (like the FK743M3 used for
-// bring-up, where PB15 is a dead via) the CDC stack just sits dormant and the parallel USART1
-// console (PA9/PA10, see main.c) carries the same output. Host stays on OTG_FS so that the
-// single-controller boards keep working.
-#define CFG_TUH_RHPORT         0
-#define CFG_TUSB_RHPORT0_MODE  (OPT_MODE_HOST   | OPT_MODE_FULL_SPEED)
-#define CFG_TUSB_RHPORT1_MODE  (OPT_MODE_DEVICE | OPT_MODE_FULL_SPEED)
+//   rhport 0 = OTG_FS (PA11/PA12 = the on-board USB-C) -> USB DEVICE = CDC console + webconfig
+//   rhport 1 = OTG_HS (PB14/PB15 header)               -> USB HOST   = powered hub + wheel devices
+// Why this way round: the on-board USB-C is wired as a DEVICE receptacle (UFP, CC pulled down with
+// Rd) — that's why the ROM DFU enumerates through it. A USB-C hub plugged into it never attaches,
+// because both ends present as devices. So the USB-C serves the PC (console + webconfig + DFU +
+// board power, one pre-soldered connector, no adapter), and the host hangs off the PB14/PB15
+// header as a raw D+/D-/GND breakout straight to a self-powered hub — no CC negotiation involved.
+// Bonus: DFU (fixed to OTG_FS in silicon) no longer shares a port with the hub, so re-flashing
+// doesn't mean unplugging the wheels.
+#define CFG_TUH_RHPORT         1
+#define CFG_TUSB_RHPORT0_MODE  (OPT_MODE_DEVICE | OPT_MODE_FULL_SPEED)
+#define CFG_TUSB_RHPORT1_MODE  (OPT_MODE_HOST   | OPT_MODE_FULL_SPEED)
 
 #ifndef CFG_TUSB_MEM_SECTION
 #define CFG_TUSB_MEM_SECTION

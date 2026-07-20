@@ -12,8 +12,17 @@ the adapter-logic port is now underway, tracked as milestones M0–M7 (plan:
 **Status: M0–M7 DONE and HARDWARE-VALIDATED on the real wheelbase (June 2026). The full chain works:
 H-pattern gears (DAC), sequential, handbrake PWM, and the CSL Elite pedal-UART stream all drive the
 wheelbase; the pedal handshake holds; a wheelbase power-cycle auto-recovers (restart re-arm); and saved
-config survives a reflash (bank-1-only erase). Feature parity with the Teensy reached. Remaining is
-polish only: a DAC gear-voltage recal pass and the future dual-USB board (native CDC, no S3 bridge).**
+config survives a reflash (bank-1-only erase). Feature parity with the Teensy reached.**
+
+> **UPDATE (July 2026) — the dual-USB board arrived; USB roles are now SWAPPED.** Development moved to a
+> genuine **WeAct MiniSTM32H743VITX** (STM32H743VIT6) where **both** USB controllers are usable, so the
+> ESP32-S3/CH340 bridge is gone: **webconfig now talks to the board over its own native USB CDC.** The
+> roles are the reverse of everything written below — **OTG_FS (on-board USB-C) = DEVICE (console +
+> webconfig + DFU + power)**, **OTG_HS (PB14/PB15 header) = HOST (powered hub + wheel devices)**. See
+> **"Current hardware & USB roles"** immediately below; sections further down that say *host on OTG_FS /
+> console on OTG_HS* describe the old FK743M3 bring-up board and are kept for history. Four latent
+> firmware bugs were found and fixed in the process — all invisible until a board with a working second
+> USB controller existed.
 - **M0 — plumbing/test-rig:** USART1 RX (interrupt + 16-byte FIFO, ISR drains it, priority **5 = above
   USB** so command bursts don't overrun); console switched to **8E1** to match the ROM bootloader;
   `lib/cherryusb` deleted. DAC + TIM HAL were already enabled in the active PlatformIO conf — no override.
@@ -81,9 +90,60 @@ polish only: a DAC gear-voltage recal pass and the future dual-USB board (native
   `webconfig/src/lib/serial.ts` wrappers (`testAxis/testPulse/reboot/resetPedals/pedalsStatus`) — **no
   webconfig change was needed**. DAC gear recal against the real wheelbase still pending (M3/M7 note).
 
-USB host is on **OTG_FS**; the console is exposed **two ways at once** — a **USB CDC device on OTG_HS
-(B14/B15)** for capable boards, plus the **USART1 UART** (8E1) fallback used here via the ESP32-S3
-bridge on COM16. The original enumerator validation is preserved below.
+## Current hardware & USB roles (July 2026 — WeAct MiniSTM32H743VITX) — AUTHORITATIVE
+
+This supersedes the FK743M3 sections below. Board: **WeAct MiniSTM32H743VITX**, STM32H743VIT6, 2 MB
+flash / 1 MB RAM, 25 MHz HSE, LDO VCORE. **Both USB controllers work**, so there is no bridge.
+
+| Controller | rhport | Pins | Role |
+|---|---|---|---|
+| **USB2_OTG_FS** | 0 | PA11/PA12 = **on-board USB-C** | **DEVICE** — CDC console + webconfig, **also DFU**, and powers the board |
+| **USB1_OTG_HS** | 1 | **PB14/PB15 header** | **HOST** — raw D+/D−/GND breakout → powered hub → wheel devices |
+| USART1 | — | PA9/PA10 | UART console fallback (8E1), needs a USB-UART bridge; unused now |
+
+**Why this way round (do not "fix" it back):** the on-board USB-C is wired as a **DEVICE receptacle**
+(UFP — CC pulled down with Rd). That's exactly why the ROM DFU enumerates through it, and exactly why a
+**USB hub plugged into it never attaches** — both ends present as devices, so CC negotiation never
+completes and the host sees no D+ pull-up. No adapter fixes this; the board has no CC/role-switch logic.
+So the PC side lives on the USB-C and the host goes to the header pins.
+
+**Wiring:**
+- **PC → on-board USB-C.** That's console + webconfig + DFU + board power, one pre-soldered connector.
+- **Powered hub → PB14/PB15 header:** **D+ → PB15**, **D− → PB14**, **GND → GND**, and **VBUS → board
+  5 V**. ⚠️ **The hub needs VBUS present on its upstream port to detect a host** — without it the hub
+  never attaches and the console just sits at `waiting for devices on the hub...`. Safe to feed from the
+  board's 5 V: a self-powered hub only *senses* that line.
+- Wheelbase side is **unchanged**: gears **PA4/PA5** (DAC, no RC), sequential **PC6/PC7**, handbrake PWM
+  **PC8**, pedal UART **PA2/PA3**. No collisions with either USB or the heartbeat pins.
+
+**Bonus of this layout:** DFU is fixed to OTG_FS in silicon, so it no longer shares a port with the hub
+— re-flashing no longer means unplugging the wheels.
+
+### Four latent bugs fixed here (all invisible until a working second USB controller existed)
+
+1. **CDC RX was never implemented.** `console_cli_poll()` drained only the USART1 ring — there was no
+   `tud_cdc_read()` anywhere, despite a comment promising it. The CDC could transmit but the firmware
+   never read a byte from it, so every webconfig command vanished. Now both sources feed a shared
+   `console_feed_byte()`.
+2. **CDC output was gated on DTR.** `console_printf` wrote the CDC only `if (tud_cdc_connected())`, which
+   additionally requires the host to assert DTR — and webconfig deliberately **deasserts** DTR (so
+   opening a port can't reset an MCU behind a CH340). Result: the firmware received and executed commands
+   but never replied → `command timeout: version`. Now gated on **`tud_mounted()`** (enumerated), which is
+   DTR-independent and also works with terminals that never raise DTR.
+3. **USB roles swapped** (see above) — host cannot live on the USB-C.
+4. **Phantom HID interfaces.** Composite controllers (the Logitech RS Shifter & Handbrake and RS
+   H-Shifter) each expose a **second HID interface with no axes/buttons/hat/keys**. Those were claimed
+   anyway: **4 physical devices filled 7 of the 8 pool slots** and each held an interrupt-IN host channel.
+   `usb_input_on_mount()` now returns whether it claimed the interface and rejects input-less ones (the
+   counts come from the report descriptor and are never revised from reports, so such an interface can
+   never become bindable); `tuh_hid_mount_cb` only arms the pipe when claimed. Now 4 devices = 4 slots.
+
+**Verified on this board:** 4 devices / 7 interfaces enumerate through the hub on OTG_HS while the USB-C
+CDC serves webconfig simultaneously; `list_devices` returns exactly the 4 real devices; live axis/button
+data streams into the UI. **Outputs (gears / sequential / handbrake / pedal UART) have NOT yet been
+re-verified on this board** — the role swap doesn't touch them, but they need a wheelbase session.
+
+The original FK743M3 enumerator validation is preserved below for history.
 
 ## Hardware validation (June 2026, FK743M3 + ESP32-S3 bridge)
 
@@ -218,8 +278,15 @@ wipe — use it after a `CONFIG_VERSION` bump (a preserved older-version blob is
 anyway) or to deliberately reset config. The flasher auto-falls-back to a global erase if a bootloader
 ever rejects `0xFFFE`, so flashing can't break.
 
-### webconfig now talks to THIS board (over the bridge)
-Native USB CDC is dead here, so the web UI connects over the **S3 bridge / CH340 = COM16**. `serial.ts`:
+### webconfig now talks to the board over NATIVE USB CDC (July 2026)
+On the WeAct H743VIT6 the web UI connects **directly to the board's own CDC** — VID `1209` PID `FA00`,
+"Fanadapter STM32 enumerator" — on the **on-board USB-C**. No bridge, no soldering, and the same cable
+carries DFU. Two firmware fixes were required before this worked at all (CDC RX never implemented; CDC
+output gated on DTR, which webconfig deasserts) — see "Current hardware & USB roles" above.
+
+The historical bridge setup follows, still valid on boards without a usable second USB controller:
+
+Native USB CDC was dead on the FK743M3, so the web UI connected over the **S3 bridge / CH340 = COM16**. `serial.ts`:
 **no port-picker VID filter** (show all ports — bridge chips vary; the CH340K here is `0x1a86/0x7522`),
 `port.open` at **8E1** + a `setSignals` DTR/RTS-low + ~2 s settle (the bridge resets on open; expect a
 one-time garbled boot-noise burst in the Logs tab — that's the S3's ROM chatter, not a framing problem).
@@ -265,7 +332,7 @@ Get-ID/Extended-Erase/Write/Go + `--wait N` (poll for the bootloader), `--probe`
 (On a board where OTG_HS **is** wired, skip the S3 entirely: plug the PC into the OTG_HS port and open
 the CDC COM port — VID `1209` PID `FA00` — directly.)
 
-### Wiring (FK743M3 / this board)
+### Wiring (FK743M3 — HISTORICAL; see "Current hardware & USB roles" for the H743VIT6 layout)
 - **Hub → A11/A12** (OTG_FS host): D−→PA11, D+→PA12, GND→GND, hub VBUS→board 5V (self‑powered hub: its own supply too).
 - **Console → S3** (USART1): STM32 **PA9 (TX) → S3 RX**, optional **PA10 (RX) ← S3 TX**, **GND↔GND**; the S3's 5V can power the board.
 - **USB‑C = DFU flashing only** — disconnect the hub from A11/A12 first (hub + DFU share OTG_FS).
@@ -281,11 +348,25 @@ Read the console: on the FK743M3 it's the S3's COM port at 115200 (plain UART, b
 board with OTG_HS wired, it's the CDC COM port VID `1209` PID `FA00` (banner reprints on DTR connect).
 
 ## Gotchas (don't re-derive)
-- **rhport map**: OTG_FS = rhport 0 (host), OTG_HS = rhport 1 (CDC console). Both ISRs wired:
-  `OTG_FS_IRQHandler→tusb_int_handler(0, true)`, `OTG_HS_IRQHandler→tusb_int_handler(1, true)`.
-- **USB‑C = OTG_FS = A11/A12** (not B14/B15); DFU bootloader is here too.
-- **OTG_HS CDC is dormant on the FK743M3** (PB15 dead) but the device stack still inits harmlessly —
-  on a board where OTG_HS is wired it becomes the primary, bridge‑free console.
+- **rhport map is FIXED BY HARDWARE, roles are not**: OTG_FS is *always* rhport 0, OTG_HS *always*
+  rhport 1 — the ISRs must pass those literals (`OTG_FS_IRQHandler→tusb_int_handler(0, true)`,
+  `OTG_HS_IRQHandler→tusb_int_handler(1, true)`), which is why `main.c` keeps `OTGFS_RHPORT`/
+  `OTGHS_RHPORT` separate from the role aliases `DEVICE_RHPORT`/`HOST_RHPORT`. **Current roles:
+  rhport 0 = DEVICE (console), rhport 1 = HOST.** Wiring the ISRs to the *role* aliases silently breaks
+  everything the moment the roles swap.
+- **USB‑C = OTG_FS = A11/A12** (not B14/B15); DFU bootloader is here too — and it is **DFU-only capable
+  as a device receptacle**, so a hub can never be hosted from it (see "Current hardware & USB roles").
+- **A hub needs VBUS on its upstream to detect a host.** Feed the hub's VBUS from the board's 5 V or it
+  never attaches and the console sits forever at `waiting for devices on the hub...`.
+- **The WeAct MiniSTM32H7xx PCB is also sold with an STM32H723VGT6**, which is visually identical but has
+  **only one USB controller** (OTG_HS; no OTG_FS) and cannot run this firmware — H743 code hangs in its
+  clock init (dark LED, 0 V on the USB pins, no console, DFU still works because the ROM sets its own
+  clock). **Verify the chip before debugging anything**: marking, or device ID H743 = `0x450` vs
+  H723 = `0x483`. A minimal LED blink built for the suspected target is the fastest confirmation.
+- **Don't gate CDC output on `tud_cdc_connected()`** — that needs host DTR, which webconfig deliberately
+  drops. Use `tud_mounted()`.
+- **On the FK743M3 the OTG_HS CDC was dormant** (PB15 an unsolderable via). That is why the CDC RX and
+  DTR bugs above survived the entire M0–M7 bring-up unnoticed.
 - **Feedback‑storm risk is back**: `console_printf` writes the USB CDC, so routing TinyUSB debug to it
   (`CFG_TUSB_DEBUG > 0`) can storm (log → CDC write → USB activity → log). Keep `CFG_TUSB_DEBUG 0`, or
   point `CFG_TUSB_DEBUG_PRINTF` at a UART‑only writer when you need enumeration tracing.
