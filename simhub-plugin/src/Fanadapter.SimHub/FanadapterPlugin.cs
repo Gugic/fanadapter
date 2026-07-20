@@ -31,6 +31,9 @@ namespace Fanadapter.SimHub
 
         public AdapterSession Session { get; } = new AdapterSession();
 
+        /// <summary>Null until Init has run.</summary>
+        public DriveController Drive { get; private set; }
+
         /// <summary>
         /// Defaulted rather than left null: the settings pane reads this, and
         /// nothing guarantees Init has run first.
@@ -54,7 +57,14 @@ namespace Fanadapter.SimHub
             Session.Outputs += o => _outputs = o;
             Session.LogLine += line => global::SimHub.Logging.Current.Debug("[Fanadapter] " + line);
 
+            Drive = new DriveController(
+                Session,
+                () => PluginManager,
+                () => Settings.Drive,
+                line => global::SimHub.Logging.Current.Info("[Fanadapter] " + line));
+
             AttachProperties();
+            AttachActions();
 
             if (Settings.AutoConnect && !string.IsNullOrEmpty(Settings.PortName))
             {
@@ -82,6 +92,45 @@ namespace Fanadapter.SimHub
             this.AttachDelegate("Clutch", () => Percent(_outputs.Clutch));
             this.AttachDelegate("Handbrake", () => Percent(_outputs.Handbrake));
         }
+
+        /// <summary>
+        /// Registers everything the user can bind a control to in SimHub's
+        /// Controls UI. Gears are exposed twice on purpose: as input mappings,
+        /// which carry press *and* release and so reproduce a real H-pattern
+        /// shifter's hold semantics, and as plain actions, which only fire on
+        /// press and suit a sequential-style "select this gear and stay there"
+        /// button. Nothing here reads a device — SimHub decides when these run.
+        /// </summary>
+        private void AttachActions()
+        {
+            foreach (var gear in Schema.GearKeys)
+            {
+                var channel = gear;                       // capture per iteration
+                var label = GearLabel(channel);
+
+                this.AddInputMapping(
+                    inputName: "Hold" + Suffix(channel),
+                    inputPressed: (a, b) => Drive.GearPressed(channel),
+                    inputReleased: (a, b) => Drive.GearReleased(channel));
+
+                this.AddAction(
+                    actionName: "Select" + Suffix(channel),
+                    actionStart: (a, b) => Drive.SelectGear(channel));
+            }
+
+            this.AddAction("ShiftUp", (a, b) => Drive.Shift(ShiftDirection.Up));
+            this.AddAction("ShiftDown", (a, b) => Drive.Shift(ShiftDirection.Down));
+
+            // The escape hatch. Overrides are sticky, so a user who binds
+            // something wrong needs a way to hand control back without
+            // restarting SimHub.
+            this.AddAction("ReleaseOutputs", (a, b) => Drive.ReleaseAll());
+            this.AddAction("RearmPedals", (a, b) => Drive.RearmPedals());
+        }
+
+        /// <summary>"gear_R" → "GearR", "gear_1" → "Gear1" for action names.</summary>
+        private static string Suffix(string gearChannel) =>
+            "Gear" + GearLabel(gearChannel);
 
         /// <summary>"gear_3" → "3", "gear_R" → "R" — the form a dashboard wants.</summary>
         private static string GearLabel(string channel)
@@ -124,6 +173,12 @@ namespace Fanadapter.SimHub
         {
             global::SimHub.Logging.Current.Info("[Fanadapter] stopping");
             SaveSettings();
+
+            // Order matters. Overrides are sticky with no firmware timeout, so
+            // the wheelbase has to be handed back to its own mapping *before*
+            // the port closes — otherwise it sits holding the last gear and
+            // pedal positions with nothing left to tell it otherwise.
+            Drive?.Dispose();
 
             // SimHub tears plugins down and rebuilds them on every game change,
             // so this runs often. Releasing the port here is what stops the next

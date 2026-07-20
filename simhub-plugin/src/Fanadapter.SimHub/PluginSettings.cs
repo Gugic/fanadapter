@@ -1,3 +1,5 @@
+using Fanadapter.Core;
+
 namespace Fanadapter.SimHub
 {
     /// <summary>
@@ -11,5 +13,7 @@ namespace Fanadapter.SimHub
 
         /// <summary>Connect on plugin start without waiting for the user.</summary>
         public bool AutoConnect { get; set; } = true;
+
+        public DriveSettings Drive { get; set; } = new DriveSettings();
     }
 }

@@ -44,6 +44,18 @@ namespace Fanadapter.SimHub.UI
             _session.StateChanged += OnSessionStateChanged;
             _session.LogLine += OnLogLine;
 
+            BuildAxisEditors();
+            ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => CanStream);
+            RefreshPropertyListCommand = new RelayCommand(RefreshPropertyList);
+            ReleaseOutputsCommand = new RelayCommand(ReleaseOutputs, () => IsConnected);
+
+            _readoutTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(100),
+            };
+            _readoutTimer.Tick += (s, e) => UpdateReadouts();
+            _readoutTimer.Start();
+
             RefreshPorts();
             SelectedPort = Ports.FirstOrDefault(p => p.PortName == plugin.Settings.PortName)
                            ?? Ports.FirstOrDefault(p => p.IsLikelyAdapter)
@@ -246,6 +258,160 @@ namespace Fanadapter.SimHub.UI
             }
         }
 
+        // ---------- SimHub drive (PC-attached devices) ----------
+
+        private readonly DispatcherTimer _readoutTimer;
+
+        public ObservableCollection<AxisSourceViewModel> AxisSources { get; } =
+            new ObservableCollection<AxisSourceViewModel>();
+
+        /// <summary>
+        /// Every property SimHub currently publishes, for the source pickers.
+        /// Fetched on demand rather than continuously — the list runs to
+        /// thousands of entries and only changes when plugins or games do.
+        /// </summary>
+        public ObservableCollection<string> AvailableProperties { get; } = new ObservableCollection<string>();
+
+        private string _propertyFilter = string.Empty;
+        public string PropertyFilter
+        {
+            get => _propertyFilter;
+            set { _propertyFilter = value ?? string.Empty; OnPropertyChanged(); RefreshPropertyList(); }
+        }
+
+        public RelayCommand ToggleStreamingCommand { get; }
+        public RelayCommand RefreshPropertyListCommand { get; }
+        public RelayCommand ReleaseOutputsCommand { get; }
+
+        /// <summary>
+        /// Streaming needs a connection, a firmware that implements the
+        /// direct-output commands, and at least one configured pedal source.
+        /// </summary>
+        public bool CanStream =>
+            IsConnected && _session.SupportsDirectOutput && AxisSources.Any(a => a.IsConfigured);
+
+        public bool IsStreaming => _plugin.Drive != null && _plugin.Drive.IsStreaming;
+
+        public string StreamingButtonText => IsStreaming ? "Stop driving pedals" : "Start driving pedals";
+
+        public string StreamingStatus
+        {
+            get
+            {
+                if (!IsConnected) return "Connect to the adapter first.";
+                if (!_session.SupportsDirectOutput) return "This firmware cannot be driven from the PC.";
+                if (!AxisSources.Any(a => a.IsConfigured)) return "Set a source property on at least one pedal.";
+                if (!IsStreaming) return "Idle — the adapter's own USB mapping is in control.";
+
+                var error = _plugin.Drive?.LastError;
+                return error == null
+                    ? "Driving pedals from this PC."
+                    : "Driving, but the last update failed: " + error;
+            }
+        }
+
+        private void BuildAxisEditors()
+        {
+            var drive = _plugin.Settings.Drive;
+            void OnEdited()
+            {
+                _plugin.SaveSettings();
+                RunOnUi(() =>
+                {
+                    OnPropertyChanged(nameof(CanStream));
+                    OnPropertyChanged(nameof(StreamingStatus));
+                    ToggleStreamingCommand.RaiseCanExecuteChanged();
+                });
+            }
+
+            AxisSources.Add(new AxisSourceViewModel("throttle", "Throttle", drive.Throttle, OnEdited));
+            AxisSources.Add(new AxisSourceViewModel("brake", "Brake", drive.Brake, OnEdited));
+            AxisSources.Add(new AxisSourceViewModel("clutch", "Clutch", drive.Clutch, OnEdited));
+            AxisSources.Add(new AxisSourceViewModel("handbrake", "Handbrake", drive.Handbrake, OnEdited));
+        }
+
+        public void RefreshPropertyList()
+        {
+            AvailableProperties.Clear();
+
+            var pm = _plugin.PluginManager;
+            if (pm == null) return;
+
+            IEnumerable<string> names;
+            try { names = pm.GetAllPropertiesNames(); }
+            catch (Exception ex)
+            {
+                AppendLog("could not read SimHub's property list: " + ex.Message);
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_propertyFilter))
+            {
+                names = names.Where(n => n.IndexOf(_propertyFilter, StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+
+            // Capped because the unfiltered list is long enough to make the
+            // combo box unusable; the filter box is how you get to the rest.
+            foreach (var name in names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Take(500))
+            {
+                AvailableProperties.Add(name);
+            }
+        }
+
+        private void ToggleStreaming()
+        {
+            var drive = _plugin.Drive;
+            if (drive == null) return;
+
+            if (drive.IsStreaming)
+            {
+                drive.StopStreaming();
+                // Streaming stopped, but the last values it sent are still
+                // latched in the firmware — release so the adapter's own mapping
+                // takes the pedals back.
+                drive.ReleaseAll();
+                _plugin.Settings.Drive.AxisStreamingEnabled = false;
+            }
+            else
+            {
+                drive.StartStreaming();
+                _plugin.Settings.Drive.AxisStreamingEnabled = true;
+            }
+
+            _plugin.SaveSettings();
+            OnPropertyChanged(nameof(IsStreaming));
+            OnPropertyChanged(nameof(StreamingButtonText));
+            OnPropertyChanged(nameof(StreamingStatus));
+        }
+
+        private void ReleaseOutputs()
+        {
+            _plugin.Drive?.ReleaseAll();
+            OnPropertyChanged(nameof(IsStreaming));
+            OnPropertyChanged(nameof(StreamingButtonText));
+            OnPropertyChanged(nameof(StreamingStatus));
+            AppendLog("outputs released — the adapter's own mapping is back in control.");
+        }
+
+        private void UpdateReadouts()
+        {
+            var pm = _plugin.PluginManager;
+            foreach (var axis in AxisSources)
+            {
+                object value = null;
+                if (pm != null && axis.IsConfigured)
+                {
+                    // A property name that no longer exists throws rather than
+                    // returning null in some SimHub builds.
+                    try { value = pm.GetPropertyValue(axis.PropertyName); }
+                    catch { value = null; }
+                }
+                axis.UpdateReadout(value);
+            }
+
+            OnPropertyChanged(nameof(StreamingStatus));
+        }
+
         // ---------- Logs ----------
 
         public ObservableCollection<string> LogLines { get; } = new ObservableCollection<string>();
@@ -269,6 +435,10 @@ namespace Fanadapter.SimHub.UI
             OnPropertyChanged(nameof(FirmwareBadge));
             OnPropertyChanged(nameof(SupportsDirectOutput));
             OnPropertyChanged(nameof(DirectOutputNote));
+            OnPropertyChanged(nameof(CanStream));
+            OnPropertyChanged(nameof(IsStreaming));
+            OnPropertyChanged(nameof(StreamingButtonText));
+            OnPropertyChanged(nameof(StreamingStatus));
             RaiseCommandStates();
         }
 
@@ -280,6 +450,8 @@ namespace Fanadapter.SimHub.UI
             SaveCommand.RaiseCanExecuteChanged();
             ResetCommand.RaiseCanExecuteChanged();
             RebootCommand.RaiseCanExecuteChanged();
+            ToggleStreamingCommand.RaiseCanExecuteChanged();
+            ReleaseOutputsCommand.RaiseCanExecuteChanged();
         });
 
         /// <summary>
@@ -297,6 +469,7 @@ namespace Fanadapter.SimHub.UI
 
         public void Detach()
         {
+            _readoutTimer.Stop();
             _session.StateChanged -= OnSessionStateChanged;
             _session.LogLine -= OnLogLine;
         }

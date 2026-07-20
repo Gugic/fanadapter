@@ -4,6 +4,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:styles="clr-namespace:SimHub.Plugins.Styles;assembly=SimHub.Plugins"
+             xmlns:ui="clr-namespace:SimHub.Plugins.UI;assembly=SimHub.Plugins"
              mc:Ignorable="d">
     <ScrollViewer>
         <StackPanel Margin="0,0,0,16">
@@ -44,8 +45,104 @@
 
             <styles:SHTabControl>
                 <styles:SHTabItem Header="SimHub drive">
-                    <TextBlock Margin="8" TextWrapping="Wrap"
-                               Text="Map a shifter or pedals attached to this PC and drive the wheelbase through the adapter. Coming in the next milestone." />
+                    <StackPanel Margin="8">
+
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,10"
+                                   Text="For controllers plugged into this PC. SimHub captures and maps them; this plugin sends the result straight to the wheelbase, overriding whatever the adapter's own USB devices are doing on those channels." />
+
+                        <styles:SHSubSection Title="Shifter and buttons">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
+                                           Text="Hold bindings engage a gear while the control is held and return to neutral on release — real H-pattern behaviour. Select bindings latch instead, for a button that should stay in gear." />
+
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.ShiftUp" FriendlyName="Shift up" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.ShiftDown" FriendlyName="Shift down" />
+
+                                <styles:SHSectionSeparator />
+
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.HoldGearR" FriendlyName="Hold reverse" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.HoldGear1" FriendlyName="Hold 1st" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.HoldGear2" FriendlyName="Hold 2nd" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.HoldGear3" FriendlyName="Hold 3rd" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.HoldGear4" FriendlyName="Hold 4th" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.HoldGear5" FriendlyName="Hold 5th" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.HoldGear6" FriendlyName="Hold 6th" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.HoldGear7" FriendlyName="Hold 7th" />
+
+                                <styles:SHSectionSeparator />
+
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.SelectGearN" FriendlyName="Select neutral" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.ReleaseOutputs" FriendlyName="Release outputs to the adapter" />
+                                <ui:ControlsEditor ActionName="FanadapterPlugin.RearmPedals" FriendlyName="Re-arm the pedal handshake" />
+                            </StackPanel>
+                        </styles:SHSubSection>
+
+                        <styles:SHSectionSeparator />
+
+                        <styles:SHSubSection Title="Pedals">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
+                                           Text="Pick the SimHub property carrying each pedal — any controller axis SimHub publishes, or your own NCalc expression. Set the range to match the property (0–100 for SimHub's own axis properties) and watch the live column to check direction." />
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="Find property" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                    <TextBox Text="{Binding PropertyFilter, UpdateSourceTrigger=PropertyChanged, Delay=300}"
+                                             MinWidth="240" VerticalAlignment="Center" />
+                                    <styles:SHButtonSecondary Command="{Binding RefreshPropertyListCommand}"
+                                                              Margin="8,0,0,0">Reload list</styles:SHButtonSecondary>
+                                </StackPanel>
+
+                                <ItemsControl ItemsSource="{Binding AxisSources}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Padding="0,0,0,10" Margin="0,0,0,10"
+                                                    BorderThickness="0,0,0,1" BorderBrush="#22FFFFFF">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                                        <TextBlock Text="{Binding Label}" FontWeight="Bold"
+                                                                   Width="90" VerticalAlignment="Center" />
+                                                        <ComboBox IsEditable="True" MinWidth="300"
+                                                                  ItemsSource="{Binding DataContext.AvailableProperties,
+                                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                  Text="{Binding PropertyName, UpdateSourceTrigger=LostFocus}"
+                                                                  VerticalAlignment="Center" />
+                                                    </StackPanel>
+
+                                                    <StackPanel Orientation="Horizontal" Margin="90,0,0,0">
+                                                        <TextBlock Text="Range" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                        <TextBox Text="{Binding InputMin}" Width="70" VerticalAlignment="Center" />
+                                                        <TextBlock Text="to" VerticalAlignment="Center" Margin="6,0" />
+                                                        <TextBox Text="{Binding InputMax}" Width="70" VerticalAlignment="Center" />
+                                                        <styles:SHToggleCheckbox IsChecked="{Binding Invert}"
+                                                                                 VerticalAlignment="Center" Margin="16,0,0,0">Invert</styles:SHToggleCheckbox>
+                                                        <TextBlock Text="{Binding RawText}" VerticalAlignment="Center"
+                                                                   Margin="24,0,0,0" Opacity="0.7" MinWidth="120" />
+                                                        <TextBlock Text="{Binding ScaledText}" VerticalAlignment="Center"
+                                                                   Margin="8,0,0,0" FontWeight="Bold" MinWidth="60" />
+                                                        <ProgressBar Value="{Binding ScaledPercent, Mode=OneWay}" Maximum="100"
+                                                                     Width="120" Height="10" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <styles:SHButtonPrimary Command="{Binding ToggleStreamingCommand}"
+                                                            Content="{Binding StreamingButtonText}" />
+                                    <styles:SHButtonSecondary Command="{Binding ReleaseOutputsCommand}"
+                                                              Margin="8,0,0,0">Release outputs</styles:SHButtonSecondary>
+                                </StackPanel>
+
+                                <TextBlock Text="{Binding StreamingStatus}" Margin="0,8,0,0" TextWrapping="Wrap" />
+
+                                <TextBlock Margin="0,6,0,0" Opacity="0.7" TextWrapping="Wrap"
+                                           Text="Overrides are sticky: the adapter holds the last values it was sent until they are released. The plugin releases automatically when it stops, but 'Release outputs' is there if something ends up stuck." />
+                            </StackPanel>
+                        </styles:SHSubSection>
+
+                    </StackPanel>
                 </styles:SHTabItem>
 
                 <styles:SHTabItem Header="Devices">
