@@ -1,0 +1,26 @@
+<Project>
+
+  <!-- `dotnet build -p:InstallToSimHub=true` drops the built assemblies straight
+       into the SimHub install so the plugin can be tested without a manual copy.
+       Gated on IsSimHubPlugin (set only by the plugin project) so building the
+       Core library or the tests never writes into Program Files.
+
+       SimHub must be closed: it loads plugin DLLs on startup and holds them. -->
+  <Target Name="CopyToSimHub"
+          AfterTargets="Build"
+          Condition="'$(IsSimHubPlugin)' == 'true' and '$(InstallToSimHub)' == 'true'">
+    <ItemGroup>
+      <SimHubPayload Include="$(TargetDir)$(TargetName).dll" />
+      <SimHubPayload Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+      <SimHubPayload Include="$(TargetDir)Fanadapter.Core.dll" />
+      <SimHubPayload Include="$(TargetDir)Fanadapter.Core.pdb" Condition="Exists('$(TargetDir)Fanadapter.Core.pdb')" />
+    </ItemGroup>
+
+    <Error Condition="!Exists('$(SimHubDir)SimHub.Plugins.dll')"
+           Text="SimHub not found at '$(SimHubDir)'. Set SimHubDir in Directory.Build.props.user." />
+
+    <Copy SourceFiles="@(SimHubPayload)" DestinationFolder="$(SimHubDir)" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="Installed $(TargetName).dll + Fanadapter.Core.dll -&gt; $(SimHubDir)" />
+  </Target>
+
+</Project>

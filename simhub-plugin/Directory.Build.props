@@ -1,0 +1,32 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Where the SimHub install lives. Every SimHub assembly we compile against
+         is resolved by HintPath off this property, so it is the single knob that
+         has to be right on a new machine. CI writes Directory.Build.props.user
+         after installing SimHub into a temp directory; developers whose install
+         is not in the default location do the same by hand. -->
+    <SimHubDir Condition="'$(SimHubDir)' == ''">C:\Program Files (x86)\SimHub\</SimHubDir>
+
+    <LangVersion>latest</LangVersion>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <Company>fanadapter</Company>
+    <Product>Fanadapter for SimHub</Product>
+
+    <!-- Restore/build has to work on a machine with only the dotnet SDK, so the
+         net48 reference assemblies come from a package rather than from a
+         Developer Pack install. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Untracked local override, e.g.
+         <Project><PropertyGroup><SimHubDir>D:\SimHub\</SimHubDir></PropertyGroup></Project> -->
+  <Import Project="Directory.Build.props.user" Condition="Exists('Directory.Build.props.user')" />
+
+</Project>

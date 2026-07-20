@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Deliberately free of SimHub references: everything that mirrors a firmware
+       contract (config schema, scaleAxis math, the JSON protocol) lives here so
+       it can be unit-tested with nothing but the dotnet SDK. -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>Fanadapter.Core</AssemblyName>
+    <RootNamespace>Fanadapter.Core</RootNamespace>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Management" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Fanadapter.Core.Tests" />
+  </ItemGroup>
+
+  <!-- Pinned to the version SimHub ships (13.0.4). ExcludeAssets=runtime means
+       it is never copied next to the plugin, so at runtime the CLR resolves
+       Newtonsoft from SimHub's own directory and there is only ever one copy
+       loaded. Taking it from NuGet rather than by HintPath is what keeps this
+       project buildable without SimHub installed. -->
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+</Project>
