@@ -2296,8 +2296,8 @@ function OutputsView({
           <CardTitle>Direct output control</CardTitle>
           <CardDescription>
             Drive the outputs from here (the same commands SimHub or a PC app would stream over
-            serial). These override the USB-device mapping for the channels they touch and stay until
-            you release them back to the mapping.
+            serial). These override the USB-device mapping for the channels they touch and stay
+            until you release them back to the mapping.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
