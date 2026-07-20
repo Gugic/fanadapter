@@ -138,10 +138,12 @@ So the PC side lives on the USB-C and the host goes to the header pins.
    counts come from the report descriptor and are never revised from reports, so such an interface can
    never become bindable); `tuh_hid_mount_cb` only arms the pipe when claimed. Now 4 devices = 4 slots.
 
-**Verified on this board:** 4 devices / 7 interfaces enumerate through the hub on OTG_HS while the USB-C
-CDC serves webconfig simultaneously; `list_devices` returns exactly the 4 real devices; live axis/button
-data streams into the UI. **Outputs (gears / sequential / handbrake / pedal UART) have NOT yet been
-re-verified on this board** — the role swap doesn't touch them, but they need a wheelbase session.
+**Verified end-to-end on this board (July 2026) — including a real driving session.** 4 devices /
+7 interfaces enumerate through the hub on OTG_HS while the USB-C CDC serves webconfig simultaneously;
+`list_devices` returns exactly the 4 real devices; live axis/button data streams into the UI. The
+**output side is confirmed too** — H-pattern gears (DAC PA4/PA5), sequential (PC6/PC7), handbrake, and
+the CSL Elite pedal-UART stream all drive the wheelbase correctly with the swapped USB roles in place.
+**Full feature parity, hardware-validated on the WeAct H743VIT6.**
 
 The original FK743M3 enumerator validation is preserved below for history.
 
@@ -250,8 +252,9 @@ on a solid line, only then suspect the restart-detector threshold (`RESTART_ERR_
 ### Remaining (polish only)
 - **DAC gear recalibration** against the exact wheelbase voltages if any column reads off (`set_gear_dac`
   per gear, then `save_config`). The defaults engaged all gears cleanly here.
-- **Future dual-USB board:** native STM32 CDC (VID 1209 / PID FA00), no S3 bridge — WebSerial connects
-  directly.
+- ~~**Future dual-USB board:** native STM32 CDC, no S3 bridge~~ — **DONE (July 2026).** The WeAct
+  H743VIT6 runs host and device concurrently; WebSerial connects straight to the board's own CDC
+  (VID `1209` / PID `FA00`) on the on-board USB-C. See "Current hardware & USB roles" at the top.
 
 ### Flash config store — TWO bugs that cost a bench session (FIXED; do not reintroduce)
 1. **The config sector MUST be in a DIFFERENT flash bank than the running code.** Code runs from bank 1;
