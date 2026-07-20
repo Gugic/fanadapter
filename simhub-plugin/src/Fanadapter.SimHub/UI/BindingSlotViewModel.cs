@@ -114,37 +114,58 @@ namespace Fanadapter.SimHub.UI
         public bool IsCapturing
         {
             get => _isCapturing;
-            set { _isCapturing = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusText)); }
+            set
+            {
+                if (_isCapturing == value) return;
+                _isCapturing = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(StatusText));
+            }
         }
 
         private string _captureHint;
         public string CaptureHint
         {
             get => _captureHint;
-            set { _captureHint = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusText)); }
+            set
+            {
+                // Re-set on every tick while capturing; only the transitions
+                // between the three hints are worth telling WPF about.
+                if (_captureHint == value) return;
+                _captureHint = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(StatusText));
+            }
         }
 
         public string StatusText => IsCapturing ? (CaptureHint ?? "Listening…") : string.Empty;
 
+        // Guarded like the device panel's: these sit on the 60 Hz path and an
+        // unchanged value must not cost a re-render.
         private int _liveRaw;
         public int LiveRaw
         {
             get => _liveRaw;
-            private set { _liveRaw = value; OnPropertyChanged(); }
+            private set { if (_liveRaw == value) return; _liveRaw = value; OnPropertyChanged(); }
         }
 
         private double _liveProcessedPercent;
         public double LiveProcessedPercent
         {
             get => _liveProcessedPercent;
-            private set { _liveProcessedPercent = value; OnPropertyChanged(); }
+            private set
+            {
+                if (Math.Abs(_liveProcessedPercent - value) < 0.05) return;
+                _liveProcessedPercent = value;
+                OnPropertyChanged();
+            }
         }
 
         private bool _liveActive;
         public bool LiveActive
         {
             get => _liveActive;
-            private set { _liveActive = value; OnPropertyChanged(); }
+            private set { if (_liveActive == value) return; _liveActive = value; OnPropertyChanged(); }
         }
 
         /// <summary>

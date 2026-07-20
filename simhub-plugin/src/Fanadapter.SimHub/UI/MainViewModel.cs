@@ -64,17 +64,28 @@ namespace Fanadapter.SimHub.UI
             RefreshPropertyListCommand = new RelayCommand(RefreshPropertyList);
             ReleaseOutputsCommand = new RelayCommand(ReleaseOutputs, () => IsConnected);
 
-            // 20 Hz. Live input frames arrive faster than that and applying each
-            // one straight to the UI would post a dispatcher callback per frame
-            // per slot; coalescing to a fixed tick caps the work regardless of
-            // how many devices are moving, and stays responsive enough that a
-            // button press still looks instant.
-            _readoutTimer = new DispatcherTimer(DispatcherPriority.Background)
+            // Live input runs at ~60 Hz on Normal priority. Coalescing frames to
+            // a tick still caps the work no matter how many devices are moving,
+            // but the priority matters more than the interval: Background only
+            // runs when WPF has nothing else to do, and inside an app as busy as
+            // SimHub that starves for long enough to be plainly visible as lag
+            // when pressing a button. The per-tick work here is a handful of
+            // property notifications, so Normal cannot crowd out rendering.
+            _liveTimer = new DispatcherTimer(DispatcherPriority.Normal)
             {
-                Interval = TimeSpan.FromMilliseconds(50),
+                Interval = TimeSpan.FromMilliseconds(16),
             };
-            _readoutTimer.Tick += (s, e) => OnTick();
-            _readoutTimer.Start();
+            _liveTimer.Tick += (s, e) => OnLiveTick();
+            _liveTimer.Start();
+
+            // Everything that costs more than a notification — reading SimHub
+            // properties, polling the pedal link — is kept off the fast path.
+            _slowTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(200),
+            };
+            _slowTimer.Tick += (s, e) => OnSlowTick();
+            _slowTimer.Start();
 
             RefreshPorts();
             SelectedPort = Ports.FirstOrDefault(p => p.PortName == plugin.Settings.PortName)
@@ -563,13 +574,21 @@ namespace Fanadapter.SimHub.UI
         {
             _capture?.Observe(live, DateTime.UtcNow);
 
+            // Resolve the device once. This used to be a LINQ scan inside the
+            // inner loop, which ran 60 times per frame per slot for no reason.
+            DeviceSlot device = null;
+            var devices = _session.Devices;
+            for (int i = 0; i < devices.Count; i++)
+            {
+                if (devices[i].Slot == live.Slot) { device = devices[i]; break; }
+            }
+            if (device == null) return;
+
             foreach (var channel in Channels)
             {
                 foreach (var slot in channel.Slots)
                 {
                     if (!slot.IsBound) continue;
-                    var device = _session.Devices.FirstOrDefault(d => d.Slot == live.Slot);
-                    if (device == null) continue;
 
                     // Same-VID/PID devices are aggregated by the firmware, so a
                     // binding follows the identity rather than the pool slot.
@@ -581,7 +600,8 @@ namespace Fanadapter.SimHub.UI
 
         // ---------- SimHub drive (PC-attached devices) ----------
 
-        private readonly DispatcherTimer _readoutTimer;
+        private readonly DispatcherTimer _liveTimer;
+        private readonly DispatcherTimer _slowTimer;
 
         public ObservableCollection<AxisSourceViewModel> AxisSources { get; } =
             new ObservableCollection<AxisSourceViewModel>();
@@ -714,18 +734,22 @@ namespace Fanadapter.SimHub.UI
             AppendLog("outputs released — the adapter's own mapping is back in control.");
         }
 
-        private int _tickCount;
+        private int _slowTickCount;
 
-        private void OnTick()
+        private void OnLiveTick()
         {
             ApplyPendingLive();
             PumpCapture();
-            UpdateReadouts();
             RaiseOutputProperties();
+        }
 
-            // The pedal link state changes rarely and costs a round-trip, so it
-            // is polled every couple of seconds rather than every tick.
-            if (++_tickCount % 40 == 0) _ = RefreshPedalStateAsync();
+        private void OnSlowTick()
+        {
+            UpdateReadouts();
+
+            // The pedal link state changes rarely and costs a serial round-trip,
+            // so it is polled every couple of seconds rather than every tick.
+            if (++_slowTickCount % 10 == 0) _ = RefreshPedalStateAsync();
         }
 
         private void UpdateReadouts()
@@ -783,10 +807,22 @@ namespace Fanadapter.SimHub.UI
             private set { _pedalLinkState = value; OnPropertyChanged(); }
         }
 
-        private void OnOutputs(OutputsState state) => _lastOutputs = state;
+        private volatile bool _outputsDirty;
+
+        private void OnOutputs(OutputsState state)
+        {
+            _lastOutputs = state;
+            _outputsDirty = true;
+        }
 
         private void RaiseOutputProperties()
         {
+            // The adapter streams outputs continuously, not only on change, so
+            // without this the fast tick would fire seven notifications 60 times
+            // a second forever.
+            if (!_outputsDirty) return;
+            _outputsDirty = false;
+
             OnPropertyChanged(nameof(OutputGear));
             OnPropertyChanged(nameof(OutputShiftUp));
             OnPropertyChanged(nameof(OutputShiftDown));
@@ -967,7 +1003,8 @@ namespace Fanadapter.SimHub.UI
 
         public void Detach()
         {
-            _readoutTimer.Stop();
+            _liveTimer.Stop();
+            _slowTimer.Stop();
             _session.StateChanged -= OnSessionStateChanged;
             _session.LogLine -= OnLogLine;
             _session.DevicesChanged -= OnDevicesChanged;

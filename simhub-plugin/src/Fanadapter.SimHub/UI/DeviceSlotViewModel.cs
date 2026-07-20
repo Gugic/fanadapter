@@ -36,14 +36,14 @@ namespace Fanadapter.SimHub.UI
         public string HatText
         {
             get => _hatText;
-            private set { _hatText = value; OnPropertyChanged(); }
+            private set { if (_hatText == value) return; _hatText = value; OnPropertyChanged(); }
         }
 
         private string _keysText = "—";
         public string KeysText
         {
             get => _keysText;
-            private set { _keysText = value; OnPropertyChanged(); }
+            private set { if (_keysText == value) return; _keysText = value; OnPropertyChanged(); }
         }
 
         public void Apply(DeviceSlot device)
@@ -165,11 +165,14 @@ namespace Fanadapter.SimHub.UI
         public int Index { get; }
         public string Label { get; }
 
+        // Every setter here guards on equality. An idle rig still delivers
+        // frames, and firing notifications for values that didn't move makes
+        // WPF re-read and re-render the whole panel for nothing.
         private int _raw;
         public int Raw
         {
             get => _raw;
-            private set { _raw = value; OnPropertyChanged(); }
+            private set { if (_raw == value) return; _raw = value; OnPropertyChanged(); }
         }
 
         /// <summary>
@@ -181,14 +184,14 @@ namespace Fanadapter.SimHub.UI
         public int ObservedMax
         {
             get => _observedMax;
-            private set { _observedMax = value; OnPropertyChanged(); }
+            private set { if (_observedMax == value) return; _observedMax = value; OnPropertyChanged(); }
         }
 
         private double _percent;
         public double Percent
         {
             get => _percent;
-            private set { _percent = value; OnPropertyChanged(); }
+            private set { if (Math.Abs(_percent - value) < 0.05) return; _percent = value; OnPropertyChanged(); }
         }
 
         public void Update(int value)
