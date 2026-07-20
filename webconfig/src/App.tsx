@@ -1003,6 +1003,19 @@ export default function App() {
                   onTestPulse={(d) => client.testPulse(d).catch((e) => setError(String(e)))}
                   onTestAxis={(c, v) => client.testAxis(c, v).catch((e) => setError(String(e)))}
                   onResetPedals={() => client.resetPedals().catch((e) => setError(String(e)))}
+                  onSetGear={(g) => client.setGear(g).catch((e) => setError(String(e)))}
+                  onSetOutputs={(c, v) => {
+                    const o: {
+                      throttle?: number
+                      brake?: number
+                      clutch?: number
+                      handbrake?: number
+                    } = {}
+                    o[c] = v
+                    client.setOutputs(o).catch((e) => setError(String(e)))
+                  }}
+                  onPulseShift={(d) => client.pulseShift(d).catch((e) => setError(String(e)))}
+                  onReleaseOutputs={() => client.releaseOutputs().catch((e) => setError(String(e)))}
                 />
               </TabsContent>
               <TabsContent value="logs">
@@ -2238,6 +2251,10 @@ function OutputsView({
   onTestPulse,
   onTestAxis,
   onResetPedals,
+  onSetGear,
+  onSetOutputs,
+  onPulseShift,
+  onReleaseOutputs,
 }: {
   config: Config
   outputs: OutputsEvent | null
@@ -2247,6 +2264,10 @@ function OutputsView({
   onTestPulse: (d: 'up' | 'down') => void
   onTestAxis: (channel: string, value: number) => void
   onResetPedals: () => void
+  onSetGear: (gear: GearKey) => void
+  onSetOutputs: (channel: 'throttle' | 'brake' | 'clutch' | 'handbrake', value: number) => void
+  onPulseShift: (d: 'up' | 'down') => void
+  onReleaseOutputs: () => void
 }) {
   return (
     <div className="space-y-4">
@@ -2267,6 +2288,58 @@ function OutputsView({
           <Field label="Throttle" value={outputs ? pct(outputs.throttle) : '—'} />
           <Field label="Brake" value={outputs ? pct(outputs.brake) : '—'} />
           <Field label="Clutch" value={outputs ? pct(outputs.clutch) : '—'} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Direct output control</CardTitle>
+          <CardDescription>
+            Drive the outputs from here (the same commands SimHub or a PC app would stream over
+            serial). These override the USB-device mapping for the channels they touch and stay
+            until you release them back to the mapping.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Gear</Label>
+            <div className="flex flex-wrap gap-1">
+              {GEAR_KEYS.map((g) => (
+                <Button
+                  key={g}
+                  variant={outputs?.gear === g ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => onSetGear(g)}
+                >
+                  {g.replace('gear_', '')}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Sequential</Label>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => onPulseShift('up')}>
+                <Play className="h-4 w-4" /> Shift up
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => onPulseShift('down')}>
+                <Play className="h-4 w-4" /> Shift down
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {(['throttle', 'brake', 'clutch', 'handbrake'] as const).map((c) => (
+              <SliderField
+                key={c}
+                label={c}
+                value={outputs?.[c] ?? 0}
+                onChange={(v) => onSetOutputs(c, v)}
+              />
+            ))}
+          </div>
+          <Button variant="outline" size="sm" onClick={onReleaseOutputs}>
+            <RotateCcw className="h-4 w-4" /> Release to USB mapping
+          </Button>
         </CardContent>
       </Card>
 

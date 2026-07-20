@@ -1,0 +1,5 @@
+# PlatformIO build output (includes .pio/libdeps, where TinyUSB is fetched — see platformio.ini)
+.pio/
+
+# Python bytecode cache (the flasher tools)
+__pycache__/
