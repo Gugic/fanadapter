@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using System.Windows.Threading;
 using Fanadapter.Core;
+using Newtonsoft.Json.Linq;
 
 namespace Fanadapter.SimHub.UI
 {
@@ -46,6 +47,11 @@ namespace Fanadapter.SimHub.UI
             _session.LogLine += OnLogLine;
             _session.DevicesChanged += OnDevicesChanged;
             _session.LiveInput += OnLiveInput;
+
+            BuildChannels();
+            StartCaptureCommand = new ParameterCommand(StartCapture, () => IsConnected);
+            ClearBindingCommand = new ParameterCommand(ClearBinding, () => IsConnected);
+            CancelCaptureCommand = new RelayCommand(CancelCapture, () => IsCapturing);
 
             BuildAxisEditors();
             ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => CanStream);
@@ -339,6 +345,231 @@ namespace Fanadapter.SimHub.UI
 
                 var device = Devices.FirstOrDefault(d => d.Slot == slot);
                 device?.Apply(live);
+
+                ApplyLiveToMappings(live);
+            }
+        }
+
+        // ---------- Mappings (adapter's own devices → wheelbase channels) ----------
+
+        private static readonly string[] SequentialChannels = { "shift_up", "shift_down" };
+
+        public ObservableCollection<ChannelViewModel> Channels { get; } =
+            new ObservableCollection<ChannelViewModel>();
+
+        private CaptureEngine _capture;
+        private BindingSlotViewModel _captureTarget;
+
+        public RelayCommand StartCaptureCommand { get; private set; }
+        public RelayCommand ClearBindingCommand { get; private set; }
+        public RelayCommand CancelCaptureCommand { get; private set; }
+
+        public bool IsLatchMode
+        {
+            get => _session.Config != null && _session.Config.GearMode == GearMode.Latch;
+            set { _ = SetGearModeAsync(value ? GearMode.Latch : GearMode.Hold); }
+        }
+
+        public string GearModeExplanation => IsLatchMode
+            ? "Latch: pressing a gear binding switches to that gear and stays there until another one is pressed. Suits keyboards and gamepads, and makes the neutral binding meaningful."
+            : "Hold: a gear is engaged only while its binding is held, like a real H-pattern shifter. Two gears held at once falls back to neutral.";
+
+        private void BuildChannels()
+        {
+            Channels.Clear();
+
+            foreach (var gear in Schema.GearKeys)
+            {
+                Channels.Add(new ChannelViewModel(gear, "H-pattern shifter", prefersButton: true));
+            }
+            foreach (var seq in SequentialChannels)
+            {
+                Channels.Add(new ChannelViewModel(seq, "Sequential", prefersButton: true));
+            }
+            Channels.Add(new ChannelViewModel("handbrake", "Handbrake", prefersButton: false));
+            foreach (var pedal in new[] { "throttle", "brake", "clutch" })
+            {
+                Channels.Add(new ChannelViewModel(pedal, "Pedals", prefersButton: false));
+            }
+        }
+
+        private void LoadChannelsFromConfig()
+        {
+            var config = _session.Config;
+            if (config == null) return;
+
+            foreach (var channel in Channels)
+            {
+                var bindings = config.GetChannel(channel.Key);
+                channel.Slots.Clear();
+                for (int slot = 0; slot < Schema.MaxBindingsPerChannel; slot++)
+                {
+                    channel.Slots.Add(new BindingSlotViewModel(channel, slot, bindings[slot], PushBindingField));
+                }
+                channel.RefreshVisibleSlots();
+
+                // Neutral is only bindable in latch mode: in hold mode a gear is
+                // engaged while held and neutral is simply the absence of one,
+                // so a neutral binding would have nothing to do.
+                channel.IsVisible = channel.Key != "gear_N" || IsLatchMode;
+            }
+
+            OnPropertyChanged(nameof(IsLatchMode));
+            OnPropertyChanged(nameof(GearModeExplanation));
+        }
+
+        private async Task SetGearModeAsync(GearMode mode)
+        {
+            if (!IsConnected) return;
+            try
+            {
+                await _session.Protocol.SetGearModeAsync(mode);
+                if (_session.Config != null) _session.Config.GearMode = mode;
+                IsDirty = true;
+
+                foreach (var channel in Channels)
+                {
+                    if (channel.Key == "gear_N") channel.IsVisible = mode == GearMode.Latch;
+                }
+
+                OnPropertyChanged(nameof(IsLatchMode));
+                OnPropertyChanged(nameof(GearModeExplanation));
+            }
+            catch (Exception ex)
+            {
+                AppendLog("could not change the shifter mode: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Pushes a single edited field. set_binding merges rather than
+        /// replaces, so sending just the changed value leaves the rest of the
+        /// binding alone — and avoids a race where a stale local copy would
+        /// overwrite something the capture flow just wrote.
+        /// </summary>
+        private void PushBindingField(BindingSlotViewModel slot, string field, object value)
+        {
+            if (!IsConnected) return;
+
+            var payload = new JObject { [field] = JToken.FromObject(value) };
+            _ = SendBindingAsync(slot.Channel.Key, slot.Slot, payload);
+        }
+
+        private async Task SendBindingAsync(string channel, int slot, JObject payload)
+        {
+            try
+            {
+                await _session.Protocol.SetBindingAsync(channel, slot, payload);
+                IsDirty = true;
+            }
+            catch (Exception ex)
+            {
+                AppendLog(string.Format("could not update {0} slot {1}: {2}", channel, slot, ex.Message));
+            }
+        }
+
+        private void StartCapture(object parameter)
+        {
+            var target = parameter as BindingSlotViewModel;
+            if (target == null || !IsConnected) return;
+
+            CancelCapture();
+
+            _captureTarget = target;
+            _capture = new CaptureEngine(target.Channel.Key, target.Slot, DateTime.UtcNow,
+                s => _session.Devices.FirstOrDefault(d => d.Slot == s));
+
+            target.IsCapturing = true;
+            target.CaptureHint = "Hold still…";
+            OnPropertyChanged(nameof(IsCapturing));
+        }
+
+        public bool IsCapturing => _capture != null;
+
+        private void CancelCapture()
+        {
+            if (_capture == null) return;
+            _capture.Cancel();
+            FinishCapture();
+        }
+
+        private void FinishCapture()
+        {
+            if (_captureTarget != null)
+            {
+                _captureTarget.IsCapturing = false;
+                _captureTarget.CaptureHint = null;
+            }
+            _capture = null;
+            _captureTarget = null;
+            OnPropertyChanged(nameof(IsCapturing));
+        }
+
+        /// <summary>
+        /// Drives the capture state machine from the UI tick, so phase changes
+        /// and the deadline still happen when the device sits perfectly still
+        /// and sends nothing at all.
+        /// </summary>
+        private void PumpCapture()
+        {
+            var capture = _capture;
+            var target = _captureTarget;
+            if (capture == null || target == null) return;
+
+            capture.Tick(DateTime.UtcNow);
+
+            target.CaptureHint = capture.Phase == CapturePhase.Baseline
+                ? "Hold still…"
+                : capture.Phase == CapturePhase.Tracking
+                    ? "Now release it"
+                    : "Press or move the control";
+
+            if (!capture.IsFinished) return;
+
+            if (capture.Phase == CapturePhase.Committed)
+            {
+                var result = capture.Result;
+                target.Replace(result.Binding);
+                target.Channel.RefreshVisibleSlots();
+                _ = SendBindingAsync(result.Channel, result.Slot, JObject.FromObject(result.Binding));
+                AppendLog(string.Format("bound {0} to {1}", HidNames.Channel(result.Channel), target.Description));
+            }
+            else if (capture.Phase == CapturePhase.TimedOut)
+            {
+                AppendLog("capture timed out — nothing was pressed.");
+            }
+
+            FinishCapture();
+        }
+
+        private void ClearBinding(object parameter)
+        {
+            var target = parameter as BindingSlotViewModel;
+            if (target == null || !IsConnected) return;
+
+            target.Replace(InputBinding.None());
+            target.Channel.RefreshVisibleSlots();
+            _ = SendBindingAsync(target.Channel.Key, target.Slot, JObject.FromObject(InputBinding.None()));
+        }
+
+        /// <summary>Feeds live frames to the capture engine and the slot previews.</summary>
+        private void ApplyLiveToMappings(LiveSlot live)
+        {
+            _capture?.Observe(live, DateTime.UtcNow);
+
+            foreach (var channel in Channels)
+            {
+                foreach (var slot in channel.Slots)
+                {
+                    if (!slot.IsBound) continue;
+                    var device = _session.Devices.FirstOrDefault(d => d.Slot == live.Slot);
+                    if (device == null) continue;
+
+                    // Same-VID/PID devices are aggregated by the firmware, so a
+                    // binding follows the identity rather than the pool slot.
+                    if (device.Vid != slot.Binding.Vid || device.Pid != slot.Binding.Pid) continue;
+                    slot.ApplyLive(live);
+                }
             }
         }
 
@@ -480,6 +711,7 @@ namespace Fanadapter.SimHub.UI
         private void OnTick()
         {
             ApplyPendingLive();
+            PumpCapture();
             UpdateReadouts();
         }
 
@@ -520,6 +752,11 @@ namespace Fanadapter.SimHub.UI
 
         private void SyncFromSession()
         {
+            // The config arrives with the connection, so the mapping editors are
+            // rebuilt whenever session state changes rather than on a separate
+            // signal that could arrive first.
+            LoadChannelsFromConfig();
+
             OnPropertyChanged(nameof(IsConnected));
             OnPropertyChanged(nameof(StatusMessage));
             OnPropertyChanged(nameof(FirmwareBadge));

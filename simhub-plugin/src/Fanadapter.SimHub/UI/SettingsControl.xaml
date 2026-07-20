@@ -234,8 +234,100 @@
                 </styles:SHTabItem>
 
                 <styles:SHTabItem Header="Mappings">
-                    <TextBlock Margin="8" TextWrapping="Wrap"
-                               Text="Bind the adapter's own USB devices to wheelbase outputs. Coming in a later milestone." />
+                    <StackPanel Margin="8">
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,8"
+                                   Text="Bind devices on the adapter's USB hub to wheelbase outputs. These mappings live on the adapter and keep working with the PC switched off — they are separate from the SimHub drive tab." />
+
+                        <styles:SHSubSection Title="Shifter mode">
+                            <StackPanel>
+                                <styles:SHToggleCheckbox IsChecked="{Binding IsLatchMode}">Latch gears instead of holding</styles:SHToggleCheckbox>
+                                <TextBlock Text="{Binding GearModeExplanation}" TextWrapping="Wrap"
+                                           Opacity="0.7" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </styles:SHSubSection>
+
+                        <styles:SHSectionSeparator />
+
+                        <ItemsControl ItemsSource="{Binding Channels}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,0,0,10"
+                                                Visibility="{Binding IsVisible, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Label}" FontWeight="Bold" MinWidth="110" />
+                                            <TextBlock Text="{Binding Group}" Opacity="0.5" FontSize="11"
+                                                       VerticalAlignment="Center" MinWidth="130" />
+                                            <TextBlock Text="{Binding SummaryText}" Opacity="0.5" FontSize="11"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+
+                                        <ItemsControl ItemsSource="{Binding VisibleSlots}" Margin="12,4,0,0">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Margin="0,0,0,6">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Description}" MinWidth="110"
+                                                                       VerticalAlignment="Center" />
+                                                            <TextBlock Text="{Binding DeviceText}" Opacity="0.5" FontSize="11"
+                                                                       MinWidth="80" VerticalAlignment="Center" />
+
+                                                            <styles:SHButtonSecondary
+                                                                Command="{Binding DataContext.StartCaptureCommand,
+                                                                    RelativeSource={RelativeSource AncestorType=ScrollViewer}}"
+                                                                CommandParameter="{Binding}">Listen</styles:SHButtonSecondary>
+
+                                                            <styles:SHLinkButtonSmall Margin="6,0,0,0"
+                                                                Command="{Binding DataContext.ClearBindingCommand,
+                                                                    RelativeSource={RelativeSource AncestorType=ScrollViewer}}"
+                                                                CommandParameter="{Binding}"
+                                                                Visibility="{Binding IsBound, Converter={StaticResource BoolToVisibility}}">Clear</styles:SHLinkButtonSmall>
+
+                                                            <TextBlock Text="{Binding StatusText}" Margin="10,0,0,0"
+                                                                       VerticalAlignment="Center" FontWeight="Bold" />
+
+                                                            <ProgressBar Value="{Binding LiveProcessedPercent, Mode=OneWay}"
+                                                                         Maximum="100" Width="120" Height="10"
+                                                                         Margin="10,0,0,0" VerticalAlignment="Center"
+                                                                         Visibility="{Binding IsBound, Converter={StaticResource BoolToVisibility}}" />
+                                                        </StackPanel>
+
+                                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                                                                    Visibility="{Binding IsAxis, Converter={StaticResource BoolToVisibility}}">
+                                                            <TextBlock Text="Raw" VerticalAlignment="Center" Margin="0,0,4,0" FontSize="11" />
+                                                            <TextBox Text="{Binding RawMin}" Width="60" VerticalAlignment="Center" />
+                                                            <TextBlock Text="to" VerticalAlignment="Center" Margin="4,0" FontSize="11" />
+                                                            <TextBox Text="{Binding RawMax}" Width="60" VerticalAlignment="Center" />
+
+                                                            <TextBlock Text="Deadzone" VerticalAlignment="Center" Margin="12,0,4,0" FontSize="11" />
+                                                            <TextBox Text="{Binding DeadzoneLow}" Width="60" VerticalAlignment="Center" />
+                                                            <TextBlock Text="to" VerticalAlignment="Center" Margin="4,0" FontSize="11" />
+                                                            <TextBox Text="{Binding DeadzoneHigh}" Width="60" VerticalAlignment="Center" />
+
+                                                            <styles:SHToggleCheckbox IsChecked="{Binding Invert}"
+                                                                                     Margin="12,0,0,0" VerticalAlignment="Center">Invert</styles:SHToggleCheckbox>
+
+                                                            <TextBlock Text="{Binding LiveRaw, StringFormat='raw {0}'}"
+                                                                       VerticalAlignment="Center" Margin="12,0,0,0"
+                                                                       Opacity="0.6" FontSize="11" />
+                                                        </StackPanel>
+
+                                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                                                                    Visibility="{Binding ShowThreshold, Converter={StaticResource BoolToVisibility}}">
+                                                            <TextBlock Text="Press above" VerticalAlignment="Center"
+                                                                       Margin="0,0,4,0" FontSize="11" />
+                                                            <TextBox Text="{Binding Threshold}" Width="70" VerticalAlignment="Center" />
+                                                            <TextBlock Text="(0–65535, after scaling)" VerticalAlignment="Center"
+                                                                       Margin="6,0,0,0" Opacity="0.5" FontSize="11" />
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
                 </styles:SHTabItem>
 
                 <styles:SHTabItem Header="Outputs">
