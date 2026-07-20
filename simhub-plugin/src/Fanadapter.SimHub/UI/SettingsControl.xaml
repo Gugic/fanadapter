@@ -6,6 +6,9 @@
              xmlns:styles="clr-namespace:SimHub.Plugins.Styles;assembly=SimHub.Plugins"
              xmlns:ui="clr-namespace:SimHub.Plugins.UI;assembly=SimHub.Plugins"
              mc:Ignorable="d">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    </UserControl.Resources>
     <ScrollViewer>
         <StackPanel Margin="0,0,0,16">
 
@@ -146,8 +149,88 @@
                 </styles:SHTabItem>
 
                 <styles:SHTabItem Header="Devices">
-                    <TextBlock Margin="8" TextWrapping="Wrap"
-                               Text="Live view of the devices plugged into the adapter's own USB hub. Coming in a later milestone." />
+                    <StackPanel Margin="8">
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,4"
+                                   Text="Devices plugged into the adapter's own USB hub. Windows cannot see these at all, so this is the only place to check whether the adapter is receiving an input. Values stay at zero until something moves — the adapter only reports inputs when they change." />
+                        <TextBlock Text="{Binding DevicesSummary}" Opacity="0.7" Margin="0,0,0,10" />
+
+                        <ItemsControl ItemsSource="{Binding Devices}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border BorderThickness="1" BorderBrush="#33FFFFFF" CornerRadius="3"
+                                            Padding="10" Margin="0,0,0,10">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name}" FontWeight="Bold" />
+                                            <TextBlock Text="{Binding Identity}" Opacity="0.6" FontSize="11" />
+                                            <TextBlock Text="{Binding Summary}" Opacity="0.6" FontSize="11"
+                                                       Margin="0,0,0,8" />
+
+                                            <ItemsControl ItemsSource="{Binding Buttons}" Margin="0,0,0,6">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <WrapPanel />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Width="26" Height="22" Margin="0,0,3,3"
+                                                                CornerRadius="2" BorderThickness="1"
+                                                                BorderBrush="#33FFFFFF">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Background" Value="Transparent" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsPressed}" Value="True">
+                                                                            <Setter Property="Background" Value="#FF3D8BFD" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <TextBlock Text="{Binding Label}" FontSize="10"
+                                                                       HorizontalAlignment="Center"
+                                                                       VerticalAlignment="Center" />
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+
+                                            <ItemsControl ItemsSource="{Binding Axes}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
+                                                            <TextBlock Text="{Binding Label}" Width="60"
+                                                                       FontSize="11" VerticalAlignment="Center" />
+                                                            <ProgressBar Value="{Binding Percent, Mode=OneWay}" Maximum="100"
+                                                                         Width="220" Height="10" VerticalAlignment="Center" />
+                                                            <TextBlock Text="{Binding Raw}" Width="60" FontSize="11"
+                                                                       Margin="8,0,0,0" VerticalAlignment="Center"
+                                                                       TextAlignment="Right" />
+                                                            <TextBlock Text="{Binding ObservedMax, StringFormat=' / {0} seen'}"
+                                                                       FontSize="11" Opacity="0.5"
+                                                                       VerticalAlignment="Center" Margin="4,0,0,0" />
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+
+                                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                                        Visibility="{Binding HasHat, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="Hat" Width="60" FontSize="11" VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding HatText}" FontWeight="Bold" VerticalAlignment="Center" />
+                                            </StackPanel>
+
+                                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                                        Visibility="{Binding HasKeyboard, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="Keys" Width="60" FontSize="11" VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding KeysText}" FontFamily="Consolas"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
                 </styles:SHTabItem>
 
                 <styles:SHTabItem Header="Mappings">

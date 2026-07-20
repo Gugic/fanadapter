@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -43,17 +44,24 @@ namespace Fanadapter.SimHub.UI
 
             _session.StateChanged += OnSessionStateChanged;
             _session.LogLine += OnLogLine;
+            _session.DevicesChanged += OnDevicesChanged;
+            _session.LiveInput += OnLiveInput;
 
             BuildAxisEditors();
             ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => CanStream);
             RefreshPropertyListCommand = new RelayCommand(RefreshPropertyList);
             ReleaseOutputsCommand = new RelayCommand(ReleaseOutputs, () => IsConnected);
 
+            // 20 Hz. Live input frames arrive faster than that and applying each
+            // one straight to the UI would post a dispatcher callback per frame
+            // per slot; coalescing to a fixed tick caps the work regardless of
+            // how many devices are moving, and stays responsive enough that a
+            // button press still looks instant.
             _readoutTimer = new DispatcherTimer(DispatcherPriority.Background)
             {
-                Interval = TimeSpan.FromMilliseconds(100),
+                Interval = TimeSpan.FromMilliseconds(50),
             };
-            _readoutTimer.Tick += (s, e) => UpdateReadouts();
+            _readoutTimer.Tick += (s, e) => OnTick();
             _readoutTimer.Start();
 
             RefreshPorts();
@@ -171,12 +179,15 @@ namespace Fanadapter.SimHub.UI
                 try
                 {
                     // Telemetry is opt-in per connection; the adapter doesn't
-                    // remember it across a reconnect.
+                    // remember it across a reconnect. Input frames only arrive
+                    // when something actually moves, so leaving them on costs
+                    // nothing while the rig is idle.
                     await _session.Protocol.SetLiveOutputsAsync(true);
+                    await _session.Protocol.SetLiveInputsAsync(true);
                 }
                 catch (Exception ex)
                 {
-                    AppendLog("connected, but output telemetry could not be enabled: " + ex.Message);
+                    AppendLog("connected, but telemetry could not be enabled: " + ex.Message);
                 }
             }
             finally
@@ -255,6 +266,79 @@ namespace Fanadapter.SimHub.UI
                 _session.Disconnect();
                 IsBusy = false;
                 SyncFromSession();
+            }
+        }
+
+        // ---------- Devices on the adapter's own USB hub ----------
+
+        public ObservableCollection<DeviceSlotViewModel> Devices { get; } =
+            new ObservableCollection<DeviceSlotViewModel>();
+
+        /// <summary>
+        /// Newest live frame per slot, waiting to be applied on the next tick.
+        /// Written from the serial reader thread, drained on the UI thread.
+        /// </summary>
+        private readonly ConcurrentDictionary<int, LiveSlot> _pendingLive =
+            new ConcurrentDictionary<int, LiveSlot>();
+
+        private string _devicesSummary = "Not connected.";
+        public string DevicesSummary
+        {
+            get => _devicesSummary;
+            private set { _devicesSummary = value; OnPropertyChanged(); }
+        }
+
+        private void OnLiveInput(LiveSlot slot)
+        {
+            // Overwrite rather than queue: only the newest state matters, and
+            // this runs on the reader thread where doing less is better.
+            _pendingLive[slot.Slot] = slot;
+        }
+
+        private void OnDevicesChanged() => RunOnUi(RebuildDeviceList);
+
+        private void RebuildDeviceList()
+        {
+            // Only slots holding a device: the pool is a fixed 8 and rendering
+            // four empty cards would bury the real ones.
+            var connected = _session.Devices.Where(d => d.Connected).OrderBy(d => d.Slot).ToList();
+
+            for (int i = Devices.Count - 1; i >= 0; i--)
+            {
+                if (connected.All(d => d.Slot != Devices[i].Slot)) Devices.RemoveAt(i);
+            }
+
+            foreach (var device in connected)
+            {
+                var existing = Devices.FirstOrDefault(v => v.Slot == device.Slot);
+                if (existing != null) existing.Apply(device);
+                else Devices.Add(new DeviceSlotViewModel(device));
+            }
+
+            var reordered = Devices.OrderBy(d => d.Slot).ToList();
+            for (int i = 0; i < reordered.Count; i++)
+            {
+                int current = Devices.IndexOf(reordered[i]);
+                if (current != i) Devices.Move(current, i);
+            }
+
+            if (!IsConnected) DevicesSummary = "Not connected.";
+            else if (connected.Count == 0) DevicesSummary = "No devices on the adapter's USB hub.";
+            else DevicesSummary = string.Format("{0} of {1} pool slots in use.",
+                connected.Count, _session.Devices.Count);
+        }
+
+        private void ApplyPendingLive()
+        {
+            if (_pendingLive.IsEmpty) return;
+
+            foreach (var slot in _pendingLive.Keys.ToList())
+            {
+                LiveSlot live;
+                if (!_pendingLive.TryRemove(slot, out live)) continue;
+
+                var device = Devices.FirstOrDefault(d => d.Slot == slot);
+                device?.Apply(live);
             }
         }
 
@@ -393,6 +477,12 @@ namespace Fanadapter.SimHub.UI
             AppendLog("outputs released — the adapter's own mapping is back in control.");
         }
 
+        private void OnTick()
+        {
+            ApplyPendingLive();
+            UpdateReadouts();
+        }
+
         private void UpdateReadouts()
         {
             var pm = _plugin.PluginManager;
@@ -472,6 +562,8 @@ namespace Fanadapter.SimHub.UI
             _readoutTimer.Stop();
             _session.StateChanged -= OnSessionStateChanged;
             _session.LogLine -= OnLogLine;
+            _session.DevicesChanged -= OnDevicesChanged;
+            _session.LiveInput -= OnLiveInput;
         }
 
         public event PropertyChangedEventHandler PropertyChanged;
