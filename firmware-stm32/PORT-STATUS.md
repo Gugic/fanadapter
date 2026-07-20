@@ -1,376 +1,175 @@
-# STM32H743 port — status & resume guide
+# STM32H743 port — development notes
 
-Handoff doc for the Teensy → STM32 firmware port. Read this to resume cold.
+Engineering record for the Teensy → STM32 firmware port: what's implemented, what was hard, and
+what not to re-derive. **Read this before changing firmware code.**
 
-## TL;DR
+**If you just want to build or wire one, you're in the wrong file — see
+[`README.md`](README.md).** Board choice, pin map, wiring, flashing and troubleshooting all live
+there. This file deliberately doesn't repeat them.
 
-Porting the `fanadapter` firmware to an **FK743M3‑VGT6** (STM32H743VGT6) core board, in
-`firmware-stm32/` (**PlatformIO + STM32Cube HAL + TinyUSB 0.18**). The enumerator milestone is done;
-the adapter-logic port is now underway, tracked as milestones M0–M7 (plan:
-`C:\Users\Gugic\.claude\plans\shimmering-hatching-noodle.md`).
+## Status
 
-**Status: M0–M7 DONE and HARDWARE-VALIDATED on the real wheelbase (June 2026). The full chain works:
-H-pattern gears (DAC), sequential, handbrake PWM, and the CSL Elite pedal-UART stream all drive the
-wheelbase; the pedal handshake holds; a wheelbase power-cycle auto-recovers (restart re-arm); and saved
-config survives a reflash (bank-1-only erase). Feature parity with the Teensy reached.**
+**DONE — full feature parity with the Teensy build, hardware-validated end to end**, including a
+real driving session on a ClubSport DD+. USB-host HID decode, mapping, DAC H-pattern gears,
+sequential, handbrake, and the CSL Elite pedal-UART stream all drive the wheelbase, with webconfig
+on the board's native USB CDC.
 
-> **UPDATE (July 2026) — the dual-USB board arrived; USB roles are now SWAPPED.** Development moved to a
-> genuine **WeAct MiniSTM32H743VITX** (STM32H743VIT6) where **both** USB controllers are usable, so the
-> ESP32-S3/CH340 bridge is gone: **webconfig now talks to the board over its own native USB CDC.** The
-> roles are the reverse of everything written below — **OTG_FS (on-board USB-C) = DEVICE (console +
-> webconfig + DFU + power)**, **OTG_HS (PB14/PB15 header) = HOST (powered hub + wheel devices)**. See
-> **"Current hardware & USB roles"** immediately below; sections further down that say *host on OTG_FS /
-> console on OTG_HS* describe the old FK743M3 bring-up board and are kept for history. Four latent
-> firmware bugs were found and fixed in the process — all invisible until a board with a working second
-> USB controller existed.
-- **M0 — plumbing/test-rig:** USART1 RX (interrupt + 16-byte FIFO, ISR drains it, priority **5 = above
-  USB** so command bursts don't overrun); console switched to **8E1** to match the ROM bootloader;
-  `lib/cherryusb` deleted. DAC + TIM HAL were already enabled in the active PlatformIO conf — no override.
-- **M1 — HID decode + USB InputSource + protocol:** generic HID report-descriptor walker
-  (`hid_parse.c`), 8-slot device pool (`usb_input.c`), the modular `InputSource` vtable
-  (`input_source.c` — the cornerstone), and `protocol.c` (`version`, `list_devices`, `live_inputs` +
-  `device_attached`/`device_detached`/`live` events, shapes matched to webconfig). **Verified on the
-  4-device / 7-interface hardware:** `list_devices` correct; H-shifter buttons `0x3F`; sequential
-  shifter buttons `0x3`; handbrake (C278 multi-mode, axis mode) axis 2; pedal axis tracks.
-- **Axis fidelity (HW-validated):** `hid_parse.c` stores the **raw native** logical value (`decode_axis`,
-  matching the Teensy `m_axes[i]=(uint16_t)value`) — a 10-bit handbrake reads 0..1023, a 12-bit pedal
-  0..4095, clean step-of-1. (An earlier version normalized to 0..65535 → confusing 16/64-count jumps.)
-  `scaleAxis` maps `[rawMin,rawMax]` (native, from Listen calibration) → 0..65535 at eval. Calibration is
-  still needed — declared range ≠ physical travel, plus invert/deadzone.
-- **M2 — Config + flash + get/set/save/reset (HW-validated):** `mapping.{c,h}` (Config byte-identical,
-  **1132 B, CONFIG_VERSION 3**, `_Static_assert` locks; `crc32` verbatim = `webconfig/.../crc32.ts`;
-  evaluators via `input_fold_*`), `json_min.{c,h}` (zero-alloc JSON reader, ArduinoJson replacement),
-  `config_store.{c,h}` (internal flash). Commands `get_config` (streamed in small chunks — USART1 blocks
-  until sent so no truncation), `set_binding`/`set_gear_dac`/`set_pulse_ms`/`set_gear_mode`/`save_config`/
-  `reset_config`. Save→verify confirmed on HW. **Two flash-store bugs that cost a bench session (see below).**
-- **M3 — DAC H-pattern + transit FSM (HW-validated):** `outputs.{c,h}` — **DAC1 ch1=PA4 (X), ch2=PA5 (Y)**,
-  codes map 1:1 to the schematics voltage table (output buffer on; only Reverse X1=3.30V/4095 clamps ~3.1V).
-  Non-blocking neutral-transit FSM (replaces the Teensy `delay(50)`); `update_shifter` hold+latch + test
-  override. Commands `test_gear`, `live_outputs`, `outputs` event. **Sequential pulse added here too**
-  (was M5): open-drain **PC6 (up)/PC7 (down)**, idle HIGH, non-blocking FSM (confirm those pins are
-  broken out before wiring).
-- **M4 — direct output control (HW-validated; REPLACED the earlier "serial virtual-device inject" idea):**
-  the PC (SimHub / the web app) owns the input→action mapping and commands outputs directly; the adapter
-  applies them. Commands: **`set_gear {gear}`**, **`set_outputs {throttle?,brake?,clutch?,handbrake?}`**
-  (0..65535, the 100 Hz pedal/handbrake hot path), **`pulse_shift {direction}`**, **`release_outputs`**.
-  Semantics = **command override**: a PC-set channel wins over the USB mapping, sticky until
-  `release_outputs`. State in `mapping.c` (`g_ovr_*`). (Standalone mode — USB devices → in-firmware
-  mapping → outputs — is unchanged.) `input_serial.{c,h}` + `inject_*` were removed.
-- **M5 — handbrake PWM fallback (HW-validated):** `outputs.c` adds a TIM3_CH3 PWM
-  leg on **PC8** (AF2), ARR=4095 / PSC=0 → ~15.6 kHz carrier for an RC low-pass. `outputs_set_handbrake_pwm(v)`
-  maps a 0..65535 level to a 12-bit duty (`v >> 4`). Init is non-fatal (a TIM fault won't brick the USB
-  host). This is the FALLBACK handbrake; the primary path is the pedal stream — `mapping.c` dual-writes
-  the handbrake to both. **Bench-verified by metering PC8 (a DC meter reads the duty average) — it tracks
-  the handbrake level.** In a wheelbase build, leave the dedicated handbrake RJ12 unplugged (handbrake
-  rides the pedal stream); PC8/RC is only for a rig without the pedal port.
-- **M6 — CSL Elite pedal UART (HW-VALIDATED on the wheelbase — the keystone):** `pedals.{c,h}` on
-  **USART2 (PA2=TX, PA3=RX), 8N1** — a faithful port of the Teensy `pedals.cpp` state machine
-  (INIT→STEP0→STEP1→STEP2→STREAMING), same handshake bytes (0x0A→0x1A, 0x05→0x15), 250000↔115200 baud
-  switch, 2 s warmup drain, lenient any-order STEP2 collector (ack 0x00/0x02/0x03, transition on the
-  0x03 version-identity ack), CRC-8 (poly 0x8C), and 100 Hz 12-byte `0x7B..0x7D` frames. **RX** is a
-  register-level RXNE interrupt ring (`USART2_IRQHandler`, priority 5 = above USB, FIFO enabled) drained
-  in `pedals_update()`; **TX** is blocking `HAL_UART_Transmit` (12 B ≈ 1 ms at 115200, gated to 100 Hz —
-  the proven Teensy approach; IT/DMA is a possible future optimization). `mapping.c` `update_axes` now
-  pushes throttle/brake/clutch/handbrake into the stream every tick; `pedals_update()` runs **LAST** in
-  the main loop. **This is what makes `set_outputs` and USB-mapped pedals electrically reach the
-  wheelbase** — before M6 those values stopped at the snapshot/event. **HW-verified:** the wheelbase
-  enumerates "ClubSport Pedals V3", the handshake walks to `STREAMING_115K`, and pedal/handbrake levels
-  register in-app.
-  - **Wheelbase-restart auto-recovery (in `pedals.c`):** once STREAMING we ignore RX, so a POWER-CYCLED
-    wheelbase (which re-initiates its handshake at 250000 while we're camped at 115200) used to leave us
-    stuck streaming into a wheelbase that had fallen back to analog → jitter. The mismatched baud arrives
-    as a burst of UART framing/overrun errors; the RX ISR tallies them and STREAMING re-arms the
-    handshake on a burst (`RESTART_ERR_THRESHOLD = 32`, 1 Hz decay so isolated glitches don't trip it).
-    **HW-verified:** a wheelbase power-cycle now re-establishes the session on its own. (This dead-end
-    carried over from the Teensy, which only recovered via the manual re-arm button.)
-- **M7 — polish (HW-validated):** new JSON commands `test_axis` (500 ms axis-level
-  override), `test_pulse` (one sequential pulse), `reboot` (`NVIC_SystemReset`), `reset_pedals`
-  (`pedals_force_reset` — re-arm the handshake now, skipping warmup), `pedals_status`
-  (`{state,throttle,brake,clutch,handbrake}`). All shapes match the Teensy + the existing
-  `webconfig/src/lib/serial.ts` wrappers (`testAxis/testPulse/reboot/resetPedals/pedalsStatus`) — **no
-  webconfig change was needed**. DAC gear recal against the real wheelbase still pending (M3/M7 note).
+Current hardware: **WeAct MiniSTM32H743VITX** (STM32H743VIT6, 2 MB flash / 1 MB RAM, 25 MHz HSE,
+LDO VCORE), both USB controllers live at once. Bring-up happened on a different board — see
+[Historical](#historical-fk743m3-bring-up) at the end.
 
-## Current hardware & USB roles (July 2026 — WeAct MiniSTM32H743VITX) — AUTHORITATIVE
+## Milestones (M0–M7, all hardware-validated)
 
-This supersedes the FK743M3 sections below. Board: **WeAct MiniSTM32H743VITX**, STM32H743VIT6, 2 MB
-flash / 1 MB RAM, 25 MHz HSE, LDO VCORE. **Both USB controllers work**, so there is no bridge.
+- **M0 — plumbing:** USART1 RX (interrupt + 16-byte FIFO, ISR-drained, **priority 5 = above USB**
+  so command bursts don't overrun); console at **8E1** to match the ROM bootloader.
+- **M1 — HID decode + protocol:** generic report-descriptor walker (`hid_parse.c`), 8-slot device
+  pool (`usb_input.c`), the `InputSource` vtable (`input_source.c` — the cornerstone), and
+  `protocol.c` with shapes matched to webconfig. Verified against 4 devices / 7 HID interfaces.
+- **Axis fidelity:** `hid_parse.c` stores the **raw native** logical value (matching the Teensy's
+  `m_axes[i] = (uint16_t)value`) — a 10-bit handbrake reads 0..1023, a 12-bit pedal 0..4095, clean
+  step-of-1. An earlier version normalized to 0..65535 and produced confusing 16/64-count jumps.
+  `scaleAxis` maps `[rawMin,rawMax]` → 0..65535 at eval time.
+- **M2 — Config + flash + get/set/save/reset:** `mapping.{c,h}` (Config byte-identical to the
+  Teensy, **1132 B, CONFIG_VERSION 3**, `_Static_assert`-locked; `crc32` verbatim from
+  `webconfig/src/lib/crc32.ts`), `json_min.{c,h}` (zero-alloc JSON reader replacing ArduinoJson),
+  `config_store.{c,h}`. `get_config` streams in small chunks (USART1 blocks until sent, so no
+  truncation). **Two flash bugs here cost a bench session — see below.**
+- **M3 — DAC H-pattern:** `outputs.{c,h}` — **DAC1 ch1 = PA4 (X), ch2 = PA5 (Y)**, codes map 1:1
+  to the schematics voltage table (output buffer on). Non-blocking neutral-transit FSM replaces the
+  Teensy's `delay(50)`. Sequential pulse landed here too: open-drain **PC6/PC7**, idle HIGH,
+  non-blocking FSM.
+- **M4 — direct output control** (replaced an earlier "serial virtual-device inject" design): the
+  PC (SimHub / the web app) owns the mapping and commands outputs directly. `set_gear`,
+  `set_outputs` (the 100 Hz hot path), `pulse_shift`, `release_outputs`. Semantics = **command
+  override**: a PC-set channel wins over the USB mapping, sticky until `release_outputs`. State in
+  `mapping.c` (`g_ovr_*`). Standalone mode is unchanged.
+- **M5 — handbrake PWM fallback:** TIM3_CH3 on **PC8** (AF2), ARR=4095 / PSC=0 → ~15.6 kHz for an
+  RC low-pass. Init is non-fatal — a TIM fault must not brick the USB host. This is the *fallback*;
+  the primary path is the pedal stream, and `mapping.c` dual-writes both.
+- **M6 — CSL Elite pedal UART (the keystone):** `pedals.{c,h}` on **USART2 (PA2/PA3), 8N1** — a
+  faithful port of the Teensy state machine (INIT→STEP0→STEP1→STEP2→STREAMING), same handshake
+  bytes (0x0A→0x1A, 0x05→0x15), 250000↔115200 switch, 2 s warmup drain, lenient any-order STEP2
+  collector, CRC-8 (poly 0x8C), 100 Hz 12-byte `0x7B..0x7D` frames. RX is a register-level RXNE
+  ring (priority 5, above USB); TX is blocking `HAL_UART_Transmit` (12 B ≈ 1 ms at 115200, gated to
+  100 Hz — the proven Teensy approach). **This is what makes `set_outputs` and USB-mapped pedals
+  electrically reach the wheelbase** — before M6 those values stopped at the snapshot.
+- **M7 — polish:** `test_axis`, `test_pulse`, `reboot`, `reset_pedals`, `pedals_status`. All shapes
+  match the Teensy and the existing `webconfig/src/lib/serial.ts` wrappers — **no webconfig change
+  was needed for the entire port.**
 
-| Controller | rhport | Pins | Role |
-|---|---|---|---|
-| **USB2_OTG_FS** | 0 | PA11/PA12 = **on-board USB-C** | **DEVICE** — CDC console + webconfig, **also DFU**, and powers the board |
-| **USB1_OTG_HS** | 1 | **PB14/PB15 header** | **HOST** — raw D+/D−/GND breakout → powered hub → wheel devices |
-| USART1 | — | PA9/PA10 | UART console fallback (8E1), needs a USB-UART bridge; unused now |
+## Bugs already fixed — do not reintroduce
 
-**Why this way round (do not "fix" it back):** the on-board USB-C is wired as a **DEVICE receptacle**
-(UFP — CC pulled down with Rd). That's exactly why the ROM DFU enumerates through it, and exactly why a
-**USB hub plugged into it never attaches** — both ends present as devices, so CC negotiation never
-completes and the host sees no D+ pull-up. No adapter fixes this; the board has no CC/role-switch logic.
-So the PC side lives on the USB-C and the host goes to the header pins.
+### The clock bug that ate the first session
 
-**Wiring:**
-- **PC → on-board USB-C.** That's console + webconfig + DFU + board power, one pre-soldered connector.
-- **Powered hub → PB14/PB15 header:** **D+ → PB15**, **D− → PB14**, **GND → GND**, and **VBUS → board
-  5 V**. ⚠️ **The hub needs VBUS present on its upstream port to detect a host** — without it the hub
-  never attaches and the console just sits at `waiting for devices on the hub...`. Safe to feed from the
-  board's 5 V: a self-powered hub only *senses* that line.
-- Wheelbase side is **unchanged**: gears **PA4/PA5** (DAC, no RC), sequential **PC6/PC7**, handbrake PWM
-  **PC8**, pedal UART **PA2/PA3**. No collisions with either USB or the heartbeat pins.
-
-**Bonus of this layout:** DFU is fixed to OTG_FS in silicon, so it no longer shares a port with the hub
-— re-flashing no longer means unplugging the wheels.
-
-### Four latent bugs fixed here (all invisible until a working second USB controller existed)
-
-1. **CDC RX was never implemented.** `console_cli_poll()` drained only the USART1 ring — there was no
-   `tud_cdc_read()` anywhere, despite a comment promising it. The CDC could transmit but the firmware
-   never read a byte from it, so every webconfig command vanished. Now both sources feed a shared
-   `console_feed_byte()`.
-2. **CDC output was gated on DTR.** `console_printf` wrote the CDC only `if (tud_cdc_connected())`, which
-   additionally requires the host to assert DTR — and webconfig deliberately **deasserts** DTR (so
-   opening a port can't reset an MCU behind a CH340). Result: the firmware received and executed commands
-   but never replied → `command timeout: version`. Now gated on **`tud_mounted()`** (enumerated), which is
-   DTR-independent and also works with terminals that never raise DTR.
-3. **USB roles swapped** (see above) — host cannot live on the USB-C.
-4. **Phantom HID interfaces.** Composite controllers (the Logitech RS Shifter & Handbrake and RS
-   H-Shifter) each expose a **second HID interface with no axes/buttons/hat/keys**. Those were claimed
-   anyway: **4 physical devices filled 7 of the 8 pool slots** and each held an interrupt-IN host channel.
-   `usb_input_on_mount()` now returns whether it claimed the interface and rejects input-less ones (the
-   counts come from the report descriptor and are never revised from reports, so such an interface can
-   never become bindable); `tuh_hid_mount_cb` only arms the pipe when claimed. Now 4 devices = 4 slots.
-
-**Verified end-to-end on this board (July 2026) — including a real driving session.** 4 devices /
-7 interfaces enumerate through the hub on OTG_HS while the USB-C CDC serves webconfig simultaneously;
-`list_devices` returns exactly the 4 real devices; live axis/button data streams into the UI. The
-**output side is confirmed too** — H-pattern gears (DAC PA4/PA5), sequential (PC6/PC7), handbrake, and
-the CSL Elite pedal-UART stream all drive the wheelbase correctly with the swapped USB roles in place.
-**Full feature parity, hardware-validated on the WeAct H743VIT6.**
-
-The original FK743M3 enumerator validation is preserved below for history.
-
-## Hardware validation (June 2026, FK743M3 + ESP32-S3 bridge)
-
-Read over the S3 bridge (S3 GPIO18 ← STM32 PA9, S3 powers the STM32 5V, S3 on its CH340 UART port =
-COM16 @ 115200). Boot banner confirmed `OTG_FS=host  OTG_HS=device`, `host channels: OTG_FS=16 OTG_HS=16`.
-Four devices behind the hub enumerated cleanly:
-
-| Addr | VID:PID | Device |
-|---|---|---|
-| 1 | 046D:C278 | Logitech RS Shifter & Handbrake |
-| 2 | 046D:C26B | Logitech RS H-Shifter |
-| 3 | 046D:C278 | Logitech RS Shifter & Handbrake (2nd) |
-| 4 | CAFE:A301 | Simnet SP Pro Pedal |
-
-**Finding:** with `CFG_TUH_HID = 4`, only the first 4 HID *interfaces* (addr 1+2, two composite shifters)
-mounted; addr 3/4 enumerated at the device level but their HID interfaces didn't claim (pool exhausted).
-Bumped to **`CFG_TUH_HID = 8`** — devices stay visible either way, but the bump is needed to actually read
-inputs from all of them. Each mounted HID interface arms an interrupt-IN channel, so this stays under 16.
-**Confirmed on hardware:** with `=8`, all **7 HID interfaces** (instances 0–6 across the 4 devices) mount
-— ~9 host channels in use, comfortably under 16. Full enumerator validation complete.
-
-## Board facts (FK743M3‑VGT6 — all confirmed, some the hard way)
-
-- **USB‑C = OTG_FS = PA11/PA12**, and those same pins are broken out on the **A11/A12 main‑header**
-  (proven: a USB breakout wired to A11/A12 enumerated the *same* console COM port as the USB‑C).
-  The board's "B15" silkscreen near the USB‑C is **not** the USB‑C data — that was a red herring.
-- **OTG_HS (PB14/PB15) is UNUSABLE on this board.** PB14 is on the bottom header, but **PB15
-  (OTG_HS D+) is only a 0.1 mm via with no pad — unsolderable.** OTG_HS needs both, so it's dead.
-  ⇒ **Only ONE usable USB controller: OTG_FS.**
-- HSE crystal = **25 MHz**. VCORE = internal **LDO**. ROM **DFU bootloader is on OTG_FS / the USB‑C**.
-- **8‑pin header** near the USB‑C = SWD + serial + power: `CLK DIO RST TX RX 3V 5V GND`.
-  **TX/RX = USART1 (PA9=TX, PA10=RX)** (per the FK‑family "SWD and USART1" schematic). PA9/PA10/PA11/PA12 are all adjacent on port A.
-- Both OTG_FS and OTG_HS report **16 host channels** (GHWCFG2.NumHstChnl) — OTG_FS alone is plenty for the 4‑device target.
-
-## What already works
-
-- Boots & runs (multi‑pin GPIO heartbeat at ~0.5 Hz; user LED is one of the candidate pins).
-- Confirmed clean: clocks (HSI 64 MHz sysclk + PLL3→48 MHz USB), DFU flash loop.
-- Earlier proof: a USB **CDC console on OTG_FS / USB‑C** enumerated as a COM port (VID `1209`
-  PID `FA00`) — that's how OTG_FS=rhport 0 and the 16‑channel count were confirmed. The CDC console
-  now lives on OTG_HS instead (OTG_FS became the host); that history proves the OTG_FS link is good.
-
-## THE bug that ate the early session (fixed, don't reintroduce)
-
-`SystemClock_Config` MUST call `HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY)` **before**
+`SystemClock_Config` **must** call `HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY)` **before**
 `__HAL_PWR_VOLTAGESCALING_CONFIG`. Skip it and `PWR_FLAG_VOSRDY` never sets → the firmware hangs in
-that `while` loop forever, before USB ever inits. There's now a timeout on that wait that calls
-`Error_Handler` (fast LED blink) instead of hanging silently.
+that `while` loop forever, before USB ever inits. There's now a timeout that calls `Error_Handler`
+(fast LED blink) instead of hanging silently.
 
-## Console architecture — DONE (host on OTG_FS; console on BOTH OTG_HS CDC and USART1)
+### Two flash-store bugs that ate a bench session
 
-Open‑source goal: a board with **both USB ports broken out should "just work" with two cables** — hub
-on the host port, PC on the console port, no bridge hardware. The FK743M3 bring‑up board can't do that
-(OTG_HS dead — PB15 is an unsolderable via), so it falls back to a UART console read over the ESP32‑S3.
-**One firmware serves both:** `console_printf()` mirrors output to a USB CDC device AND USART1.
-Implemented June 2026, **builds clean** (37.9 KB flash). What landed:
+1. **The config sector must be in a DIFFERENT flash bank than the running code.** Code runs from
+   bank 1; config is **bank 2, sector 0 @ `0x08100000`**. The H7 cannot fetch instructions from a
+   bank while it's being erased — a bank-1 config sector **hard-faults the core** on the 128 KB
+   erase. (Verified bank 2 is real and not aliased by reading `0x08000000` vs `0x08100000` over the
+   ROM bootloader.) `DUAL_BANK` is defined for STM32H743xx, so the HAL unlocks both banks and waits
+   on `QW_BANK2`. Erase ~1 s.
+2. **Never call `SCB_InvalidateDCache_by_Addr()` with the D-cache DISABLED** (this build never
+   enables it). That faulted the core right after a clean erase+program. Removed — with D-cache off,
+   memory-mapped flash reads are already coherent. If D-cache is ever enabled, re-add it guarded.
 
-1. **Host on OTG_FS (rhport 0)** — the universally usable controller (works even on single‑port
-   boards, incl. this one). `tusb_config.h`: `CFG_TUSB_RHPORT0_MODE = OPT_MODE_HOST|FS`, `CFG_TUH_ENABLED 1`,
-   `CFG_TUH_RHPORT 0`. ISR `OTG_FS_IRQHandler → tusb_int_handler(0, true)`; loop runs `tuh_task()`.
-2. **USB CDC console on OTG_HS (rhport 1 = PB14/PB15)** — `CFG_TUSB_RHPORT1_MODE = OPT_MODE_DEVICE|FS`,
-   `CFG_TUD_ENABLED 1`, `CFG_TUD_CDC 1`. `src/usb_descriptors.c` restored (CDC IAD, VID `1209` PID `FA00`).
-   ISR `OTG_HS_IRQHandler → tusb_int_handler(1, true)`; loop runs `tud_task()`. `tud_cdc_line_state_cb`
-   reprints the banner on DTR so a late‑connecting PC isn't left blank. **Dormant on the FK743M3** (pins
-   unwired) — inits harmlessly and never enumerates.
-3. **USART1 UART console (PA9 TX / PA10 RX, AF7, 115200, PCLK2=64 MHz)** — always present. `cdc_printf`
-   → renamed **`console_printf`** (blocking `HAL_UART_Transmit`, ISR‑guarded): writes the UART
-   unconditionally, then the CDC when `tud_cdc_connected()`. This is what the S3 bridge reads here.
-4. **`usb_hw_init`**: PA11/PA12 = AF10 (OTG_FS) + PB14/PB15 = AF12 (OTG_HS) + **both** controller clocks
-   + ULPI‑sleep‑disable + both NVIC lines. `console_init()` adds PA9/PA10 = AF7 + USART1 clock.
-5. **Host VBUS — non‑issue, verified in the dwc2 source.** On H7 `GCCFG.VBDEN` resets to 0 (VBUS
-   assumed valid), FS‑PHY init only sets `PWRDWN`, and `hcd_dwc2.c` writes `HPRT_POWER`. So the host
-   doesn't gate on a VBUS pin and PA9 is free for USART1; no GCCFG poking needed.
+The flash op is wrapped in `__disable_irq()`/`__enable_irq()` — defensive; `save_config` is rare so
+the ~1 s USB/console pause is fine.
 
-## Bench session — ALL milestones validated on the real wheelbase (June 2026)
+### Four latent USB bugs, all invisible until a board with two working USB controllers existed
 
-M0–M7 are done and confirmed end-to-end against the wheelbase (a DD+). What was verified:
+Found the day the WeAct H743VIT6 arrived. The bring-up board had only one usable controller, so the
+entire device-side path had never actually run.
 
-- **Pins (confirmed broken out + wired):** gears **PA4/PA5** (DAC, direct — no RC), sequential
-  **PC6/PC7**, handbrake PWM **PC8 (TIM3_CH3)**, pedal UART **USART2 PA2 (TX) / PA3 (RX)**. The pedal
-  port's GND pins 1/2/3 all tied to the common ground.
-- **Gears:** metered PA4/PA5 per gear against the schematics table (via the sticky `set_gear` override,
-  which holds steady — `test_gear` is only a 500 ms pulse). Direct DAC → shifter port; no RC filter (a
-  cap on the DAC buffer output can oscillate — don't add one). Reverse's near-rail X reads ~0.2 V low
-  (output-buffer clamp) — expected, the wheelbase normalizes it in shifter calibration.
-- **Sequential + handbrake PWM:** sequential shifts register (the wheelbase supplies the open-drain
-  pull-up); PC8 PWM duty tracks the handbrake level (a DC meter reads the duty average).
-- **Pedal UART:** enumerates "ClubSport Pedals V3", `pedals_status` walks to `STREAMING_115K`, pedal
-  levels register in-app. Wheelbase power-cycle auto-recovers (restart re-arm). `reboot`/`reset_pedals`/
-  `test_*` all work.
-- **Config survives reflash** (bank-1-only erase — see the flash section below).
+1. **CDC RX was never implemented.** `console_cli_poll()` drained only the USART1 ring — there was
+   no `tud_cdc_read()` anywhere, despite a comment promising it. The CDC could transmit but never
+   read a byte, so every webconfig command vanished. Both sources now feed a shared
+   `console_feed_byte()`.
+2. **CDC output was gated on DTR.** `console_printf` wrote the CDC only `if (tud_cdc_connected())`,
+   which additionally requires the host to assert DTR — and webconfig deliberately **deasserts** it
+   (so opening a port can't reset an MCU sitting behind a CH340). Result: the firmware received and
+   executed commands but never replied → `command timeout: version`. Now gated on **`tud_mounted()`**,
+   which is DTR-independent and also works with terminals that never raise DTR.
+3. **USB roles were the wrong way round.** The host cannot live on the on-board USB-C — it's a
+   device receptacle. See the README's USB table for the full rationale.
+4. **Phantom HID interfaces.** Composite controllers (Logitech RS Shifter & Handbrake, RS H-Shifter)
+   each expose a **second HID interface with no axes/buttons/hat/keys**. Those were claimed anyway:
+   **4 physical devices filled 7 of the 8 pool slots**, each holding an interrupt-IN host channel.
+   `usb_input_on_mount()` now returns whether it claimed the interface and rejects input-less ones
+   (the counts come from the report descriptor and are never revised from reports, so such an
+   interface can never *become* bindable); `tuh_hid_mount_cb` only arms the pipe when claimed.
 
-### ⚠️ Pedal-UART line integrity (gotcha that ate a debug session)
+### Pedal-UART line integrity (a debug session that was never a code bug)
+
 The pedal port is **unforgiving about wire integrity — suspect the wiring before the firmware.** A
-marginal jumper (especially the **ground**, or the TX line PA2→pedal Pin 5) CRC-corrupts the 100 Hz
-frames; the wheelbase then rejects them and falls back to analog pedal sensing, and (pre-fix) the
-adapter kept streaming into the void → jitter on the now-analog pins. Symptom: handshake completes,
-pedals show in the Fanatec app for ~2 s, then drop to analog + jitter, repeating. **Fix was re-seating
-the wire, not a code change.** The console `[pedals]` trace is the diagnostic: it showed the adapter
-reaching `STREAMING` and staying (so the drop was wheelbase-side), and a burst of RX framing errors —
-which is exactly what a flaky line (or a genuine wheelbase restart) produces. If the flap ever returns
-on a solid line, only then suspect the restart-detector threshold (`RESTART_ERR_THRESHOLD`).
+marginal jumper (especially **ground**, or TX PA2 → pedal pin 5) CRC-corrupts the 100 Hz frames; the
+wheelbase rejects them and falls back to analog sensing, and pre-fix the adapter kept streaming into
+the void → jitter on the now-analog pins. Symptom: handshake completes, pedals show for ~2 s, drop
+to analog, repeat. **The fix was re-seating a wire.** The `[pedals]` console trace is the
+diagnostic — it showed the adapter reaching `STREAMING` and staying (so the drop was wheelbase-side)
+plus a burst of RX framing errors, which is exactly what a flaky line produces.
 
-### Remaining (polish only)
-- **DAC gear recalibration** against the exact wheelbase voltages if any column reads off (`set_gear_dac`
-  per gear, then `save_config`). The defaults engaged all gears cleanly here.
-- ~~**Future dual-USB board:** native STM32 CDC, no S3 bridge~~ — **DONE (July 2026).** The WeAct
-  H743VIT6 runs host and device concurrently; WebSerial connects straight to the board's own CDC
-  (VID `1209` / PID `FA00`) on the on-board USB-C. See "Current hardware & USB roles" at the top.
+Which is also why **wheelbase-restart auto-recovery** exists: once STREAMING we ignore RX, so a
+power-cycled wheelbase (re-initiating its handshake at 250000 while we're camped at 115200) used to
+leave us streaming into a base that had fallen back to analog. The mismatched baud arrives as a
+burst of framing/overrun errors; the RX ISR tallies them and STREAMING re-arms the handshake on a
+burst (`RESTART_ERR_THRESHOLD = 32`, 1 Hz decay so isolated glitches don't trip it). The Teensy only
+ever recovered via the manual re-arm button.
 
-### Flash config store — TWO bugs that cost a bench session (FIXED; do not reintroduce)
-1. **The config sector MUST be in a DIFFERENT flash bank than the running code.** Code runs from bank 1;
-   config is **bank 2, sector 0 @ `0x08100000`** (`FLASH_BANK_2`/`FLASH_SECTOR_0`). The H7 can't fetch
-   instructions from a bank while it's being erased — a bank-1 config sector HARD-FAULTS the core on the
-   128 KB erase. Bank 2 sector 0 physically exists on the 1 MB VG and is NOT aliased to bank 1 (verified
-   by reading `0x08000000` vs `0x08100000` over the ROM bootloader: `stm32_uart_flash.py --read
-   0x08100000:32` → all `0xFF`, distinct from the bank-1 vector table). `DUAL_BANK` is defined for
-   STM32H743xx, so the HAL unlocks both banks + waits on `QW_BANK2`. Erase ~1 s; 36 × 256-bit flashwords.
-2. **NEVER call `SCB_InvalidateDCache_by_Addr()` with the D-cache DISABLED** (this build never enables it).
-   That faulted the core right after a clean erase+program. Removed — with D-cache off, memory-mapped
-   flash reads are already coherent. (If D-cache is ever enabled, re-add it guarded.) The flash op is
-   wrapped in `__disable_irq()`/`__enable_irq()` (defensive; the erase busy-waits ~1 s, but save_config is
-   rare so the brief USB/console pause is fine).
+## Gotchas — don't re-derive
 
-### Config survives a reflash (bank-1-only erase) — HW-verified
-The flasher (`stm32_uart_flash.py`) used to do a **global** mass erase (`0xFFFF`), which wiped bank 2 →
-saved bindings gone on every flash. Now it defaults to a **bank-1-only erase** (AN3155 special code
-`0xFFFE`): the ~58 KB app lives entirely in bank 1 (nowhere near its 512 KB), so erasing bank 1 alone
-leaves the config in bank 2 @ `0x08100000` intact. **Confirmed on the H743 ROM bootloader** — it accepts
-`0xFFFE` (log line `[erase] bank-1 erase (preserving config in bank 2)... done`), and bindings saved
-before a reflash are still present after. `flash.ps1 -MassErase` (→ `--mass-erase`) forces the old full
-wipe — use it after a `CONFIG_VERSION` bump (a preserved older-version blob is rejected → boots defaults
-anyway) or to deliberately reset config. The flasher auto-falls-back to a global erase if a bootloader
-ever rejects `0xFFFE`, so flashing can't break.
+- **rhport numbers are FIXED BY HARDWARE; roles are not.** OTG_FS is *always* rhport 0, OTG_HS
+  *always* rhport 1, so the ISRs must pass those literals — which is why `main.c` keeps
+  `OTGFS_RHPORT`/`OTGHS_RHPORT` separate from the role aliases `DEVICE_RHPORT`/`HOST_RHPORT`.
+  Current roles: **rhport 0 = DEVICE (console), rhport 1 = HOST.** Wiring an ISR to a *role* alias
+  breaks silently the moment roles swap.
+- **`CFG_TUH_HID` must be 8, not 4.** With 4, only the first 4 HID *interfaces* mount — the 4-device
+  target presents **7** (two composite shifters), so later devices enumerate at the device level but
+  never claim. Each mounted interface arms one interrupt-IN channel; 7 of 16 is comfortable.
+- **Host VBUS is a non-issue on H7** (verified in the dwc2 source): `GCCFG.VBDEN` resets to 0 (VBUS
+  assumed valid), FS-PHY init only sets `PWRDWN`, and `hcd_dwc2.c` writes `HPRT_POWER`. The host
+  doesn't gate on a VBUS pin, so PA9 stays free for USART1 and no GCCFG poking is needed. (The *hub*
+  still needs to see VBUS on its own upstream — that's a hub-side requirement, not an MCU one.)
+- **Feedback-storm risk:** `console_printf` writes the USB CDC, so routing TinyUSB debug to it
+  (`CFG_TUSB_DEBUG > 0`) can storm (log → CDC write → USB activity → log). Keep `CFG_TUSB_DEBUG 0`,
+  or point `CFG_TUSB_DEBUG_PRINTF` at a UART-only writer when you need enumeration tracing.
+- **Don't gate CDC output on `tud_cdc_connected()`** — see bug 2 above. Use `tud_mounted()`. Same
+  trap applies to any new inbound path: drain **both** the USART1 ring and `tud_cdc_read()`.
+- **The WeAct PCB also ships with an STM32H723VGT6**, which has one USB controller and cannot run
+  this firmware. Verify the chip before debugging a "dead" board — full detail in the README.
+- **DAC gear outputs take no RC filter.** A cap on the DAC output buffer can oscillate.
 
-### webconfig now talks to the board over NATIVE USB CDC (July 2026)
-On the WeAct H743VIT6 the web UI connects **directly to the board's own CDC** — VID `1209` PID `FA00`,
-"Fanadapter STM32 enumerator" — on the **on-board USB-C**. No bridge, no soldering, and the same cable
-carries DFU. Two firmware fixes were required before this worked at all (CDC RX never implemented; CDC
-output gated on DTR, which webconfig deasserts) — see "Current hardware & USB roles" above.
+## Remaining
 
-The historical bridge setup follows, still valid on boards without a usable second USB controller:
+Polish only: **DAC gear recalibration** against a specific wheelbase if any column reads off
+(`set_gear_dac` per gear, then `save_config`). The defaults engaged every gear cleanly here.
 
-Native USB CDC was dead on the FK743M3, so the web UI connected over the **S3 bridge / CH340 = COM16**. `serial.ts`:
-**no port-picker VID filter** (show all ports — bridge chips vary; the CH340K here is `0x1a86/0x7522`),
-`port.open` at **8E1** + a `setSignals` DTR/RTS-low + ~2 s settle (the bridge resets on open; expect a
-one-time garbled boot-noise burst in the Logs tab — that's the S3's ROM chatter, not a framing problem).
-New wrappers `setGear/setOutputs/pulseShift/releaseOutputs` + a **"Direct output control"** card in the
-Outputs tab. Dev server: `$env:PATH="...fnm\aliases\default;$env:PATH"; npm run dev` →
-`http://localhost:5173/fanadapter/` (Chromium); WebSerial holds COM16 exclusively, so **Disconnect before
-flashing**. (A future board with OTG_HS wired uses the STM32's own CDC directly — VID `1209` PID `FA00`,
-nicely named — no bridge.)
+## Historical: FK743M3 bring-up
 
-## Reproduce — flash & read (current workflow, 8E1)
+M0–M7 were developed and first validated on an **FK743M3-VGT6** board, which turned out to have
+**only one usable USB controller**: PB15 (OTG_HS D+) is a 0.1 mm via with no pad — unsolderable. So
+OTG_FS carried the host and there was no device port at all; the console was read over **USART1 +
+an ESP32-S3/CH340 bridge** (`tools/esp32s3_uart_bridge/`), and webconfig connected to the bridge's
+COM port rather than the board. **That is why the four CDC/HID bugs above survived the entire
+bring-up unnoticed.** On that board the USB-C was OTG_FS (PA11/PA12, also mirrored on the A11/A12
+header) — the "B15" silkscreen near it was a red herring.
 
-The console is now **8E1** (115200, even parity) — the S3 bridge sketch and any PowerShell reader must
-use even parity. On the FK743M3 the OTG_HS CDC console is dormant, so use the USART1 + S3 path:
+`tools/flash.ps1` + `tools/stm32_uart_flash.py` date from there: a DTR-safe AN3155 UART flasher that
+flashes over the bridge (build → flash → Go), prompting you to hold BOOT0 + tap RST. Still useful on
+any board without a usable second USB controller. Full hands-free UART entry is **not** possible on
+these boards: the H7 ROM serves USART only via the *hardware* boot path (a software jump comes up
+USB-DFU-only), the option-byte `BOOT_ADD0` trick is banned (it strands the board into the bootloader,
+DFU-only recovery), and BOOT0 has no pad to wire to. On the current board this is all moot — the
+`dfu` console command jumps to the ROM bootloader on the USB-C, which *is* hands-free.
 
-1. **S3 bridge** (`tools/esp32s3_uart_bridge/`, already 8E1): `arduino-cli compile --upload -p COM16
-   --fqbn esp32:esp32:esp32s3 tools/esp32s3_uart_bridge` (I can run this — S3 = CH340 = **COM16**).
-2. **Flash:** normally over the S3 with `tools/flash.ps1` (see "UART flashing — WORKING" below). USB DFU
-   is a fallback only — cable to the board's
-   USB‑C, **hub off A11/A12**, hold BOOT0 + tap RST + release BOOT0, then
-   `python -m platformio run -d ... -e weact_h743 -t upload`. (One USB‑C cable is shared between the
-   board's DFU port and the S3 — move it to the board to flash, back to the S3 to read.)
-3. **Read/command COM16 @ 115200 8E1** from PowerShell with `Parity=Even, DataBits=8, StopBits=One`
-   and **`DtrEnable=$false; RtsEnable=$false`** (DTR-true resets the S3 via CH340 auto-reset). Commands:
-   `{"cmd":"version"}`, `{"cmd":"list_devices"}`, `{"cmd":"live_inputs","on":true}`. **Send commands at
-   full speed** now (RX priority fix landed); on firmware predating that fix, send byte-spaced (~12 ms)
-   and prefix a `\n` to flush any stale line buffer. **The user is NOT watching the live session — ping
-   and get an explicit "I'm on it" before any timed capture that needs them to actuate controls.**
+The flasher's **bank-1-only erase** (AN3155 special code `0xFFFE`) is what preserves saved config
+across reflashes — the ~58 KB app lives entirely in bank 1, so bank 2 @ `0x08100000` survives.
+`flash.ps1 -MassErase` forces the old full wipe (use after a `CONFIG_VERSION` bump). The flasher
+auto-falls back to a global erase if a bootloader ever rejects `0xFFFE`, so flashing can't break.
 
-### UART flashing — WORKING (`tools/flash.ps1` + `tools/stm32_uart_flash.py`)
-The DTR-safe AN3155 flasher flashes over the S3 bridge — no CubeProgrammer, no DTR juggling, no USB-C swap.
-**You press the button:** run `flash.ps1` (build -> flash -> boot the app), and when it prints
-`>>> PRESS BOOT0 + RST <<<`, **HOLD BOOT0 down + tap RST** (keep holding a beat). Now that
-`BOOT_CM7_ADD0` = flash, a *plain* RST boots the app, so BOOT0 must be high through the reset to reach the
-bootloader (it boots `BOOT_ADD1` = system memory). The flasher (`stm32_uart_flash.py`) does autobaud/Get/
-Get-ID/Extended-Erase/Write/Go + `--wait N` (poll for the bootloader), `--probe`, `--read-ob`.
-**Full hands-free auto-entry is NOT possible on this board:** the H7 ROM serves USART only via the
-*hardware* boot path (a software jump comes up USB-DFU-only), the option-byte `BOOT_ADD0` trick is BANNED
-(it strands the board into the bootloader — DFU-only recovery), and BOOT0 has no pad to wire the S3 to.
-**USB DFU fallback** (recovery / option bytes, board USB-C to PC, BOOT0+RST -> DFU chime):
-`STM32_Programmer_CLI -c port=usb1 -w firmware.elf -v -ob BOOT_CM7_ADD0=0x0800`. Full saga (incl. the
-"garbled console = S3 boot-noise while stuck in the bootloader" ghost): `[[reference-stm32-uart-bootloader]]`.
-
-(On a board where OTG_HS **is** wired, skip the S3 entirely: plug the PC into the OTG_HS port and open
-the CDC COM port — VID `1209` PID `FA00` — directly.)
-
-### Wiring (FK743M3 — HISTORICAL; see "Current hardware & USB roles" for the H743VIT6 layout)
-- **Hub → A11/A12** (OTG_FS host): D−→PA11, D+→PA12, GND→GND, hub VBUS→board 5V (self‑powered hub: its own supply too).
-- **Console → S3** (USART1): STM32 **PA9 (TX) → S3 RX**, optional **PA10 (RX) ← S3 TX**, **GND↔GND**; the S3's 5V can power the board.
-- **USB‑C = DFU flashing only** — disconnect the hub from A11/A12 first (hub + DFU share OTG_FS).
-
-## Build / flash / read
-
-```sh
-python -m platformio run -d "C:/Users/Gugic/teensy/firmware-stm32" -e weact_h743            # build
-# DFU: hold BOOT0, tap RST, release BOOT0 — ONLY the USB-C connected (a 2nd active USB blocks DFU)
-python -m platformio run -d "C:/Users/Gugic/teensy/firmware-stm32" -e weact_h743 -t upload   # flash
-```
-Read the console: on the FK743M3 it's the S3's COM port at 115200 (plain UART, banner at boot). On a
-board with OTG_HS wired, it's the CDC COM port VID `1209` PID `FA00` (banner reprints on DTR connect).
-
-## Gotchas (don't re-derive)
-- **rhport map is FIXED BY HARDWARE, roles are not**: OTG_FS is *always* rhport 0, OTG_HS *always*
-  rhport 1 — the ISRs must pass those literals (`OTG_FS_IRQHandler→tusb_int_handler(0, true)`,
-  `OTG_HS_IRQHandler→tusb_int_handler(1, true)`), which is why `main.c` keeps `OTGFS_RHPORT`/
-  `OTGHS_RHPORT` separate from the role aliases `DEVICE_RHPORT`/`HOST_RHPORT`. **Current roles:
-  rhport 0 = DEVICE (console), rhport 1 = HOST.** Wiring the ISRs to the *role* aliases silently breaks
-  everything the moment the roles swap.
-- **USB‑C = OTG_FS = A11/A12** (not B14/B15); DFU bootloader is here too — and it is **DFU-only capable
-  as a device receptacle**, so a hub can never be hosted from it (see "Current hardware & USB roles").
-- **A hub needs VBUS on its upstream to detect a host.** Feed the hub's VBUS from the board's 5 V or it
-  never attaches and the console sits forever at `waiting for devices on the hub...`.
-- **The WeAct MiniSTM32H7xx PCB is also sold with an STM32H723VGT6**, which is visually identical but has
-  **only one USB controller** (OTG_HS; no OTG_FS) and cannot run this firmware — H743 code hangs in its
-  clock init (dark LED, 0 V on the USB pins, no console, DFU still works because the ROM sets its own
-  clock). **Verify the chip before debugging anything**: marking, or device ID H743 = `0x450` vs
-  H723 = `0x483`. A minimal LED blink built for the suspected target is the fastest confirmation.
-- **Don't gate CDC output on `tud_cdc_connected()`** — that needs host DTR, which webconfig deliberately
-  drops. Use `tud_mounted()`.
-- **On the FK743M3 the OTG_HS CDC was dormant** (PB15 an unsolderable via). That is why the CDC RX and
-  DTR bugs above survived the entire M0–M7 bring-up unnoticed.
-- **Feedback‑storm risk is back**: `console_printf` writes the USB CDC, so routing TinyUSB debug to it
-  (`CFG_TUSB_DEBUG > 0`) can storm (log → CDC write → USB activity → log). Keep `CFG_TUSB_DEBUG 0`, or
-  point `CFG_TUSB_DEBUG_PRINTF` at a UART‑only writer when you need enumeration tracing.
-- `lib/cherryusb` was cloned during a detour but is **not needed** — can be deleted.
+CherryUSB was briefly explored (`lib/cherryusb`) and abandoned — TinyUSB is fine.

@@ -11,11 +11,13 @@ From the perspective of the wheelbase, the adapter looks like genuine Fanatec ha
 ## Architecture Block Diagram
 
 ```
-USB H-pattern shifter ─┐
-USB sequential shifter ┼──► [Powered USB Hub] ──► [Teensy 4.1] ──► RJ12 ──► Fanatec Wheelbase
-USB handbrake ─────────┘                                    RJ12        (up to 3 ports)
-USB pedals ────────────┘                                    RJ12
+USB H-pattern shifter ─┐                          [Teensy 4.1]
+USB sequential shifter ┼──► [Powered USB Hub] ──►      or      ──► RJ12 ──► Fanatec Wheelbase
+USB handbrake ─────────┤                          [STM32H743]     RJ12        (up to 3 ports)
+USB pedals ────────────┘                                          RJ12
 ```
+
+The two firmware builds are interchangeable — same protocol, same config schema, same UI.
 
 ---
 
@@ -42,15 +44,18 @@ Because the Teensy 4.1 has a single onboard USB host port, a **powered USB 2.0 h
 
 ## Repository Layout
 
-The project is structured into three main directories:
+The project is structured into four main directories:
 
 1. **[`firmware/`](firmware/README.md)**  
    The Arduino sketch (Teensyduino) designed for the Teensy 4.1. It reads USB HID inputs from the devices pool via `USBHost_t36`, evaluates custom user mappings, manages calibration saved to EEPROM, and emulates CSL Elite V2 pedals along with driving shifter and handbrake ports.
-   
-2. **[`webconfig/`](webconfig/README.md)**  
+
+2. **[`firmware-stm32/`](firmware-stm32/README.md)**  
+   An alternative build of the same adapter on an **STM32H743** core board (WeAct MiniSTM32H743VITX), written in C on PlatformIO + STM32Cube HAL + TinyUSB. Full feature parity with the Teensy build and validated on the same wheelbase — it speaks the identical JSON protocol and config schema, so one `webconfig` serves both. Cheaper and easier to source than a Teensy, with a real DAC (no RC filter needed on the gear outputs) and two USB controllers, at the cost of a fussier toolchain.
+
+3. **[`webconfig/`](webconfig/README.md)**  
    A beautiful, modern React 19 + TypeScript + Tailwind + shadcn/ui configuration interface. It runs directly in desktop Chromium-based browsers (Chrome, Edge, Brave) and communicates with the firmware over WebSerial (line-based JSON) to capture binds, calibrate axis deadzones, and test outputs.
    
-3. **[`schematics/`](schematics/README.md)**  
+4. **[`schematics/`](schematics/README.md)**  
    Detailed hardware pinouts, port protocols, wiring diagrams, Bill of Materials (BoM), and step-by-step physical assembly and pre-flight multimeter tests.
 
 ---
@@ -67,7 +72,7 @@ The following features and improvements are planned for future updates:
 * **SimHub Integration** — Driving the same WebSerial JSON protocol from SimHub.
 * **0-5V Handbrake Scaler** — Incorporating an op-amp scaling stage (MCP6001 with ~1.52 gain) for native 0-5V analog voltage swing.
 * **Mode Switching on Shifter 1** — Software toggle between H-pattern and sequential modes on a single physical RJ12 port.
-* **Cheaper MCU Port** — Porting the firmware to RP2040 or ESP32-S3 to lower the MCU cost.
+* ~~**Cheaper MCU Port**~~ — **Done:** the [STM32H743 build](firmware-stm32/README.md) is a cheaper, easier-to-source alternative to the Teensy at full feature parity. (An RP2040 or ESP32-S3 port would go cheaper still; the ESP32 attempt is shelved on the `esp32` branch.)
 * **Built-in USB Hub** — Designing a USB hub circuit directly onto the project's custom PCB to ensure maximum stability and compatibility.
 
 ---
