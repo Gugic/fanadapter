@@ -1,14 +1,5 @@
-# PlatformIO build output
+# PlatformIO build output (includes .pio/libdeps, where TinyUSB is fetched — see platformio.ini)
 .pio/
 
 # Python bytecode cache (the flasher tools)
 __pycache__/
-
-# Vendored TinyUSB (lib/tinyusb): commit only what the build's srcFilter compiles
-# (src/ + library.json + LICENSE). These are board BSPs, examples, unit tests and
-# docs that are never built — excluded to keep the repo lean. Verified: a clean
-# build succeeds without them.
-lib/tinyusb/hw/
-lib/tinyusb/examples/
-lib/tinyusb/test/
-lib/tinyusb/docs/
