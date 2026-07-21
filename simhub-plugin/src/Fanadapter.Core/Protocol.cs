@@ -217,6 +217,18 @@ namespace Fanadapter.Core
         public async Task<int> UsbKickAsync() =>
             (await SendAsync(Cmd("usb_kick")).ConfigureAwait(false)).Value<int?>("aborted_mask") ?? 0;
 
+        /// <summary>
+        /// Freeze reproducer (STM32 only): the firmware skips its USB-host
+        /// servicing for the given time while everything else keeps running.
+        /// Diagnostic only — not surfaced in the UI.
+        /// </summary>
+        public Task UsbStallAsync(int ms)
+        {
+            var cmd = Cmd("usb_stall");
+            cmd["ms"] = ms;
+            return SendOkAsync(cmd);
+        }
+
         // ---------- Plumbing ----------
 
         private static JObject Cmd(string name) => new JObject { ["cmd"] = name };

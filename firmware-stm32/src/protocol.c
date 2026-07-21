@@ -413,20 +413,73 @@ static void cmd_pedals_status(void) {
 // was host-side (a dwc2 channel stuck busy); if not, the device itself stopped talking. Both
 // STM32-only; the Teensy answers unknown_cmd. Streamed in chunks on the intact console path, like
 // get_config.
+// Raw dwc2 host-controller registers on OTG_HS, read directly for the freeze discriminator —
+// no TinyUSB internals needed. HCCHAR carries the device address + endpoint each channel is bound
+// to, so a frozen slot (matched by "da") can be looked up in the channel dump:
+//   ena:0 on its channel  -> Cause A: token post silently swallowed, channel never enabled
+//   ena:1 on its channel  -> Cause B: DTERR dead-end (check hcint), or the device itself hung
+//   no channel with its da -> Cause C: alloc race orphaned the endpoint
+// (candidate causes and code refs: PORT-STATUS "three surviving candidate causes")
+// Patched into the vendored hcd_dwc2.c by apply_tinyusb_patches.py:
+extern uint32_t tusb_fanadapter_reqq_fail_token;
+extern uint32_t tusb_fanadapter_reqq_fail_disable;
+extern uint32_t tusb_fanadapter_alloc_mask(void);
+
+#define OTGHS_HPTXSTS   (*(volatile uint32_t *)(USB1_OTG_HS_PERIPH_BASE + 0x410u))
+#define OTGHS_HCCHAR(c) (*(volatile uint32_t *)(USB1_OTG_HS_PERIPH_BASE + 0x500u + (c) * 0x20u))
+#define OTGHS_HCINT(c)  (*(volatile uint32_t *)(USB1_OTG_HS_PERIPH_BASE + 0x508u + (c) * 0x20u))
+#define OTGHS_HOST_CHANNELS 16u
+
 static void cmd_usb_status(void) {
   console_printf("{\"uptime_ms\":%lu,\"slots\":[", (unsigned long)HAL_GetTick());
   bool first = true;
   for (uint8_t i = 0; i < USB_POOL_SIZE; i++) {
     UsbSlotDiag d;
     if (!usb_input_diag(i, &d) || !d.in_use) continue;
-    console_printf("%s{\"slot\":%u,\"vid\":%u,\"pid\":%u,\"mounted\":%s,\"busy\":%s,"
+    console_printf("%s{\"slot\":%u,\"vid\":%u,\"pid\":%u,\"da\":%u,\"mounted\":%s,\"busy\":%s,"
                    "\"reports\":%lu,\"age_ms\":%lu,\"idle_rearms\":%lu}",
-                   first ? "" : ",", i, d.vid, d.pid, d.mounted ? "true" : "false",
+                   first ? "" : ",", i, d.vid, d.pid, d.daddr, d.mounted ? "true" : "false",
                    d.busy ? "true" : "false", (unsigned long)d.reports, (unsigned long)d.age_ms,
                    (unsigned long)d.idle_rearms);
     first = false;
   }
+  // hptx: HPTXSTS — low 16 bits = periodic TX FIFO space, bits 16..23 = request-queue space
+  // (the silent failures fire when request-queue space reads 0 at a channel-op instant).
+  // reqq_fail_*: counters patched into hcd_dwc2.c (apply_tinyusb_patches.py) — nonzero says WHICH
+  // queue-full path fired. alloc_mask: which channels the driver believes are allocated — the key
+  // for telling a wedged allocated-but-disabled channel from a freed one with stale HCCHAR.
+  console_printf("],\"hptx\":%lu,\"reqq_fail_token\":%lu,\"reqq_fail_disable\":%lu,"
+                 "\"alloc_mask\":%lu,\"channels\":[",
+                 (unsigned long)OTGHS_HPTXSTS, (unsigned long)tusb_fanadapter_reqq_fail_token,
+                 (unsigned long)tusb_fanadapter_reqq_fail_disable,
+                 (unsigned long)tusb_fanadapter_alloc_mask());
+  first = true;
+  for (uint8_t c = 0; c < OTGHS_HOST_CHANNELS; c++) {
+    uint32_t hcchar = OTGHS_HCCHAR(c);
+    if (!hcchar) continue; // never-programmed channel
+    console_printf("%s{\"ch\":%u,\"da\":%lu,\"ep\":%lu,\"in\":%u,\"ena\":%u,\"dis\":%u,"
+                   "\"hcint\":%lu}",
+                   first ? "" : ",", c, (unsigned long)((hcchar >> 22) & 0x7Fu),
+                   (unsigned long)((hcchar >> 11) & 0x0Fu), (unsigned)((hcchar >> 15) & 1u),
+                   (unsigned)((hcchar >> 31) & 1u), (unsigned)((hcchar >> 30) & 1u),
+                   (unsigned long)OTGHS_HCINT(c));
+    first = false;
+  }
   console_printf("]}\r\n");
+}
+
+// Diagnostic reproducer for the freeze's suspected trigger: skip tuh_task() for N ms while the
+// rest of the loop (pedals, mapping, console) keeps running — surgically simulating what a long
+// main-loop stall does to the USB host stack, without involving the console at all. If repeated
+// stalls freeze the streaming pedal on demand, the bug gains a bench reproducer.
+extern void usb_host_stall_for(uint32_t ms);
+static void cmd_usb_stall(const json_kv *kv, int n) {
+  long ms = 1000;
+  json_get_int(kv, n, "ms", &ms);
+  if (ms < 1) ms = 1;
+  if (ms > 10000) ms = 10000;
+  usb_host_stall_for((uint32_t)ms);
+  console_printf("{\"ok\":true,\"ms\":%ld}\r\n", ms);
 }
 
 static void cmd_usb_kick(void) {
@@ -536,6 +589,7 @@ void protocol_handle_line(const char *line) {
   else if (!strcmp(cmd, "pedals_status")) cmd_pedals_status();
   else if (!strcmp(cmd, "usb_status")) cmd_usb_status();
   else if (!strcmp(cmd, "usb_kick")) cmd_usb_kick();
+  else if (!strcmp(cmd, "usb_stall")) cmd_usb_stall(kv, n);
   else send_err("unknown_cmd");
 }
 

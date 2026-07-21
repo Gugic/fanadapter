@@ -455,6 +455,12 @@ export class SerialClient {
     })
     return reply.aborted_mask ?? 0
   }
+
+  // Freeze reproducer (STM32 only): the firmware skips its USB-host servicing for `ms`
+  // milliseconds while everything else keeps running. Diagnostic only.
+  async usbStall(ms: number): Promise<void> {
+    await this.send({ cmd: 'usb_stall', ms })
+  }
 }
 
 export interface UsbSlotDiag {

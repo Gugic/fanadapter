@@ -273,12 +273,13 @@ blocks on a flash erase for a few seconds — a re-handshake right after hitting
 A burst with *no* gap line before it points at the base side or the wiring instead.
 
 **One device's inputs freeze at their last values, but it's still listed as connected.**
-Known open bug (see PORT-STATUS) — the device stops delivering reports while staying enumerated;
-rebooting the adapter recovers it. While it is frozen, run the diagnostics from the SimHub
-plugin's Devices tab (or send the JSON commands directly): `{"cmd":"usb_status"}` reports each
-slot's pipe state — `busy` plus a growing `age_ms` on a device you're actively moving is the
-signature — and `{"cmd":"usb_kick"}` aborts and re-arms every pipe. Whether the kick revives the
-device is exactly the evidence needed to fix this properly, so please note what happened.
+Root-caused and fixed in current firmware — re-flash if you see this. The Simnet pedal's own
+firmware hangs its USB endpoint if the adapter stops polling it for ~2 s mid-stream (measured:
+survives 1.6 s, dies at 2.0 s), and older adapter firmware really did create such gaps under
+load; current firmware keeps the worst gap ~120 ms. Full record in PORT-STATUS. Mid-session
+recovery if it ever recurs: **replug the frozen device at the hub** (no reboot needed). One
+known residual near-miss: **Save to adapter** pauses polling ~1 s for the flash write — a pedal
+stutter right after a Save is that, and it recovers by itself.
 
 **Gear voltages read slightly off.**
 Recalibrate per gear with `set_gear_dac`, then `save_config`. Reverse's near-rail X reading ~0.2 V

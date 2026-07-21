@@ -289,6 +289,7 @@ bool usb_input_diag(uint8_t slot, UsbSlotDiag *out) {
   if (!s->in_use) return true;
   out->vid         = s->vid;
   out->pid         = s->pid;
+  out->daddr       = s->daddr;
   out->mounted     = tuh_hid_mounted(s->daddr, s->instance);
   out->busy        = !tuh_hid_receive_ready(s->daddr, s->instance);
   out->reports     = s->report_count;

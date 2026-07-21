@@ -29,6 +29,8 @@ void usb_input_task(uint32_t now_ms);
 typedef struct {
   bool     in_use;
   uint16_t vid, pid;
+  uint8_t  daddr;       // USB device address — the key for matching this slot against the
+                        // dwc2 host-channel dump in usb_status (HCCHAR carries the same address)
   bool     mounted;     // interface still enumerated (tuh_hid_mounted)
   bool     busy;        // transfer outstanding. Healthy devices are near-always busy: a device
                         // with nothing to report NAKs, and a NAK loop reads as busy.

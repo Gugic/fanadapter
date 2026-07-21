@@ -18,9 +18,13 @@ Current hardware: **WeAct MiniSTM32H743VITX** (STM32H743VIT6, 2 MB flash / 1 MB 
 LDO VCORE), both USB controllers live at once. Bring-up happened on a different board — see
 [Historical](#historical-fk743m3-bring-up) at the end.
 
-One field bug is **open**: a hub device occasionally goes silent while still enumerated, freezing
-its inputs at their last values until reboot. Diagnostics are in place — see
-[Remaining](#remaining).
+The long-standing input-freeze field bug is **root-caused and closed** (pending final field
+confirmation): the Simnet pedal's own firmware hangs its USB endpoint when it goes unpolled
+mid-stream for ~2 s (measured threshold: survives 1.6 s, dies at 2.0 s), and older firmware
+really did create such gaps — console starvation, the 720 ms connect stall, CDC interrupt
+pressure. Current firmware keeps the worst polling gap at ~120 ms (13× margin). Full
+investigation record, the measured threshold sweep, and the one remaining >0.5 s gap
+(`save_config`) in [the freeze sections](#verdict-2026-07-21-threshold-sweep-the-terminal-mechanism-is-the-pedals-own-firmware).
 
 ## Milestones (M0–M7, all hardware-validated)
 
@@ -225,6 +229,93 @@ plugin's Devices tab (results land in its Logs tab):
 Run `usb_status` WHILE frozen, note the numbers, then kick and watch. Until that experiment has
 data, resist "fixing" this blind — that is exactly how failed attempts 1 and 2 happened.
 
+**UPDATE (2026-07-21, the experiment ran):** caught live. `usb_status` while frozen: the pedal
+slot read `busy:true, reports:57705, age_ms:70900+` and growing, `idle_rearms:0` — armed forever,
+never completing, arm never dropped. `usb_kick` aborted and re-armed all four pipes
+(`aborted_mask:15`) and the pedal did NOT resume. A replug of just the pedal at the hub revived it
+(so hub detection + mid-session re-enumeration are healthy) — once for 15 seconds, once
+sustained. The user then observed the decisive correlation: **connecting SimHub kills the pedals**
+— which matched the very first field report ("a couple of minutes into SimHub activation"). That
+led straight to the root cause below.
+
+### The 16-deep event-queue theory — plausible, "three facts confirmed", and WRONG (2026-07-21)
+
+Kept as a cautionary tale. The theory: `CFG_TUH_TASK_QUEUE_SZ` defaults to 16 (usbh.c:40), a full
+queue silently drops events (`TU_ASSERT` at usbh.c:300 is a bare `return false` in release), and
+`busy` is only cleared when the event is *processed* (usbh.c:553) — so a connect-time stall lets
+the ~450 report/s pedal overflow the queue and a dropped completion wedges its pipe forever. All
+three code facts are TRUE, the consequence chain is real, the connect correlation fit — and the
+mechanism is still **architecturally impossible**, caught by adversarial review: interrupt-IN
+endpoints are strictly ONE-SHOT. An endpoint cannot enqueue completion N+1 until completion N is
+consumed, because consumption is what re-arms it (the data path never self-reschedules; only the
+NAK path does, and it enqueues nothing). A stall therefore FREEZES event production instead of
+piling events up; queue occupancy is bounded by the number of armed endpoints (~6 here) and never
+reaches 16. The `CFG_TUH_TASK_QUEUE_SZ 512` bump ships anyway as free headroom — but it fixes
+nothing, and the lesson is the method one: "every fact checks out" is not the same as "the
+mechanism can occur". Model the system's dynamics, not just its lines.
+
+### The freeze: three surviving candidate causes in the dwc2 host driver (open, instrumented)
+
+An 18-agent adversarial review of the vendored TinyUSB 0.18 dwc2 host driver (11 hypotheses, 5
+refuted with reasons worth reading in the session record) left three mechanisms standing — all in
+`hcd_dwc2.c`, all terminating in the exact observed state (`busy:true`, `idle_rearms:0`, only
+re-enumeration recovers):
+
+- **Cause A — silently swallowed token post (top-ranked).** Every (re-)arm ends at
+  `channel_send_in_token()` (hcd_dwc2.c:198) whose first line asserts on the 8-deep hardware
+  periodic request queue; in release a full queue silently returns false, `channel_xfer_start`
+  ignores it and returns true unconditionally (:601/:612) — which *defeats the SOF retry*, since
+  `handle_sof_irq` only re-kicks on a false kickoff (:1191). Channel allocated (and leaked),
+  CHENA never set, no token ever reaches the bus. The pedal re-arms ~450×/s, making it the
+  statistically most-exposed endpoint by orders of magnitude. Also explains why `usb_kick` failed
+  to revive: the kick's fresh arm can fail the same silent way, leaving `busy:1` again.
+- **Cause B — DTERR dead-end branch.** A data-toggle-error interrupt arriving *without* HALTED
+  lands in a branch that does nothing (`err_count = 0; TU_ASSERT(false);`, :914-917): no disable,
+  no reschedule, no completion. One stochastic bus glitch wedges the pipe permanently.
+- **Cause C — channel double-allocation race.** `channel_alloc` (:156) is an unlocked
+  check-then-set under `OPT_OS_NONE`; the thread-context re-arm can race the SOF ISR's
+  re-scheduler, both grabbing the same channel id and orphaning one endpoint.
+
+A fourth candidate survives on field evidence alone: **the pedal's own firmware hanging when it
+goes unpolled mid-stream** (kick-no-revive fits; connect stalls pause polling ~400 ms; replug or
+bus reset revives it). Discriminating instrumentation, all pure register reads, no vendored
+edits: `usb_status` now includes each slot's USB address plus a dump of the live dwc2 host
+channels (`HCCHAR` device/endpoint/CHENA/CHDIS, raw `HCINT`, and the HPTXSTS request-queue
+level). At the next freeze the frozen device's channel signature decides: **CHENA=0 → Cause A;
+CHENA=1 → Cause B or a hung device; no channel at all → Cause C.** And `usb_stall` (skip
+`tuh_task()` for N ms while everything else runs) is an on-demand reproducer for the
+stall-correlated trigger — if it works, iteration drops from nights to minutes.
+
+Also worth keeping: **abort + re-arm (`usb_kick`) demonstrably does not restart a wedged pipe on
+this stack** — measured live. Never build an auto-recovery on it.
+
+### VERDICT (2026-07-21, threshold sweep): the terminal mechanism is the PEDAL's own firmware
+
+The `usb_stall` sweep measured how much polling silence the Simnet pedal tolerates mid-stream:
+100–500 ms → instant full recovery; 600–1300 ms → recovers sluggishly (~0.6–0.9 s); 1600 ms →
+barely (+18 reports, 1 s lag); **2000 ms → dead until re-enumeration**. So a device-side hang
+past ~2 s of no IN polls is the unfixable core: no host patch can pass a 2 s blackout test, which
+is why three successive driver fixes "failed" the bench reproducer — the reproducer sat above the
+device's intrinsic death threshold.
+
+The FIELD bug was our firmware actually creating such gaps: the console-starvation era stalled
+the loop >50% of every second, and the pre-mirror-fix connect sequence held it ~720 ms with CDC
+interrupt pressure on top. Current firmware's worst measured gap is ~120 ms (connect) — 13×
+margin. The three dwc2 patches (token-post propagation, queue-full counters, alloc-race masking)
+stay: each is a real latent bug, and the counters/alloc_mask remain live diagnostics.
+
+**The rule this leaves behind: never let host polling gaps approach 1 second.** Anything added to
+the main loop that can block must stay well under that. Known remaining offender: `save_config`'s
+defensive `__disable_irq()` flash erase (~1 s — inside the sluggish zone, near the cliff). Rare
+and user-initiated; if pedals stutter right after a Save, that's why. Candidate future fix: drop
+the IRQ masking around the erase (bank-2 erase doesn't require it) so SOF polling continues.
+
+Two smaller finds from the same session: the `~+` line-noise burst on every port open used to
+start an unterminated console line that SWALLOWED the first command sent after connect (fixed:
+'{' now always restarts the line assembler — this had masked itself as flaky `dfu` entry and
+empty first replies all along), and `usb_stall` remains the tool for re-testing the threshold if
+the pedal's firmware ever changes.
+
 ### A partially-dropped event line poisoned the reply stream (fixed 2026-07-21)
 
 The lossy CDC leg of `console_emit()` wrote *what fit* into the USB FIFO and bailed when it
@@ -299,9 +390,14 @@ now makes it visible rather than mysterious.
 
 ## Remaining
 
-- **The input-freeze field bug is OPEN.** See "The freeze came back with the console fixed" above.
-  Next occurrence: `usb_status` + `usb_kick` from the SimHub Devices tab *while frozen* — that
-  experiment decides host-side wedge vs device hang.
+- **Input-freeze: field-confirm the fix.** Bench verdict is in (device hangs past ~2 s unpolled;
+  firmware now keeps gaps ≤~120 ms — see the VERDICT section). Remaining proof: a SimHub-connected
+  drive-mode session, the scenario that used to freeze the pedal within minutes. If it EVER
+  freezes again, `usb_stall` re-measures the threshold and `usb_status` (counters + alloc_mask +
+  channel dump) says which side failed.
+- **`save_config` polling gap.** The defensive `__disable_irq()` around the ~1 s flash erase
+  stops SOF polling — inside the pedal's sluggish zone. Candidate fix: drop the masking (bank-2
+  erase doesn't need it) so host polling continues through a Save.
 - Polish: **DAC gear recalibration** against a specific wheelbase if any column reads off
   (`set_gear_dac` per gear, then `save_config`). The defaults engaged every gear cleanly here.
 
