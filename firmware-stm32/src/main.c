@@ -388,7 +388,10 @@ void tuh_hid_mount_cb(uint8_t daddr, uint8_t instance, uint8_t const *report_des
   console_printf("    HID mounted: addr=%u inst=%u proto=%u %04X:%04X desc_len=%u\r\n", daddr,
                  instance, tuh_hid_interface_protocol(daddr, instance), vid, pid, len);
   if (usb_input_on_mount(daddr, instance, report_desc, len)) {
-    tuh_hid_receive_report(daddr, instance); // arm the interrupt pipe
+    // Arm the interrupt pipe. On failure the usb_input_task watchdog re-arms within 250 ms.
+    if (!tuh_hid_receive_report(daddr, instance)) {
+      console_printf("      ! report pipe arm failed — watchdog will retry\r\n");
+    }
   } else {
     // Rejected: pool full, or the descriptor exposes nothing bindable (a composite controller's
     // spare HID interface). Leave the pipe unarmed so it doesn't hold a host channel either.
@@ -404,7 +407,14 @@ void tuh_hid_umount_cb(uint8_t daddr, uint8_t instance) {
 void tuh_hid_report_received_cb(uint8_t daddr, uint8_t instance, uint8_t const *report,
                                 uint16_t len) {
   usb_input_on_report(daddr, instance, report, len);
-  tuh_hid_receive_report(daddr, instance); // re-arm to keep polling
+  // Re-arm to keep polling. This CAN fail transiently (endpoint claim / host channel allocation),
+  // and ignoring that used to kill the device permanently: nothing else ever re-arms the pipe, so
+  // the device stayed listed as connected but never delivered another report until a reboot. The
+  // usb_input_task watchdog now recovers any dropped arm within 250 ms; the log line here is the
+  // field evidence of the underlying transient actually firing.
+  if (!tuh_hid_receive_report(daddr, instance)) {
+    console_printf("[usb] re-arm failed addr=%u inst=%u — watchdog will retry\r\n", daddr, instance);
+  }
 }
 
 //--------------------------------------------------------------------+
@@ -572,6 +582,7 @@ int main(void) {
     console_cli_poll(); // drain inbound console -> CLI (dfu/reboot/?) + JSON protocol commands
 
     uint32_t now = HAL_GetTick();
+    usb_input_task(now); // interrupt-pipe watchdog: re-arm any claimed slot whose IN pipe went idle
     mapping_tick();     // read inputs, evaluate bindings, drive DAC/sequential/handbrake-PWM + refresh pedal levels
     protocol_tick(now); // emit device attach/detach + rate-limited live events when streaming
     pedals_update();    // CSL Elite UART handshake + 100 Hz pedal stream. LAST: it relies on the

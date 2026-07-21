@@ -16,3 +16,11 @@ void usb_input_init(void); // registers the USB InputSource (call once at startu
 bool usb_input_on_mount(uint8_t daddr, uint8_t instance, const uint8_t *report_desc, uint16_t len);
 void usb_input_on_umount(uint8_t daddr, uint8_t instance);
 void usb_input_on_report(uint8_t daddr, uint8_t instance, const uint8_t *report, uint16_t len);
+
+// Interrupt-pipe watchdog — call from the main loop. The report pipe is kept alive solely by the
+// re-arm in tuh_hid_report_received_cb, and tuh_hid_receive_report() can fail transiently (endpoint
+// claim or channel allocation); a single dropped re-arm used to silence the device PERMANENTLY
+// while it stayed listed as connected. This walks the claimed slots and re-arms any whose IN pipe
+// is idle. Single-threaded with tuh_task(), so "claimed slot, idle pipe" is never a legitimate
+// state — no false positives.
+void usb_input_task(uint32_t now_ms);

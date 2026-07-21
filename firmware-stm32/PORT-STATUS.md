@@ -121,6 +121,29 @@ burst of framing/overrun errors; the RX ISR tallies them and STREAMING re-arms t
 burst (`RESTART_ERR_THRESHOLD = 32`, 1 Hz decay so isolated glitches don't trip it). The Teensy only
 ever recovered via the manual re-arm button.
 
+### A device that goes silent but stays "connected" — the dropped report-pipe re-arm
+
+Field symptom (found during SimHub-plugin testing, but client-independent): after a few minutes the
+USB pedals stopped delivering input while still listed as connected; every other hub device kept
+working; only a reboot recovered it — and only for a few minutes.
+
+The HID report pipe is kept alive **solely** by the `tuh_hid_receive_report()` call at the end of
+`tuh_hid_report_received_cb` — TinyUSB (0.18) does not auto-re-arm. That call can fail transiently
+(`usbh_edpt_claim` or `usbh_edpt_xfer` → e.g. a host-channel allocation miss), and both call sites
+ignored the return value. One dropped re-arm = that interface never polls again, while the pool
+slot, `list_devices`, and the mount state all stay healthy. It hits the *pedals* first because
+analog axes + ADC noise make them the chattiest device on the hub — orders of magnitude more
+transfers than a shifter, so the most exposure to any transient.
+
+Fix: both arm sites log a failure, and `usb_input_task()` (main loop, 250 ms) walks the claimed
+pool slots and re-arms any whose interrupt-IN endpoint is idle (`tuh_hid_receive_ready`). The loop
+is single-threaded through `tuh_task()`, so "claimed slot, idle pipe" is never a legitimate state —
+an armed pipe shows busy even when the device NAKs, which is why this can't false-positive on idle
+devices, and also why a *blind* silence-timeout would have been wrong. The `[usb] … report pipe was
+dead` console line is the field confirmation of the transient actually firing. Not covered (no
+evidence yet): a channel wedged *busy* forever — the watchdog would skip it; if silence recurs with
+no watchdog lines, that's the next suspect (needs abort + re-arm, riskier).
+
 ## Gotchas — don't re-derive
 
 - **rhport numbers are FIXED BY HARDWARE; roles are not.** OTG_FS is *always* rhport 0, OTG_HS
