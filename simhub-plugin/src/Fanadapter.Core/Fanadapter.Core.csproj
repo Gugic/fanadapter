@@ -12,6 +12,8 @@
 
   <ItemGroup>
     <Reference Include="System.Management" />
+    <!-- FirmwareChannel fetches the published firmware manifest + image over HTTPS. -->
+    <Reference Include="System.Net.Http" />
   </ItemGroup>
 
   <ItemGroup>
