@@ -972,6 +972,17 @@ namespace Fanadapter.SimHub.UI
             LoadChannelsFromConfig();
             LoadOutputsFromConfig();
 
+            // Devices likewise, and for a sharper reason: the plugin auto-connects in Init(),
+            // long before SimHub builds the settings UI, so the DevicesChanged raised during
+            // that connect fires with nothing subscribed. Rebuilding only from the event left
+            // the collection permanently empty — no device cards, and every live frame
+            // discarded because ApplyPendingLive found no view model to apply it to (outputs
+            // kept working, since they bind to scalars rather than this collection). Nothing
+            // recovered it either: device_attached only fires for devices that arrive AFTER we
+            // connect, and the rig's are already plugged in. So derive the list from session
+            // state here rather than trusting we existed when the event went out.
+            RebuildDeviceList();
+
             OnPropertyChanged(nameof(IsConnected));
             OnPropertyChanged(nameof(StatusMessage));
             OnPropertyChanged(nameof(FirmwareBadge));
