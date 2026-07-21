@@ -67,6 +67,20 @@ extern int console_printf(const char *fmt, ...);
 
 #define CFG_TUH_ENUMERATION_BUFSIZE 256
 
+// Host event queue. The DEFAULT (16) LOSES DEVICES: hcd events (xfer complete, attach...) are
+// queued from the ISR and consumed by tuh_task() in the main loop; when the queue is full,
+// queue_event()'s TU_ASSERT silently DROPS the event (usbh.c:300, release build). An endpoint's
+// busy flag is cleared only when its completion event is *processed* (usbh.c:553), so a dropped
+// completion leaves that pipe busy FOREVER: the device stops being polled, its inputs freeze at
+// their last values, and only re-enumeration recovers it. The Simnet pedal streams ~450
+// reports/s, filling 16 slots in ~35 ms — any main-loop stall longer than that (a connect-time
+// get_config is ~400 ms of CDC streaming) rolled these dice, which is why "SimHub connects and
+// the pedals die" kept happening and why it was always the pedal, never the near-silent
+// shifters. 512 covers a >1.1 s stall at that rate (~8 KB of RAM out of 1 MB). The one stall
+// that can still exceed it is save_config's IRQ-off flash erase — but with IRQs off nothing is
+// queued at all, and the pedal-stream gap it causes is already documented.
+#define CFG_TUH_TASK_QUEUE_SZ      512
+
 #define CFG_TUH_HUB                1   // one external hub
 #define CFG_TUH_DEVICE_MAX         8   // wheel devices behind the hub (headroom over the 4 we need)
 

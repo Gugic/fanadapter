@@ -106,6 +106,11 @@ static uint32_t console_tx_push(const char *buf, uint32_t len) {
 
 void Error_Handler(void);
 
+// usb_stall diagnostic (cmd_usb_stall in protocol.c): the main loop skips tuh_task() until this
+// tick. 0 = never stalled (any real tick is >= 0 vs it, signed-diff-wise, so the guard passes).
+static uint32_t s_tuh_stall_until;
+void usb_host_stall_for(uint32_t ms) { s_tuh_stall_until = HAL_GetTick() + ms; }
+
 //--------------------------------------------------------------------+
 // Clock tree
 //--------------------------------------------------------------------+
@@ -202,7 +207,15 @@ static void usb_hw_init(void) {
   __HAL_RCC_USB1_OTG_HS_CLK_ENABLE();
   __HAL_RCC_USB1_OTG_HS_ULPI_CLK_SLEEP_DISABLE();
 
-  HAL_NVIC_SetPriority(OTG_FS_IRQn, 6, 0);
+  // The HOST controller (OTG_HS) outranks the DEVICE controller (OTG_FS). The host driver runs
+  // in slave mode — its ISR does the actual FIFO pops, channel halts and SOF scheduling — and
+  // channel start/disable both need space in an 8-deep hardware request queue whose failure paths
+  // silently wedge a pipe. At equal priority, heavy CDC traffic (SimHub connected, drive mode
+  // streaming both ways) continually delays host servicing and widens exactly those queue-full
+  // windows — matching the field pattern "hours clean with no serial attached; pedals freeze when
+  // SimHub is connected". The CDC side is flow-controlled bulk: it tolerates added latency by
+  // design, so it gets the lower urgency.
+  HAL_NVIC_SetPriority(OTG_FS_IRQn, 7, 0);
   HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
   HAL_NVIC_SetPriority(OTG_HS_IRQn, 6, 0);
   HAL_NVIC_EnableIRQ(OTG_HS_IRQn);
@@ -611,7 +624,16 @@ static void console_feed_byte(int c) {
       if (!s_line_json) console_printf("\b \b");
     }
   } else if (s_line_len < sizeof(s_line) - 1) {
-    if (s_line_len == 0 && c == '{') s_line_json = true;
+    if (c == '{' && !s_line_json) {
+      // '{' can only begin a protocol line — restart the assembler on it. Line noise arrives
+      // with every port open (a '~+' burst on DTR toggle) and used to leave an unterminated
+      // garbage line that swallowed the first real command sent after connect: the command's
+      // bytes were appended to the garbage, echoed back (this is the interactive-echo path),
+      // and dispatched as one bogus CLI line. Cost of the reset: a terminal user typing a
+      // literal '{' mid-line loses that line — acceptable, no CLI verb contains one.
+      s_line_len  = 0;
+      s_line_json = true;
+    }
     s_line[s_line_len++] = (char)c;
     if (!s_line_json) console_printf("%c", (char)c); // echo interactive typing (not protocol lines)
   }
@@ -704,8 +726,12 @@ int main(void) {
 
   uint32_t last_blink = 0;
   for (;;) {
-    tuh_task(); // service the USB host (enumeration, HID polling)
-    tud_task(); // service the USB CDC console device
+    // usb_stall diagnostic: skip host servicing until the deadline passes, everything else runs.
+    // Surgically reproduces what a long main-loop stall does to the USB host stack (the freeze's
+    // suspected trigger) without involving the console. See cmd_usb_stall in protocol.c.
+    if ((int32_t)(HAL_GetTick() - s_tuh_stall_until) >= 0)
+      tuh_task(); // service the USB host (enumeration, HID polling)
+    tud_task();   // service the USB CDC console device
 
     console_cli_poll(); // drain inbound console -> CLI (dfu/reboot/?) + JSON protocol commands
 
