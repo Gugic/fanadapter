@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>Fanadapter.SimHub</AssemblyName>
+    <RootNamespace>Fanadapter.SimHub</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <DebugType>embedded</DebugType>
+    <!-- Consumed by the CopyToSimHub target in Directory.Build.targets. -->
+    <IsSimHubPlugin>true</IsSimHubPlugin>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Fanadapter.Core\Fanadapter.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Private=false throughout: SimHub already has these in its own directory
+       and loads the plugin into that context. Copying them next to the plugin
+       risks shipping a second, mismatched copy. -->
+  <ItemGroup>
+    <Reference Include="SimHub.Plugins">
+      <HintPath>$(SimHubDir)SimHub.Plugins.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SimHub.Logging">
+      <HintPath>$(SimHubDir)SimHub.Logging.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GameReaderCommon">
+      <HintPath>$(SimHubDir)GameReaderCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="WoteverCommon">
+      <HintPath>$(SimHubDir)WoteverCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="log4net">
+      <HintPath>$(SimHubDir)log4net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MahApps.Metro">
+      <HintPath>$(SimHubDir)MahApps.Metro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MahApps.Metro.IconPacks.Material">
+      <HintPath>$(SimHubDir)MahApps.Metro.IconPacks.Material.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MahApps.Metro.IconPacks.Core">
+      <HintPath>$(SimHubDir)MahApps.Metro.IconPacks.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Xaml" />
+    <Reference Include="System.Management" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Resources\menuicon.png" />
+  </ItemGroup>
+
+</Project>

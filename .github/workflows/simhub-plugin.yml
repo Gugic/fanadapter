@@ -1,0 +1,106 @@
+name: Verify SimHub plugin
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'simhub-plugin/**'
+      - '.github/workflows/simhub-plugin.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'simhub-plugin/**'
+      - '.github/workflows/simhub-plugin.yml'
+
+concurrency:
+  group: simhub-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # The plugin targets .NET Framework 4.8 and compiles against SimHub's own
+    # assemblies, so this job can't run on Linux.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: simhub-plugin
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # SimHub is pinned rather than tracked to `latest`: an upstream release
+      # can change the plugin API surface, and we want that to arrive as a
+      # deliberate bump of .simhub-version rather than a surprise red build.
+      - name: Resolve pinned SimHub version
+        id: simhub
+        shell: pwsh
+        run: |
+          $version = (Get-Content .simhub-version -Raw).Trim()
+          if ($version -notmatch '^\d+(\.\d+)+$') { throw "Bad .simhub-version: '$version'" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "dir=${{ runner.temp }}\simhub-install" >> $env:GITHUB_OUTPUT
+
+      - name: Cache SimHub install
+        id: simhub-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.simhub.outputs.dir }}
+          key: ${{ runner.os }}-simhub-${{ steps.simhub.outputs.version }}
+
+      # The release zip contains an Inno Setup installer, not loose assemblies,
+      # so it has to be run (silently) to get at SimHub.Plugins.dll et al.
+      - name: Install SimHub
+        if: steps.simhub-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $version = '${{ steps.simhub.outputs.version }}'
+          $dir = '${{ steps.simhub.outputs.dir }}'
+          $work = Join-Path $env:RUNNER_TEMP 'simhub-download'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+          $url = "https://github.com/SHWotever/SimHub/releases/download/$version/SimHub.$version.zip"
+          $zip = Join-Path $work "SimHub.$version.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $work -Force
+
+          $setup = Get-ChildItem -Path $work -Filter 'SimHubSetup*.exe' -Recurse | Select-Object -First 1
+          if (-not $setup) { throw "No SimHubSetup*.exe inside $zip" }
+
+          $p = Start-Process -FilePath $setup.FullName -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SP-', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir")
+          if ($p.ExitCode -ne 0) { throw "SimHub installer exited $($p.ExitCode)" }
+
+          if (-not (Test-Path (Join-Path $dir 'SimHub.Plugins.dll'))) {
+            throw "SimHub.Plugins.dll missing from $dir after install"
+          }
+
+      # Point the HintPaths in Fanadapter.SimHub.csproj at the CI install.
+      - name: Configure SimHubDir for the build
+        shell: pwsh
+        run: |
+          @'
+          <Project>
+            <PropertyGroup>
+              <SimHubDir>${{ steps.simhub.outputs.dir }}\</SimHubDir>
+            </PropertyGroup>
+          </Project>
+          '@ | Set-Content -Path 'Directory.Build.props.user' -Encoding utf8
+
+      - name: Build
+        run: dotnet build FanadapterSimHub.sln -c Release -warnaserror
+
+      - name: Test
+        run: dotnet test FanadapterSimHub.sln -c Release --no-build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fanadapter-simhub-plugin
+          path: |
+            simhub-plugin/src/Fanadapter.SimHub/bin/Release/net48/Fanadapter.SimHub.dll
+            simhub-plugin/src/Fanadapter.SimHub/bin/Release/net48/Fanadapter.Core.dll
+          if-no-files-found: error

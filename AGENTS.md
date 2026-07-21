@@ -4,11 +4,13 @@ This file provides guidance for AI coding agents working in this repository.
 
 ## What this repo is
 
-`fanadapter` is a USB HID → Fanatec wheelbase adapter (Teensy 4.1) plus a browser-based WebSerial UI for configuring it. Two halves that ship together:
+`fanadapter` is a USB HID → Fanatec wheelbase adapter (Teensy 4.1 or STM32H743) plus a browser-based WebSerial UI for configuring it, and a SimHub plugin that drives the same protocol from the PC:
 
 - **`firmware/`** — Arduino sketch (Teensyduino) that runs on the Teensy 4.1. Enumerates USB HID joysticks, gamepads, and multi-axis controllers via the native USB host port and drives Fanatec RJ12 ports (H-pattern PWM, sequential open-drain, handbrake PWM, pedal-port UART).
 - **`webconfig/`** — Vite + React 19 + TypeScript + Tailwind + shadcn/ui app that talks to the firmware over WebSerial (line-based JSON). Deployed to GitHub Pages by `.github/workflows/pages.yml` on push to `main`.
 - **`firmware-stm32/`** — **C** port of the firmware to an **STM32H743** (WeAct MiniSTM32H743VITX): PlatformIO + STM32Cube HAL + TinyUSB. Speaks the same WebSerial JSON protocol and byte-identical `Config` schema as `firmware/`, so one `webconfig` serves both. Full feature parity with the Teensy, **hardware-validated end-to-end on a real wheelbase** (M0–M7): USB-host HID decode, the mapping evaluators, DAC H-pattern on PA4/PA5, sequential pulses on PC6/PC7, a TIM3 handbrake-PWM fallback on PC8, and the CSL Elite pedal-port UART emulator on USART2/PA2-PA3 (with wheelbase-power-cycle auto-recovery), plus a **direct-output** command set (`set_gear` / `set_outputs` / `pulse_shift` / `release_outputs`) for PC/SimHub-driven output that overrides the USB-device mapping. The UART flasher preserves saved config across reflashes (bank-1-only erase). **Both USB controllers are used at once: OTG_FS (the on-board USB-C) is the CDC device — webconfig + console + DFU + power — and OTG_HS (PB14/PB15 header) is the USB host for the powered hub. That split is forced by hardware: the USB-C is a device receptacle (UFP/Rd), so a hub plugged into it can never attach.** Two docs, don't conflate them: **`firmware-stm32/README.md`** is the user-facing build & wiring guide (board choice, pin map, wiring, flashing, troubleshooting), and **`firmware-stm32/PORT-STATUS.md`** is the development record (milestones, fixed bugs and why, gotchas) — **read PORT-STATUS before touching the STM32 firmware.**
+
+- **`simhub-plugin/`** — **C#** ([SimHub](https://www.simhubdash.com/)) plugin, .NET Framework 4.8 + WPF, that speaks the same line-based JSON protocol over a COM port. Two projects: **`Fanadapter.Core`** holds the transport, protocol, schema, `ScaleAxis` and `CaptureEngine` and has **no SimHub references** (so its xunit tests run without SimHub installed), and **`Fanadapter.SimHub`** is the plugin itself. It splits by where the input device is plugged in: devices on the **PC** are captured and mapped by SimHub's own input system, and the plugin only turns the result into direct-output commands (`DriveController`); devices on the **adapter's USB hub** are invisible to the PC, so for those the plugin mirrors webconfig's configuration UI (Devices / Mappings / Outputs tabs). Full feature parity with webconfig **except** the guided setup wizard and presets. Hardware-validated against the STM32 adapter. Build, install and usage: `simhub-plugin/README.md`.
 
 Detailed hardware docs, port pinouts, protocol references, calibration guides: `firmware/README.md`. Webconfig deploy + dev: `webconfig/README.md`. This file only covers the parts that need cross-file context.
 
@@ -43,6 +45,19 @@ npm run lint        # ESLint
 Base path defaults to `/fanadapter/` (override with `VITE_BASE=/path/`). WebSerial only works in Chromium-based browsers on desktop.
 
 There are no webconfig tests.
+
+### SimHub plugin
+
+```sh
+dotnet build simhub-plugin/FanadapterSimHub.sln -c Release
+dotnet test  simhub-plugin/FanadapterSimHub.sln -c Release
+
+# Build and drop both DLLs into the SimHub install (close SimHub first — it
+# holds loaded plugin assemblies open):
+dotnet build simhub-plugin/src/Fanadapter.SimHub/Fanadapter.SimHub.csproj -c Release -p:InstallToSimHub=true
+```
+
+Needs the .NET SDK 8+ only; the net48 reference assemblies come from a NuGet package. SimHub's own DLLs are resolved by `HintPath` off the `$(SimHubDir)` MSBuild property (default `C:\Program Files (x86)\SimHub\`, overridable in an untracked `simhub-plugin/Directory.Build.props.user` — which is exactly what CI writes after installing the version pinned in `.simhub-version`).
 
 ## Architecture
 
@@ -80,18 +95,21 @@ Same-VID/PID device aggregation across the 8 host pool slots is layered *under* 
 
 `updateHandbrake()` writes the same value to **both** the PWM pin and the pedal stream's handbrake field. Modern Fanatec firmware (DD+) prefers the pedal-stream value when the pedal port is present; the dedicated handbrake RJ12 is left unplugged in this build. The dual write exists so the wiring stays forward-compatible.
 
-### Cross-file invariants (firmware ↔ webconfig)
+### Cross-file invariants (firmware ↔ webconfig ↔ SimHub plugin)
 
-The two halves share four data contracts — change one, you must change the other:
+The firmware contracts now have **three** consumers, and a schema change has to move all of them together — the firmware, the TypeScript, and the C#. Missing one is silent: nothing fails to compile, the client just misreads the device.
 
-| Firmware | Webconfig | What must match |
-|---|---|---|
-| `mapping.h` (`Config`, `InputBinding`, `ChannelBindings`) | `webconfig/src/lib/types.ts` | Field names, types, channel keys. JSON wire shape must round-trip. |
-| `mapping.cpp` (`scaleAxis`) | `webconfig/src/lib/scaleAxis.ts` | Identical math. UI's "processed" bar must mirror what the firmware actually writes. |
-| `mapping.cpp` (CRC-32/ISO-HDLC) | `webconfig/src/lib/crc32.ts` | Same polynomial / init / final-XOR. Currently unused on the JS side but reserved for preset validation. |
-| `protocol.cpp` (`CHANNEL_NAMES`, JSON command shapes) | `webconfig/src/lib/serial.ts`, `types.ts` (`CHANNELS`) | Channel name strings, command names, request/response shapes. |
+| Firmware | Webconfig | SimHub plugin | What must match |
+|---|---|---|---|
+| `mapping.h` (`Config`, `InputBinding`, `ChannelBindings`) | `webconfig/src/lib/types.ts` | `Fanadapter.Core/Model.cs` | Field names, types, channel keys. JSON wire shape must round-trip. |
+| `mapping.cpp` (`scaleAxis`) | `webconfig/src/lib/scaleAxis.ts` | `Fanadapter.Core/ScaleAxis.cs` | Identical math. Every client's "processed" preview must mirror what the firmware actually writes. |
+| `mapping.cpp` (CRC-32/ISO-HDLC) | `webconfig/src/lib/crc32.ts` | — | Same polynomial / init / final-XOR. Currently unused on the JS side but reserved for preset validation. |
+| — | `App.tsx` capture flow | `Fanadapter.Core/CaptureEngine.cs` | Same three-phase thresholds and commit maths. Not a firmware contract, but a divergence means the two clients calibrate the same pedal differently. |
+| `protocol.cpp` (`CHANNEL_NAMES`, JSON command shapes) | `webconfig/src/lib/serial.ts`, `types.ts` (`CHANNELS`) | `Fanadapter.Core/Protocol.cs`, `Model.cs` | Channel name strings, command names, request/response shapes. |
 
-`webconfig/src/lib/types.ts` defensively accepts both the v2 (array) and legacy v1 (single object) channel shapes so the UI keeps rendering against older firmware. Keep that fallback when changing the schema.
+Both clients defensively accept the v2 (array) and legacy v1 (single object) channel shapes so they keep rendering against older firmware — `getChannelBindings()` in types.ts, `ChannelBindingsConverter` in Model.cs. Keep both fallbacks when changing the schema.
+
+`scaleAxis` is the one contract with executable tripwires on the client side: `webconfig/src/lib/scaleAxis.test.ts` and `simhub-plugin/tests/.../ScaleAxisTests.cs` assert the same vectors. Change the firmware math and both suites should be updated in the same commit.
 
 ### Capture flow (webconfig)
 
@@ -120,12 +138,17 @@ Baseline accumulation lives in a `useRef` (not React state) to avoid render loop
 - **(STM32) The on-board USB-C can only ever be a USB *device*.** It's wired as a UFP receptacle (CC pulled down with Rd) — which is why DFU works through it, and why a hub plugged into it never attaches (both ends present as devices; no adapter fixes it). The host must hang off the PB14/PB15 header. And **a hub needs VBUS on its upstream port to detect a host** — feed it from the board's 5 V or it silently never attaches.
 - **(STM32) Composite controllers expose input-less HID interfaces.** The Logitech RS Shifter & Handbrake and RS H-Shifter each present a second HID interface declaring no axes/buttons/hat/keys. `usb_input_on_mount()` rejects those (returning `false` so `tuh_hid_mount_cb` doesn't arm their pipe) — otherwise 4 physical devices consume 7 of the 8 pool slots and hold host channels for interfaces nothing can bind to.
 - **(STM32) Check the chip before debugging a "dead" WeAct board.** The MiniSTM32H7xx PCB ships with an H743VIT6 *or* a visually identical **STM32H723VGT6**, which has only **one** USB controller (OTG_HS, no OTG_FS) and cannot run this firmware — H743-built code hangs in clock init, giving a dark LED, 0 V on the USB pins and no console, while DFU still works (the ROM sets its own clock). Device ID: H743 = `0x450`, H723 = `0x483`.
+- **(SimHub) `live` events only fire on change; `outputs` events stream continuously.** Verified against the board: with nothing moving, `live_inputs` produces *zero* frames while `live_outputs` keeps sending. So "I enabled telemetry and saw nothing" is not evidence of a broken client — it's the expected idle state, and a client must not treat silence as a dropped link.
+- **(SimHub) The command round-trip is ~13 ms, so request/response streaming tops out near 77 Hz.** Measured over the STM32's native USB CDC: 100 sequential `set_outputs` took 1299 ms. That's the ceiling for anything that waits for each reply, and it is well above human pedal bandwidth, so `DriveController` self-limits rather than pipelining — pipelining would trade the queue's back-pressure for unbounded growth whenever the adapter fell behind. Don't write "100 Hz" into a comment without measuring it.
+- **(SimHub) A timed-out request must still consume its reply.** The firmware answers strictly in order, so dropping a timed-out entry from the queue (which `serial.ts` does) means a late reply gets matched to the *next* request and every response after it is off by one. `Fanadapter.Core/SerialClient.cs` deliberately keeps the entry queued and marked abandoned so the stale reply is absorbed. Any new client should do the same.
+- **(SimHub) Marshal to the dispatcher explicitly; do not rely on an await resuming on the UI thread.** `AdapterSession` awaits with `ConfigureAwait(false)` internally, so continuations in the view model land on the thread pool. WPF then throws from two different places — raising `CanExecuteChanged` (it reads the bound Button's `Command`) and mutating a bound `ObservableCollection`. This bit three times during the port, each time in a new spot, which is why `MainViewModel` routes property notifications, command state, log appends **and** whole rebuild methods through `RunOnUi`. Note a tab whose contents WPF hasn't realised yet has no collection view attached, so this failure hides until someone opens that tab.
+- **(SimHub) Newtonsoft comes from NuGet with `ExcludeAssets="runtime"`, pinned to the version SimHub ships (13.0.4).** Referencing SimHub's copy by `HintPath` instead would make `Fanadapter.Core` — and therefore its tests — unbuildable without SimHub installed. Excluding the runtime asset keeps the DLL out of our output so the CLR loads SimHub's single copy. If SimHub bumps Newtonsoft, bump the pin.
 - **No agent attribution on commits.** Do not add Co-Authored-By or similar attribution lines for AI assistants on commits in this repo.
-- **Repo root is the directory containing this file.** `firmware/` and `webconfig/` are siblings. The Arduino sketch convention requires `firmware/firmware.ino` (folder name = .ino name) — don't rename one without the other.
+- **Repo root is the directory containing this file.** `firmware/`, `webconfig/`, `firmware-stm32/` and `simhub-plugin/` are siblings. The Arduino sketch convention requires `firmware/firmware.ino` (folder name = .ino name) — don't rename one without the other.
 - **Keep docs in sync with the code.** When a change affects something documented here or in a README, update both in the same commit. Things that warrant a doc edit:
-  - Schema bumps (`CONFIG_VERSION`, new fields, layout changes) → `AGENTS.md` cross-file invariants table, `firmware/README.md` JSON command reference, preset shape in `webconfig/README.md`.
-  - New / renamed / removed JSON commands or events → JSON command reference in `firmware/README.md`, the serial client in `webconfig/src/lib/serial.ts`, and the cross-file table here.
-  - New channel keys or output behavior → channel model section here, the channel list in `firmware/README.md`, the `CHANNELS` table in `webconfig/src/lib/types.ts`.
+  - Schema bumps (`CONFIG_VERSION`, new fields, layout changes) → `AGENTS.md` cross-file invariants table, `firmware/README.md` JSON command reference, preset shape in `webconfig/README.md`, **and `Fanadapter.Core/Model.cs`**.
+  - New / renamed / removed JSON commands or events → JSON command reference in `firmware/README.md`, the serial client in `webconfig/src/lib/serial.ts`, **`Fanadapter.Core/Protocol.cs`**, and the cross-file table here.
+  - New channel keys or output behavior → channel model section here, the channel list in `firmware/README.md`, the `CHANNELS` table in `webconfig/src/lib/types.ts`, and `Schema` in `Fanadapter.Core/Model.cs`.
   - Module additions / renames / loop-order changes → firmware module layout section here and the README's firmware section.
   - Hardware wiring or pin changes → `firmware/README.md` wiring reference (Teensy) or `firmware-stm32/README.md` pin map (STM32); mention the pin in the firmware module layout here if it's surfaced as a constant.
   - Behavior gotchas that you debugged through (handshake quirks, edge cases) → add a bullet to "Things to know before editing" so the next agent doesn't re-derive it.

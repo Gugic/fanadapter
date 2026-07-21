@@ -1,0 +1,8 @@
+bin/
+obj/
+
+# Local SimHub install path override — machine-specific, never committed.
+Directory.Build.props.user
+
+TestResults/
+*.user
