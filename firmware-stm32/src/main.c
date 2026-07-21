@@ -76,6 +76,34 @@ static inline int console_read_byte(void) {
   return (int)b;
 }
 
+// USART1 TX ring — drained by USART1_IRQHandler (TXE). Console output MUST NOT block the main
+// loop: `pedals_update()` runs last and needs a 10 ms cadence, and a blocking HAL_UART_Transmit
+// costs ~5.5 ms for a `live` line and ~10.5 ms for an `outputs` line at 115200 8E1. With both
+// telemetry streams on that was over half of every second spent blocked — the loop starved, the
+// pedal stream collapsed, the wheelbase fell back to analog and gear changes arrived a minute
+// late. Everything goes through this ring now; the ISR shifts bytes out in the background.
+#define CONSOLE_TX_RING_SZ 2048u // power of two -> mask instead of modulo
+static volatile uint8_t  s_tx_ring[CONSOLE_TX_RING_SZ];
+static volatile uint16_t s_tx_head; // advanced by callers
+static volatile uint16_t s_tx_tail; // advanced by the ISR
+
+static inline uint16_t console_tx_used(void) {
+  return (uint16_t)((s_tx_head - s_tx_tail) & (CONSOLE_TX_RING_SZ - 1u));
+}
+
+// Returns the number of bytes actually queued — short means the ring filled.
+static uint32_t console_tx_push(const char *buf, uint32_t len) {
+  uint32_t n = 0;
+  for (; n < len; n++) {
+    uint16_t next = (uint16_t)((s_tx_head + 1u) & (CONSOLE_TX_RING_SZ - 1u));
+    if (next == s_tx_tail) break; // full
+    s_tx_ring[s_tx_head] = (uint8_t)buf[n];
+    s_tx_head            = next;
+  }
+  if (n) __HAL_UART_ENABLE_IT(&huart1, UART_IT_TXE);
+  return n;
+}
+
 void Error_Handler(void);
 
 //--------------------------------------------------------------------+
@@ -249,23 +277,35 @@ static void led_init(void) {
 //--------------------------------------------------------------------+
 // Console printf — mirrored to BOTH the USART1 fallback and the USB CDC console
 //--------------------------------------------------------------------+
-// Safe to call from anywhere except an ISR (the UART leg is a blocking transmit, which could
-// stall USB servicing from interrupt context), so it no-ops there — TinyUSB occasionally logs
-// from an ISR at high verbosity. The name is referenced by CFG_TUSB_DEBUG_PRINTF.
-int console_printf(const char *fmt, ...) {
-  if (__get_IPSR() != 0u) return 0;
-
-  char buf[256];
-  va_list ap;
-  va_start(ap, fmt);
-  int n = vsnprintf(buf, sizeof(buf), fmt, ap);
-  va_end(ap);
-  if (n <= 0) return n;
-
-  uint32_t len = (n < (int)sizeof(buf)) ? (uint32_t)n : (sizeof(buf) - 1);
-
-  // 1) USART1 — always present (the universal fallback console).
-  HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)len, 100);
+// Two entry points, one sink: console_printf (intact) and console_event_printf (droppable).
+// Both no-op in an ISR — TinyUSB occasionally logs from interrupt context at high verbosity, and
+// the CDC leg pumps tud_task(), which must not re-enter. `console_printf` is referenced by
+// CFG_TUSB_DEBUG_PRINTF.
+//
+// Shared sink. `lossy` selects the policy when a sink is congested:
+//   false (responses, CLI, banners) — wait for room. These are low-rate and must arrive intact;
+//          get_config alone is ~8 KB streamed in chunks and truncating it breaks every client.
+//   true  (live/outputs events)     — drop. They are superseded ~30 times a second, so a dropped
+//          frame costs nothing, while blocking for one costs the pedal stream its cadence.
+// Waiting is bounded either way: a host that stopped reading must never wedge the loop.
+static int console_emit(const char *buf, uint32_t len, bool lossy) {
+  // 1) USART1 — always present (the universal fallback console), now interrupt-driven.
+  if (lossy) {
+    // Keep headroom so a burst of events can never squeeze out a command response.
+    if (console_tx_used() < CONSOLE_TX_RING_SZ / 2u) console_tx_push(buf, len);
+  } else {
+    // Bounded by WALL-CLOCK, not iterations. An iteration count is meaningless here: 20k spins
+    // take ~3 ms while draining this ring at 115200 takes ~175 ms, so a count-based guard expired
+    // with the ring still full and silently dropped chunks — which truncated get_config (~8 KB,
+    // streamed) and made every client time out on connect. One chunk's worth of room appears in
+    // ~9 ms, so 50 ms is generous while still bounding a wedged sink.
+    uint32_t sent     = 0;
+    uint32_t deadline = HAL_GetTick() + 50u;
+    while (sent < len) {
+      sent += console_tx_push(buf + sent, len - sent);
+      if (sent >= len || (int32_t)(HAL_GetTick() - deadline) >= 0) break;
+    }
+  }
 
   // 2) USB CDC on OTG_FS (the on-board USB-C). Gate on tud_mounted() — "the host has enumerated
   //    us" — NOT tud_cdc_connected(), which ALSO requires the host to assert DTR. webconfig
@@ -274,12 +314,18 @@ int console_printf(const char *fmt, ...) {
   //    made the firmware happily receive and execute commands but never transmit the reply, so
   //    every webconfig request died with "command timeout". Drain with backpressure so large
   //    multi-chunk responses (get_config ~8 KB) aren't truncated: write what fits, then flush +
-  //    pump tud_task() to let the host drain the FIFO, and retry. A spin guard bounds the wait so a
-  //    stalled host drops the tail instead of hanging.
+  //    pump tud_task() to let the host drain the FIFO, and retry.
+  //
+  //    Also wall-clock bounded, and for the same reason: pumps elapse in microseconds while the
+  //    host only polls the endpoint once a frame (1 ms at full speed), so a "consecutive stalls"
+  //    counter bails long before the host has had any chance to drain. 20 ms is ~20 poll windows.
+  //    The old guard was 1000 TOTAL iterations, which let a host that had stopped draining (port
+  //    closed while still enumerated — a shut browser tab, an exited script) burn 1000 tud_task()
+  //    calls on EVERY line: the second half of the starvation described above.
   if (tud_mounted()) {
-    uint32_t sent  = 0;
-    uint32_t guard = 0;
-    while (sent < len && guard++ < 1000u) {
+    uint32_t sent     = 0;
+    uint32_t deadline = HAL_GetTick() + 20u;
+    while (sent < len) {
       uint32_t avail = tud_cdc_write_available();
       if (avail) {
         uint32_t w = (len - sent < avail) ? (len - sent) : avail;
@@ -287,12 +333,45 @@ int console_printf(const char *fmt, ...) {
         sent += w;
         tud_cdc_write_flush();
       } else {
+        if (lossy) break; // the next frame supersedes this one; never wait for it
         tud_cdc_write_flush();
         tud_task(); // service the device so the host can empty the FIFO
+        if ((int32_t)(HAL_GetTick() - deadline) >= 0) break;
       }
     }
   }
-  return n;
+  return (int)len;
+}
+
+int console_printf(const char *fmt, ...) {
+  if (__get_IPSR() != 0u) return 0;
+  char    buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  if (n <= 0) return n;
+  return console_emit(buf, (n < (int)sizeof(buf)) ? (uint32_t)n : (sizeof(buf) - 1), false);
+}
+
+// Emits a pre-built string on the droppable path. Callers that assemble a line in pieces MUST use
+// this rather than several console_event_printf() calls: each call drops independently, so a
+// partially-dropped line would put malformed JSON on the wire.
+int console_event_write(const char *s) {
+  if (__get_IPSR() != 0u) return 0;
+  return console_emit(s, (uint32_t)strlen(s), true);
+}
+
+// Same sink, drop-on-congestion. For the telemetry events ONLY (protocol.c) — see console_emit.
+int console_event_printf(const char *fmt, ...) {
+  if (__get_IPSR() != 0u) return 0;
+  char    buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  if (n <= 0) return n;
+  return console_emit(buf, (n < (int)sizeof(buf)) ? (uint32_t)n : (sizeof(buf) - 1), true);
 }
 
 static void print_banner(void) {
@@ -537,6 +616,19 @@ void OTG_HS_IRQHandler(void) { tusb_int_handler(OTGHS_RHPORT, true); }
 // Inbound console bytes (USART1 RXNE) -> ring buffer. Drops on overflow rather than clobbering
 // unread data. Error flags (ORE/FE/NE/PE) are cleared so a glitch can't wedge the RXNE.
 void USART1_IRQHandler(void) {
+  // TX: feed the FIFO from the ring while it has room, then disable the interrupt once drained
+  // (TXE stays asserted forever otherwise and this ISR would spin).
+  if (__HAL_UART_GET_IT_SOURCE(&huart1, UART_IT_TXE)) {
+    while (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_TXE)) {
+      if (s_tx_head == s_tx_tail) {
+        __HAL_UART_DISABLE_IT(&huart1, UART_IT_TXE);
+        break;
+      }
+      huart1.Instance->TDR = s_tx_ring[s_tx_tail];
+      s_tx_tail            = (uint16_t)((s_tx_tail + 1u) & (CONSOLE_TX_RING_SZ - 1u));
+    }
+  }
+
   // Drain the whole RX FIFO each entry (RXFNE stays set while the FIFO has data).
   while (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_RXNE)) {
     uint8_t  b    = (uint8_t)(huart1.Instance->RDR & 0xFFu);
