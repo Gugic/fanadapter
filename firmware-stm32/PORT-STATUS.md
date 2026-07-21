@@ -146,9 +146,34 @@ always crept up minutes into a session. The CDC leg has the same shape: it spins
 
 Confirmed by turning both streams off on a stuck board: it recovered immediately.
 
-**Fix (not yet implemented):** make the USART1 leg non-blocking (interrupt/DMA ring, drop on full)
-and bail out of the CDC spin after a few consecutive no-progress pumps. Until then the workaround
-is to connect a client to *configure*, then disconnect before driving.
+**Fixed.** `console_printf` no longer transmits inline. USART1 output goes through an
+interrupt-driven TX ring (`s_tx_ring`, drained by the TXE half of `USART1_IRQHandler`), and the
+sink has two policies, selected by the `lossy` flag on `console_emit()`:
+
+- **Responses, CLI, banners** (`console_printf`) — wait for room. Low-rate and must arrive intact:
+  `get_config` alone is ~8 KB streamed in chunks, and truncating it breaks every client.
+- **`live` / `outputs` events** (`console_event_printf` / `console_event_write`) — dropped when the
+  ring is over half full. They are superseded ~30 times a second, so a lost frame costs nothing
+  while *waiting* for one costs the pedal stream its cadence. The half-full reserve also means a
+  telemetry burst can never squeeze out a command reply.
+
+Two traps found while building it, both worth not repeating:
+
+1. **Bound these waits by wall-clock, never by iteration count.** The first version spun 20 000
+   times, described in the comment as "~2 ms" — but 20 000 spins take ~3 ms while draining a
+   2 KB ring at 115200 takes ~175 ms. The guard expired with the ring still full, chunks were
+   dropped, `get_config` truncated, and every client timed out on connect. Same defect on the CDC
+   leg from the other side: a "consecutive no-progress pumps" counter elapses in microseconds,
+   while the host only polls the endpoint once per 1 ms frame. Now 50 ms (UART) and 20 ms (CDC).
+2. **A line assembled in pieces must be emitted atomically on the lossy path.** `emit_live()` used
+   to build its JSON across a dozen `console_printf` calls; each drops independently, so a
+   partially-dropped line would put malformed JSON on the wire. It now formats into one buffer and
+   calls `console_event_write()` once.
+
+Measured on the board after the fix, with **both** telemetry streams on: command round-trip 8.7 ms
+average (10.1 ms with telemetry off — i.e. no penalty), `get_config` 8332 B in 720 ms and parsing
+clean, and a 60 s soak with zero `[pedals]` lines and zero malformed lines. Before the fix that
+same state produced `RX error burst` → re-handshake within seconds.
 
 #### Two failed attempts at the USB theory — do not repeat them
 

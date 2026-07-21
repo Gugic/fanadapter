@@ -5,6 +5,7 @@
 // shapes match firmware/protocol.cpp and webconfig/src/lib/{serial.ts,types.ts} exactly.
 #include "protocol.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "input_source.h"
@@ -14,6 +15,9 @@
 #include "stm32h7xx_hal.h" // NVIC_SystemReset
 
 extern int console_printf(const char *fmt, ...);
+// Droppable variants — for the streaming telemetry events only. See console_emit() in main.c.
+extern int console_event_printf(const char *fmt, ...);
+extern int console_event_write(const char *s);
 
 #define PROTO_VERSION    5
 #define FW_NAME          "fanadapter-stm32"
@@ -417,28 +421,48 @@ static void emit_detached(uint8_t slot) {
   console_printf("{\"event\":\"device_detached\",\"slot\":%u}\r\n", slot);
 }
 
+// The two streaming events go out on the DROPPABLE console path. They are superseded ~30 times a
+// second, so losing one when the sink is congested costs nothing — whereas waiting for one costs
+// the 100 Hz pedal stream its cadence, which is what used to freeze inputs and make gear changes
+// arrive a minute late. Command responses keep using console_printf and still arrive intact.
 static void emit_outputs(void) {
   const OutputSnapshot *o = mapping_outputs();
-  console_printf("{\"event\":\"outputs\",\"gear\":\"%s\",\"shift_up\":%s,\"shift_down\":%s,"
-                 "\"throttle\":%u,\"brake\":%u,\"clutch\":%u,\"handbrake\":%u}\r\n",
-                 mapping_channel_name(o->gear), o->shiftUp ? "true" : "false",
-                 o->shiftDown ? "true" : "false", o->throttle, o->brake, o->clutch, o->handbrake);
+  console_event_printf("{\"event\":\"outputs\",\"gear\":\"%s\",\"shift_up\":%s,\"shift_down\":%s,"
+                       "\"throttle\":%u,\"brake\":%u,\"clutch\":%u,\"handbrake\":%u}\r\n",
+                       mapping_channel_name(o->gear), o->shiftUp ? "true" : "false",
+                       o->shiftDown ? "true" : "false", o->throttle, o->brake, o->clutch,
+                       o->handbrake);
 }
 
 static void emit_live(const InputLive *lv) {
-  console_printf("{\"event\":\"live\",\"slot\":%u,\"buttons\":%lu,\"axes\":[", lv->slot,
-                 (unsigned long)lv->buttons);
+  // Assembled into ONE buffer and emitted atomically. Each console_event_* call drops
+  // independently when congested, so building this line in pieces (as it used to be) could drop a
+  // fragment mid-line and put malformed JSON on the wire.
+  char b[320];
+  int  n = 0;
+#define LIVE_APPEND(...)                                                       \
+  do {                                                                         \
+    if (n < 0 || (size_t)n >= sizeof(b)) return;                               \
+    int _r = snprintf(b + n, sizeof(b) - (size_t)n, __VA_ARGS__);              \
+    if (_r < 0) return;                                                        \
+    n += _r;                                                                   \
+  } while (0)
+
+  LIVE_APPEND("{\"event\":\"live\",\"slot\":%u,\"buttons\":%lu,\"axes\":[", lv->slot,
+              (unsigned long)lv->buttons);
   for (uint8_t a = 0; a < lv->axis_count && a < INPUT_MAX_AXES; a++)
-    console_printf("%s%u", a ? "," : "", lv->axes[a]);
-  console_printf("]");
-  if (lv->has_hat)
-    console_printf(",\"hat\":%d", (lv->hat == INPUT_HAT_RELEASED) ? -1 : (int)lv->hat);
+    LIVE_APPEND("%s%u", a ? "," : "", lv->axes[a]);
+  LIVE_APPEND("]");
+  if (lv->has_hat) LIVE_APPEND(",\"hat\":%d", (lv->hat == INPUT_HAT_RELEASED) ? -1 : (int)lv->hat);
   if (lv->has_keyboard) {
-    console_printf(",\"keys\":[");
-    for (uint8_t k = 0; k < INPUT_MAX_KEYS; k++) console_printf("%s%u", k ? "," : "", lv->keys[k]);
-    console_printf("]");
+    LIVE_APPEND(",\"keys\":[");
+    for (uint8_t k = 0; k < INPUT_MAX_KEYS; k++) LIVE_APPEND("%s%u", k ? "," : "", lv->keys[k]);
+    LIVE_APPEND("]");
   }
-  console_printf("}\r\n");
+  LIVE_APPEND("}\r\n");
+#undef LIVE_APPEND
+
+  console_event_write(b);
 }
 
 // ---------------- dispatch ----------------------------------------------------------------------
