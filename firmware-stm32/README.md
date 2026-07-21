@@ -171,10 +171,16 @@ python -m platformio run -d firmware-stm32 -e weact_h743 -t upload
 enumerates as `STM32 BOOTLOADER` (VID `0483` PID `df11`).
 
 **Every flash after that — hands-free.** Once fanadapter firmware is on the board, type `dfu` at
-the console (see below) and it jumps straight to the ROM bootloader on the same USB-C port. No
-buttons, no cable swapping. `reboot` restarts the app the same way.
+the console (or send it over the CDC port) and the board reboots into the ROM bootloader on the
+same USB-C port. No buttons, no cable swapping. `reboot` restarts the app the same way.
 
-After flashing, tap **RST** (or let dfu-util's reset do it) to run.
+(Mechanism, because the obvious version does not work: the ROM serves **no** interfaces when an
+app branches to it directly — the command instead parks a magic token in DTCM, does a real
+`NVIC_SystemReset`, and the app branches to the ROM as the *first* statement of `main()`, giving
+the ROM the reset-default chip it expects. Details in PORT-STATUS.)
+
+After flashing, the `:leave` in the upload command boots straight back into the app — no reset
+button needed.
 
 ### Saved config survives a reflash
 

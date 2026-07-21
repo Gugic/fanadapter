@@ -420,36 +420,40 @@ void tuh_hid_report_received_cb(uint8_t daddr, uint8_t instance, uint8_t const *
 //--------------------------------------------------------------------+
 // Jump to the STM32H7 ROM system bootloader (USART1 8E1 + USB DFU) — AN2606 Table 135
 //--------------------------------------------------------------------+
-// Re-flash WITHOUT the BOOT0+RST button dance: a console command jumps here and the ROM bootloader
-// comes up on USART1 (PA9/PA10 — reachable through the S3 bridge) AND USB DFU on OTG_FS. Flashing
-// over USART1 leaves the hub on OTG_FS undisturbed. The first install of this command still needs
-// one manual DFU; after that flashing is hands-free. Start address per AN2606 = 0x1FF09800.
+// Hands-free re-flash: token in DTCM + NVIC_SystemReset + branch at the TOP of main(), before any
+// clock/peripheral init. The ROM then starts on a chip at reset defaults — the state it actually
+// expects — and brings up USB DFU on OTG_FS. Start address per AN2606 = 0x1FF09800.
+//
+// Why this shape and not a direct jump from the running app: that was bisected twice and the ROM
+// serves NO interfaces on a late software branch — not USART (June, FK743M3) and not USB DFU
+// (July, this board: clean detach, then permanently dark bus until an RST tap). Only entry from a
+// reset-default chip works. The token lives at DTCM base — every app section (.data/.bss/stack)
+// lives in AXI SRAM @0x24000000, so startup code never touches it, and DTCM survives
+// NVIC_SystemReset (verified June 2026).
 #define SYSTEM_BOOTLOADER_ADDR 0x1FF09800u
-static void jump_to_bootloader(void) {
-  __disable_irq();
-  SysTick->CTRL = 0u;
-  SysTick->LOAD = 0u;
-  SysTick->VAL  = 0u;
-  // Quiesce USB so the ROM bootloader starts from a clean bus.
-  __HAL_RCC_USB2_OTG_FS_CLK_DISABLE();
-  __HAL_RCC_USB1_OTG_HS_CLK_DISABLE();
-  HAL_RCC_DeInit(); // clock tree back to HSI 64 MHz — exactly what the ROM bootloader expects
-  for (uint32_t i = 0; i < 8u; i++) {
-    NVIC->ICER[i] = 0xFFFFFFFFu; // disable
-    NVIC->ICPR[i] = 0xFFFFFFFFu; // clear pending
-  }
-  SCB_DisableDCache(); // clean+invalidate so the ROM sees coherent memory
-  SCB_DisableICache();
+#define BOOT_TOKEN_ADDR  ((volatile uint32_t *)0x20000000u)
+#define BOOT_TOKEN_MAGIC 0xB007F1A5u
+
+// First statement of main(). Chip state here: HSI, caches off, no IRQs armed, SystemInit done —
+// nothing the ROM minds.
+static void check_bootloader_request(void) {
+  if (*BOOT_TOKEN_ADDR != BOOT_TOKEN_MAGIC) return;
+  *BOOT_TOKEN_ADDR = 0u; // one-shot: the next reset boots the app normally
   __DSB();
-  __ISB();
-  uint32_t sp = *(volatile uint32_t *)SYSTEM_BOOTLOADER_ADDR;
-  uint32_t pc = *(volatile uint32_t *)(SYSTEM_BOOTLOADER_ADDR + 4u);
-  SCB->VTOR   = SYSTEM_BOOTLOADER_ADDR;
-  __set_MSP(sp);
-  __enable_irq();
-  ((void (*)(void))pc)();
+  SCB->VTOR = SYSTEM_BOOTLOADER_ADDR;
+  __set_MSP(*(volatile uint32_t *)SYSTEM_BOOTLOADER_ADDR);
+  ((void (*)(void))(*(volatile uint32_t *)(SYSTEM_BOOTLOADER_ADDR + 4u)))();
   while (1) {
   } // never returns
+}
+
+static void request_bootloader_reboot(void) {
+  // Detach cleanly so the host drops the CDC port before the reset, not on a timeout after it.
+  tud_disconnect();
+  HAL_Delay(100);
+  *BOOT_TOKEN_ADDR = BOOT_TOKEN_MAGIC;
+  __DSB();
+  NVIC_SystemReset();
 }
 
 //--------------------------------------------------------------------+
@@ -467,9 +471,9 @@ static void cli_dispatch(const char *line) {
     return;
   }
   if (strcmp(line, "dfu") == 0 || strcmp(line, "bootloader") == 0) {
-    console_printf("\r\n[bootloader] entering ROM bootloader (USART1 8E1 + USB DFU)...\r\n");
+    console_printf("\r\n[bootloader] reset -> ROM bootloader (USB DFU on the USB-C)...\r\n");
     for (volatile uint32_t d = 0; d < 400000u; d++) __NOP(); // let the line + any CDC FIFO drain
-    jump_to_bootloader();
+    request_bootloader_reboot();
   } else if (strcmp(line, "reboot") == 0) {
     console_printf("\r\n[reboot] NVIC_SystemReset\r\n");
     for (volatile uint32_t d = 0; d < 400000u; d++) __NOP();
@@ -555,6 +559,7 @@ uint32_t tusb_time_millis_api(void) { return HAL_GetTick(); }
 // main
 //--------------------------------------------------------------------+
 int main(void) {
+  check_bootloader_request(); // MUST be first: branches to the ROM bootloader on a 'dfu' reboot
   HAL_Init();
   led_init();           // configure heartbeat pins first so Error_Handler can signal a clock failure
   SystemClock_Config();

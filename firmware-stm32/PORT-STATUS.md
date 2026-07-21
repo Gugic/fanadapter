@@ -185,10 +185,31 @@ header) — the "B15" silkscreen near it was a red herring.
 `tools/flash.ps1` + `tools/stm32_uart_flash.py` date from there: a DTR-safe AN3155 UART flasher that
 flashes over the bridge (build → flash → Go), prompting you to hold BOOT0 + tap RST. Still useful on
 any board without a usable second USB controller. Full hands-free UART entry is **not** possible on
-these boards: the H7 ROM serves USART only via the *hardware* boot path (a software jump comes up
-USB-DFU-only), the option-byte `BOOT_ADD0` trick is banned (it strands the board into the bootloader,
-DFU-only recovery), and BOOT0 has no pad to wire to. On the current board this is all moot — the
-`dfu` console command jumps to the ROM bootloader on the USB-C, which *is* hands-free.
+these boards: the H7 ROM serves USART only via the *hardware* boot path, the option-byte `BOOT_ADD0`
+trick is banned (it strands the board into the bootloader, DFU-only recovery), and BOOT0 has no pad
+to wire to.
+
+### Hands-free DFU entry: only the token + reset + early-branch works (July 2026)
+
+The FK-era note above said a software jump comes up "USB-DFU-only" — **that was an assumption, and
+it is false.** Bisected on the WeAct board: a **late branch from the running app serves NO ROM
+interfaces at all.** Two variants tried and both left the bus permanently dark until an RST tap:
+
+1. The original `jump_to_bootloader()` (clock-gate OTGs → `HAL_RCC_DeInit` → branch). Worse than
+   dark: the clock gate froze the D+ pullup latched high, so the host never saw a detach — Windows
+   kept a zombie COM port that failed opens with "device not functioning". Looked exactly like a
+   wedged board.
+2. Same, plus a proper `tud_disconnect()` + OTG force-reset first. Clean detach (no zombie port),
+   but still no DFU enumeration — proving the dirty-peripheral theory insufficient. The ROM simply
+   will not start its interfaces when entered by a branch from a running app.
+
+**What works: park a magic token at DTCM base (`0x20000000` — all app RAM is in AXI `0x24000000`,
+so startup never touches it, and DTCM survives `NVIC_SystemReset`), do a real reset, and branch to
+`0x1FF09800` as the FIRST statement of `main()`** — before `HAL_Init`, on a reset-default chip,
+which is the state the ROM actually expects. Validated end-to-end with zero button presses:
+`dfu` command → reset → ROM DFU enumerates → `platformio -t upload` → `:leave` boots the app →
+all hub devices re-enumerate. `check_bootloader_request()` / `request_bootloader_reboot()` in
+`main.c`. The one-shot token clear means a crash after entry can't loop the board into the ROM.
 
 The flasher's **bank-1-only erase** (AN3155 special code `0xFFFE`) is what preserves saved config
 across reflashes — the ~58 KB app lives entirely in bank 1, so bank 2 @ `0x08100000` survives.
