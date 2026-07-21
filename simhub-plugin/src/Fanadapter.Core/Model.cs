@@ -317,6 +317,13 @@ namespace Fanadapter.Core
         /// STM32-only; the Teensy flashes with the PJRC loader instead.
         /// </summary>
         public bool SupportsDfu => SupportsDirectOutput;
+
+        /// <summary>
+        /// stream_axes — the no-reply set_outputs twin — arrived with protocol 6.
+        /// Older firmware answers unknown_cmd, which a fire-and-forget sender
+        /// would surface as unmatched log spam at 100 Hz, so gate on this.
+        /// </summary>
+        public bool SupportsAxisStreaming => SupportsDirectOutput && Protocol >= 6;
     }
 
     public class DeviceSlot

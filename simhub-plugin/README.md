@@ -79,6 +79,12 @@ own NCalc expression. Set the range to match the property (SimHub's own axis
 properties are 0–100) and watch the live readout to check the direction before
 pressing Start.
 
+On current firmware (protocol 6+) the pedal stream is **fire-and-forget at a
+fixed 100 Hz**: each update is one-way with no acknowledgement round-trip in
+the hot path and no change-suppression dead-band, so PC-attached pedals get
+the same cadence the wheelbase itself is fed at. On older firmware the plugin
+falls back to acknowledged commands (~8 ms per update, still ~100 Hz-class).
+
 > **Overrides are sticky.** The firmware has no timeout, so whatever was last
 > sent stays applied until it is released. The plugin releases automatically
 > when you stop streaming, when it disconnects, and when SimHub shuts it down —

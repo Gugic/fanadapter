@@ -461,6 +461,21 @@ export class SerialClient {
   async usbStall(ms: number): Promise<void> {
     await this.send({ cmd: 'usb_stall', ms })
   }
+
+  // Fire-and-forget pedal streaming (STM32, protocol >= 6). stream_axes never replies, so
+  // nothing is queued — the FIFO reply matching never sees it, which is what makes it safe to
+  // send at 100 Hz interleaved with acked commands. SimHub's DriveController is the production
+  // consumer; the wrapper lives here so the protocol clients stay in lockstep.
+  async streamAxes(values: {
+    throttle?: number
+    brake?: number
+    clutch?: number
+    handbrake?: number
+  }): Promise<void> {
+    const writer = this.writer
+    if (!writer) throw new Error('not connected')
+    await writer.write(JSON.stringify({ cmd: 'stream_axes', ...values }) + '\n')
+  }
 }
 
 export interface UsbSlotDiag {

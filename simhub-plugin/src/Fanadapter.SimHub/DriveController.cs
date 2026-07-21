@@ -23,16 +23,20 @@ namespace Fanadapter.SimHub
     public class DriveController : IDisposable
     {
         /// <summary>
-        /// Target period between pedal updates. The real ceiling is the serial
-        /// round-trip, not this: each set_outputs waits for its reply, and that
-        /// measured ~13 ms on an STM32 over native USB CDC — about 77 Hz when
-        /// the pedals are moving continuously. That is far above what a human
-        /// foot produces, so the loop is left to self-limit rather than pipeline
-        /// commands, which would trade back-pressure for an unbounded queue if
-        /// the adapter ever fell behind.
+        /// Target period between pedal updates — 100 Hz, matching the pedal
+        /// frame rate the adapter sends the wheelbase, so streaming faster
+        /// buys nothing. Two transports, chosen per tick by firmware
+        /// capability:
         ///
-        /// Ticks where nothing changed cost no round-trip at all (see the change
-        /// suppression in Read), so the link stays idle when the pedals do.
+        /// * protocol >= 6: stream_axes, fire-and-forget. No reply, no
+        ///   round-trip in the hot path, no change suppression — every tick
+        ///   carries the latest full-resolution values, which also makes the
+        ///   stream its own keep-alive. Cost is one-way transit (~2 ms).
+        /// * older firmware: acked set_outputs with change suppression and a
+        ///   1 s keep-alive. The ack round-trip (7.9 ms measured post-#33,
+        ///   13 ms before) is the ceiling and the jitter source; the loop
+        ///   self-limits rather than pipelining, which would trade
+        ///   back-pressure for an unbounded queue if the adapter fell behind.
         /// </summary>
         private const int StreamPeriodMs = 10;
 
@@ -212,18 +216,54 @@ namespace Fanadapter.SimHub
             if (proto == null || pm == null) return;
 
             var settings = _settings();
+            var version = _session.Version;
+
+            if (version != null && version.SupportsAxisStreaming)
+            {
+                // Fire-and-forget path: send every configured axis at full
+                // resolution every tick. No suppression epsilon (which cost 64
+                // counts of dead-band), no separate keep-alive (the stream is
+                // one), no ack wait. See StreamPeriodMs for the rationale.
+                int? throttle = ReadRaw(pm, settings.Throttle, 0);
+                int? brake = ReadRaw(pm, settings.Brake, 1);
+                int? clutch = ReadRaw(pm, settings.Clutch, 2);
+                int? handbrake = ReadRaw(pm, settings.Handbrake, 3);
+
+                if (throttle == null && brake == null && clutch == null && handbrake == null) return;
+
+                proto.StreamAxes(throttle, brake, clutch, handbrake);
+                return;
+            }
+
+            // Legacy acked path (Teensy-era or pre-protocol-6 STM32 firmware).
             bool keepAlive = DateTime.UtcNow - _lastKeepAlive >= KeepAlive;
 
-            int? throttle = Read(pm, settings.Throttle, 0, keepAlive);
-            int? brake = Read(pm, settings.Brake, 1, keepAlive);
-            int? clutch = Read(pm, settings.Clutch, 2, keepAlive);
-            int? handbrake = Read(pm, settings.Handbrake, 3, keepAlive);
+            int? t = Read(pm, settings.Throttle, 0, keepAlive);
+            int? b = Read(pm, settings.Brake, 1, keepAlive);
+            int? c = Read(pm, settings.Clutch, 2, keepAlive);
+            int? h = Read(pm, settings.Handbrake, 3, keepAlive);
 
-            if (throttle == null && brake == null && clutch == null && handbrake == null) return;
+            if (t == null && b == null && c == null && h == null) return;
 
             if (keepAlive) _lastKeepAlive = DateTime.UtcNow;
 
-            await proto.SetOutputsAsync(throttle, brake, clutch, handbrake).ConfigureAwait(false);
+            await proto.SetOutputsAsync(t, b, c, h).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Current value for a channel with no change suppression — the
+        /// fire-and-forget stream re-sends every tick by design. Still null
+        /// for unconfigured or non-numeric sources.
+        /// </summary>
+        private int? ReadRaw(PluginManager pm, AxisSource source, int index)
+        {
+            if (source == null || !source.IsConfigured) return null;
+
+            var scaled = source.Scale(pm.GetPropertyValue(source.PropertyName));
+            if (scaled == null) return null;
+
+            _lastSent[index] = scaled; // keeps the settings-UI readout live
+            return scaled;
         }
 
         /// <summary>

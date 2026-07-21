@@ -373,6 +373,24 @@ namespace Fanadapter.Core
             CancellationToken cancellationToken = default(CancellationToken)) =>
             SendInternal(command, timeoutMs, cancellationToken, isResyncProbe: false);
 
+        /// <summary>
+        /// Fire-and-forget for commands the firmware answers with NOTHING
+        /// (currently only stream_axes). No pending entry is queued, so the
+        /// strictly-FIFO reply matching is untouched — which is exactly what
+        /// makes a no-reply command safe to stream at rate while acked
+        /// commands run interleaved. Sending a replying command through here
+        /// WOULD desync the queue: its reply would surface as an unmatched
+        /// line. Throws like SendAsync when not connected.
+        /// </summary>
+        public void Post(JObject command)
+        {
+            if (!_transport.IsOpen) throw new InvalidOperationException("not connected");
+            lock (_sync)
+            {
+                _transport.Write(command.ToString(Formatting.None) + "\n");
+            }
+        }
+
         private Task<JObject> SendInternal(JObject command, int timeoutMs,
             CancellationToken cancellationToken, bool isResyncProbe)
         {

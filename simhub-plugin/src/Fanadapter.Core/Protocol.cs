@@ -158,6 +158,25 @@ namespace Fanadapter.Core
         /// null keep whatever they had — an unset channel still follows the
         /// adapter's own mapping if it was never overridden.
         /// </summary>
+        /// <summary>
+        /// No-reply twin of SetOutputsAsync (firmware protocol >= 6, STM32
+        /// only). The acked path costs a full round-trip per update (7.9 ms
+        /// measured — a ~127 Hz ceiling plus ack-wait jitter); this one
+        /// returns as soon as the bytes are written, so a streamer can run at
+        /// a fixed rate with one-way latency only. The firmware sends no
+        /// response, so the reply queue is never involved. Gate on
+        /// <see cref="VersionInfo.SupportsAxisStreaming"/> before using.
+        /// </summary>
+        public void StreamAxes(int? throttle = null, int? brake = null, int? clutch = null, int? handbrake = null)
+        {
+            var cmd = Cmd("stream_axes");
+            if (throttle.HasValue) cmd["throttle"] = throttle.Value;
+            if (brake.HasValue) cmd["brake"] = brake.Value;
+            if (clutch.HasValue) cmd["clutch"] = clutch.Value;
+            if (handbrake.HasValue) cmd["handbrake"] = handbrake.Value;
+            _client.Post(cmd);
+        }
+
         public Task SetOutputsAsync(int? throttle = null, int? brake = null, int? clutch = null, int? handbrake = null)
         {
             var cmd = Cmd("set_outputs");
