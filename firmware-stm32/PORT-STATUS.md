@@ -121,28 +121,55 @@ burst of framing/overrun errors; the RX ISR tallies them and STREAMING re-arms t
 burst (`RESTART_ERR_THRESHOLD = 32`, 1 Hz decay so isolated glitches don't trip it). The Teensy only
 ever recovered via the manual re-arm button.
 
-### A device that goes silent but stays "connected" — the dropped report-pipe re-arm
+### "Inputs freeze and everything lags" is the CONSOLE starving the loop — not USB
 
-Field symptom (found during SimHub-plugin testing, but client-independent): after a few minutes the
-USB pedals stopped delivering input while still listed as connected; every other hub device kept
-working; only a reboot recovered it — and only for a few minutes.
+**Read this before touching `usb_input_task` or believing a USB-host theory.** One evening was
+spent chasing this as a USB problem, twice, wrongly. The actual cause is `console_printf`.
 
-The HID report pipe is kept alive **solely** by the `tuh_hid_receive_report()` call at the end of
-`tuh_hid_report_received_cb` — TinyUSB (0.18) does not auto-re-arm. That call can fail transiently
-(`usbh_edpt_claim` or `usbh_edpt_xfer` → e.g. a host-channel allocation miss), and both call sites
-ignored the return value. One dropped re-arm = that interface never polls again, while the pool
-slot, `list_devices`, and the mount state all stay healthy. It hits the *pedals* first because
-analog axes + ADC noise make them the chattiest device on the hub — orders of magnitude more
-transfers than a shifter, so the most exposure to any transient.
+Field symptom: minutes into a session with webconfig or the SimHub plugin connected, inputs get
+coarse ("low fps"), then freeze at their last values — a pedal caught mid-press holds 100% and the
+wheelbase keeps receiving it — gear changes arrive up to a minute late, and the pedal link cycles
+`RX error burst` → re-handshake. Rebooting fixes it for a few minutes. Devices stay listed as
+connected throughout, which is what makes it read as a stuck HID pipe.
 
-Fix: both arm sites log a failure, and `usb_input_task()` (main loop, 250 ms) walks the claimed
-pool slots and re-arms any whose interrupt-IN endpoint is idle (`tuh_hid_receive_ready`). The loop
-is single-threaded through `tuh_task()`, so "claimed slot, idle pipe" is never a legitimate state —
-an armed pipe shows busy even when the device NAKs, which is why this can't false-positive on idle
-devices, and also why a *blind* silence-timeout would have been wrong. The `[usb] … report pipe was
-dead` console line is the field confirmation of the transient actually firing. Not covered (no
-evidence yet): a channel wedged *busy* forever — the watchdog would skip it; if silence recurs with
-no watchdog lines, that's the next suspect (needs abort + re-arm, riskier).
+It is not. `live` and `outputs` events are emitted through `console_printf`, which does a
+**blocking** `HAL_UART_Transmit` on the USART1 leg for every line, whether or not anything is
+attached to USART1. Do the arithmetic at 115200 8E1 (11 bits/char): a `live` line is ~58 chars ≈
+**5.5 ms**; an `outputs` line ~110 chars ≈ **10.5 ms**. Inputs stream at up to ~30 Hz and outputs
+stream *continuously*, so with both enabled **over half of every second is spent blocked in the
+console** — in a loop where `pedals_update()` runs last and needs a 10 ms cadence. The pedal stream
+collapses, the wheelbase falls back to analog, and mapping evaluation crawls. Both clients enable
+both streams on connect, and neither disables them if the tab or app disappears, which is why it
+always crept up minutes into a session. The CDC leg has the same shape: it spins up to 1000
+`tud_task()` pumps per line when the host has stopped draining (port closed while still enumerated
+— exactly what a closed browser tab or a capture script leaves behind).
+
+Confirmed by turning both streams off on a stuck board: it recovered immediately.
+
+**Fix (not yet implemented):** make the USART1 leg non-blocking (interrupt/DMA ring, drop on full)
+and bail out of the CDC spin after a few consecutive no-progress pumps. Until then the workaround
+is to connect a client to *configure*, then disconnect before driving.
+
+#### Two failed attempts at the USB theory — do not repeat them
+
+Both looked obviously right and both were wrong; the negative results are the useful part.
+
+1. **Re-arm idle pipes.** The report pipe is kept alive solely by the `tuh_hid_receive_report()`
+   call at the end of `tuh_hid_report_received_cb` (TinyUSB 0.18 never re-arms itself), and that
+   call can fail transiently, so a dropped arm would silence a device forever. Real hazard, so
+   `usb_input_task()` still re-arms genuinely idle pipes — but it **never fired in the field**,
+   which is the evidence that this was not the bug.
+2. **Escalate to `tuh_hid_receive_abort()` on silence.** Wrong twice over. A quiet device is
+   *indistinguishable* from a wedged one here — a device with nothing to report NAKs, and a
+   NAK-looping endpoint reads exactly as busy as a dead one — so it fired constantly on the
+   untouched shifters, and aborting a live transfer leaves a partial report to be decoded as
+   garbage axis values (observed: two axes swinging full-range, perfectly anti-correlated). Worse,
+   logging each episode put `console_printf` in the main loop and reproduced the starvation above
+   at full strength. Reverted.
+
+The lesson generalises: **before blaming a peripheral, account for how long the loop is blocked.**
+`console_printf` is not free, and anything on the main-loop path that calls it is a latency bug in
+waiting.
 
 ## Gotchas — don't re-derive
 

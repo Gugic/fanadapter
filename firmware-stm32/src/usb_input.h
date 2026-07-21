@@ -17,10 +17,10 @@ bool usb_input_on_mount(uint8_t daddr, uint8_t instance, const uint8_t *report_d
 void usb_input_on_umount(uint8_t daddr, uint8_t instance);
 void usb_input_on_report(uint8_t daddr, uint8_t instance, const uint8_t *report, uint16_t len);
 
-// Interrupt-pipe watchdog — call from the main loop. The report pipe is kept alive solely by the
-// re-arm in tuh_hid_report_received_cb, and tuh_hid_receive_report() can fail transiently (endpoint
-// claim or channel allocation); a single dropped re-arm used to silence the device PERMANENTLY
-// while it stayed listed as connected. This walks the claimed slots and re-arms any whose IN pipe
-// is idle. Single-threaded with tuh_task(), so "claimed slot, idle pipe" is never a legitimate
-// state — no false positives.
+// Interrupt-pipe watchdog — call from the main loop. A claimed device can stop delivering reports
+// while still enumerated, freezing its last values (a pedal caught mid-press holds 100% and the
+// wheelbase keeps getting it). Two causes, both recovered here: a dropped re-arm leaves the pipe
+// IDLE, and a wedged host channel leaves it BUSY with a transfer that never completes — the latter
+// needs an abort before re-arming, and is the one seen in the field. Triggered by silence rather
+// than endpoint state, because a healthy NAK-ing device also reads busy. See usb_input.c.
 void usb_input_task(uint32_t now_ms);
