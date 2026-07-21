@@ -50,7 +50,10 @@
                          reboot to bootloader, flash over WinUSB, reconnect. -->
                     <StackPanel Orientation="Horizontal">
                         <styles:SHButtonSecondary Command="{Binding Firmware.UpdateCommand}"
-                                                  VerticalAlignment="Center">Update firmware</styles:SHButtonSecondary>
+                                                  VerticalAlignment="Center"
+                                                  Content="{Binding Firmware.UpdateButtonText}" />
+                        <styles:SHButtonSecondary Command="{Binding Firmware.BrowseCommand}"
+                                                  VerticalAlignment="Center" Margin="8,0,0,0">Browse .bin…</styles:SHButtonSecondary>
                         <TextBlock Text="{Binding Firmware.LatestText}" Opacity="0.7"
                                    VerticalAlignment="Center" Margin="10,0,0,0" />
                     </StackPanel>
@@ -60,7 +63,7 @@
                     <TextBlock Text="{Binding Firmware.StatusText}" Opacity="0.7"
                                TextWrapping="Wrap" Margin="0,4,0,0" />
                     <TextBlock Opacity="0.7" TextWrapping="Wrap" Margin="0,2,0,0"
-                               Text="Fetches the latest published build, reboots the adapter into its bootloader, flashes, and reconnects — saved mappings survive. Also works with no connection if the board is already stuck in bootloader mode." />
+                               Text="Reboots the adapter into its bootloader, flashes, and reconnects — saved mappings survive. Update firmware pulls the latest published build; Browse .bin flashes a local file (use this until the firmware is published). Also works with no connection if the board is stuck in bootloader mode." />
                 </StackPanel>
             </styles:SHSection>
 

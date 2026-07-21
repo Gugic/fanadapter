@@ -1,20 +1,23 @@
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.IO.Ports;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Fanadapter.Core;
+using Microsoft.Win32;
 
 namespace Fanadapter.SimHub.UI
 {
     /// <summary>
     /// One-click firmware update, the SimHub twin of webconfig's Firmware dialog — and one step
     /// more hands-free: native code has no WebUSB permission model, so there is no device picker
-    /// even on the first run. The cycle: fetch the published image → {"cmd":"dfu"} → release the
-    /// COM port → open the ROM bootloader over WinUSB → erase/write/leave → wait for the COM port
-    /// to re-enumerate → reconnect → confirm the version.
+    /// even on the first run. The cycle: get the image (a picked local .bin, else the published
+    /// build) → {"cmd":"dfu"} → release the COM port → open the ROM bootloader over WinUSB →
+    /// erase/write/leave → wait for the COM port to re-enumerate → reconnect → confirm the version.
+    /// The local-file path is what works before a public Pages deploy exists.
     /// </summary>
     public class FirmwareUpdateViewModel : INotifyPropertyChanged
     {
@@ -37,12 +40,19 @@ namespace Fanadapter.SimHub.UI
             _runOnUi = runOnUi;
             _reconnect = reconnect;
             UpdateCommand = new RelayCommand(() => _ = RunUpdateAsync(), () => CanUpdate);
+            BrowseCommand = new RelayCommand(Browse, () => !IsRunning);
         }
 
         public RelayCommand UpdateCommand { get; }
 
+        /// <summary>Pick a local .bin — the path that works before/without a Pages deploy.</summary>
+        public RelayCommand BrowseCommand { get; }
+
         private FirmwareManifest _manifest;
         private bool _checked;
+
+        private byte[] _localImage;
+        private string _localFileName;
 
         private bool _isRunning;
         public bool IsRunning
@@ -52,7 +62,11 @@ namespace Fanadapter.SimHub.UI
             {
                 _isRunning = value;
                 OnPropertyChanged();
-                _runOnUi(UpdateCommand.RaiseCanExecuteChanged);
+                _runOnUi(() =>
+                {
+                    UpdateCommand.RaiseCanExecuteChanged();
+                    BrowseCommand.RaiseCanExecuteChanged();
+                });
             }
         }
 
@@ -70,19 +84,60 @@ namespace Fanadapter.SimHub.UI
             private set { _progressPercent = value; OnPropertyChanged(); }
         }
 
+        /// <summary>Beside the button: the picked file if any, else the published build's version.</summary>
         public string LatestText =>
-            _manifest == null
-                ? (_checked ? "latest: unavailable (offline?)" : "latest: checking…")
-                : string.Format("latest: {0} · {1}", _manifest.Version, _manifest.Commit);
+            _localFileName != null
+                ? "file: " + _localFileName
+                : _manifest == null
+                    ? (_checked ? "latest: unavailable (repo private / offline)" : "latest: checking…")
+                    : string.Format("latest: {0} · {1}", _manifest.Version, _manifest.Commit);
+
+        /// <summary>"Flash <file>" vs "Update firmware" so the button says which source it will use.</summary>
+        public string UpdateButtonText =>
+            _localFileName != null ? "Flash " + _localFileName : "Update firmware";
 
         /// <summary>
-        /// Connected to an STM32 adapter with a published build available, or — deliberately —
-        /// disconnected with one available: a board stranded in the bootloader by an interrupted
-        /// update has no serial port, and re-running the update is exactly how it recovers.
+        /// A source is available (a picked file, or a published build) and the target can take it:
+        /// connected to an STM32 adapter, or — deliberately — disconnected, since a board stranded
+        /// in the bootloader by an interrupted update has no serial port and re-running the update
+        /// is exactly how it recovers.
         /// </summary>
         public bool CanUpdate =>
-            !IsRunning && _manifest != null &&
+            !IsRunning && (_localImage != null || _manifest != null) &&
             (!_session.IsConnected || (_session.Version?.SupportsDfu ?? false));
+
+        private void Browse()
+        {
+            var dlg = new OpenFileDialog
+            {
+                Title = "Select adapter firmware",
+                Filter = "Firmware image (*.bin)|*.bin|All files (*.*)|*.*",
+            };
+            if (dlg.ShowDialog() != true) return;
+            try
+            {
+                var raw = DfuseFlasher.StripDfuSuffix(File.ReadAllBytes(dlg.FileName));
+                if (!DfuseFlasher.LooksLikeFirmware(raw))
+                {
+                    _log(Path.GetFileName(dlg.FileName) +
+                         " does not look like adapter firmware (no Cortex-M vector table).");
+                    return;
+                }
+                _localImage = raw;
+                _localFileName = Path.GetFileName(dlg.FileName);
+            }
+            catch (Exception ex)
+            {
+                _log("could not read " + dlg.FileName + ": " + ex.Message);
+                return;
+            }
+            _runOnUi(() =>
+            {
+                OnPropertyChanged(nameof(LatestText));
+                OnPropertyChanged(nameof(UpdateButtonText));
+                UpdateCommand.RaiseCanExecuteChanged();
+            });
+        }
 
         /// <summary>Called by the owner on connect (and once at startup) — never throws.</summary>
         public async Task RefreshManifestAsync()
@@ -109,8 +164,16 @@ namespace Fanadapter.SimHub.UI
             ProgressPercent = 0;
             try
             {
-                Status("Downloading firmware…");
-                var image = await _channel.GetImageAsync(CancellationToken.None);
+                byte[] image;
+                if (_localImage != null)
+                {
+                    image = _localImage; // already stripped + validated at pick time
+                }
+                else
+                {
+                    Status("Downloading firmware…");
+                    image = await _channel.GetImageAsync(CancellationToken.None);
+                }
 
                 // Remember where to come back to before tearing the session down.
                 var portName = _session.PortName;
