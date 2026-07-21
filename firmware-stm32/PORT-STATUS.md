@@ -264,7 +264,14 @@ arithmetic that matches a previous measurement exactly:
 
 Fix: when `tud_mounted()` (a CDC client exists and is the authoritative copy), the non-lossy
 USART1 leg mirrors what fits and drops the rest — it never blocks the loop. When no CDC client is
-enumerated, USART1 *is* the console and keeps the full wait-for-room semantics. Two forensic aids
+enumerated, USART1 *is* the console and keeps the full wait-for-room semantics.
+
+Measured on the board after the fix, **both telemetry streams on**: `get_config` (8333 B) returned
+in **384/414/430/416/414 ms** over five back-to-back runs — versus ~720 ms before, i.e. the mirror
+*was* the bottleneck and the remainder is real USB transfer. Zero `[pedals]` lines across all five
+(no gap sentinel, no error burst). Before the fix, that same sequence produced
+`RX error burst → re-handshake` reliably, which is what the field kept reporting as a phantom
+"wheelbase restart". Two forensic aids
 were added so the next anomaly explains itself in the client's timestamped log: the burst line now
 breaks down error types (`fe=` wrong-baud traffic from a re-handshaking base, `ore=` our ISR ran
 late), and STREAMING logs `[pedals] stream gap N ms — main loop stalled` whenever 10+ frames were
