@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'webconfig/**'
+      # The deployed site carries the latest STM32 firmware image for the in-browser updater, so
+      # firmware changes must redeploy the site too or webconfig would offer a stale "latest".
+      - 'firmware-stm32/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -36,6 +39,33 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run build
+
+      # ---- STM32 firmware, published beside the app for the in-browser updater ----
+      # webconfig's Firmware-update dialog fetches firmware/fanadapter-stm32.{json,bin} same-origin
+      # and flashes over WebUSB, so the Pages deploy doubles as the firmware release channel.
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ runner.os }}-${{ hashFiles('firmware-stm32/platformio.ini') }}
+
+      - name: Build STM32 firmware
+        working-directory: ${{ github.workspace }}
+        run: |
+          pip install platformio==6.1.19
+          platformio run -d firmware-stm32 -e weact_h743
+
+      - name: Publish firmware image + manifest into the site
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p webconfig/dist/firmware
+          cp firmware-stm32/.pio/build/weact_h743/firmware.bin webconfig/dist/firmware/fanadapter-stm32.bin
+          VERSION=$(sed -n 's/^#define FW_VER *"\(.*\)"/\1/p' firmware-stm32/src/protocol.c)
+          SIZE=$(stat -c%s webconfig/dist/firmware/fanadapter-stm32.bin)
+          printf '{"version":"%s","commit":"%s","builtAt":"%s","size":%s}\n' \
+            "$VERSION" "${GITHUB_SHA::7}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SIZE" \
+            > webconfig/dist/firmware/fanadapter-stm32.json
+          cat webconfig/dist/firmware/fanadapter-stm32.json
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

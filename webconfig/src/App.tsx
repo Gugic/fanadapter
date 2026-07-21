@@ -17,6 +17,7 @@ import {
   Check,
   ChevronLeft,
   SkipForward,
+  HardDriveDownload,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -37,6 +38,18 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { SerialClient, type ProtocolEvent } from '@/lib/serial'
+import {
+  DfuseFlasher,
+  fetchFirmwareImage,
+  fetchFirmwareManifest,
+  isWebUsbSupported,
+  looksLikeFirmware,
+  requestDfuDevice,
+  stripDfuSuffix,
+  waitForDfuDevice,
+  type FirmwareManifest,
+  type FlashProgress,
+} from '@/lib/dfu'
 import {
   CHANNELS,
   GEAR_KEYS,
@@ -282,22 +295,28 @@ export default function App() {
 
   // ------------------ Connection lifecycle ------------------
 
+  // Shared post-open session bring-up: read firmware + devices + config, arm the event streams.
+  const initSession = useCallback(async (): Promise<VersionInfo> => {
+    setConnected(true)
+    setStatus('Reading firmware…')
+    const v = await client.version()
+    setVersion(v)
+    const devs = await client.listDevices()
+    setDevices(devs)
+    const cfg = await client.getConfig()
+    setConfig(cfg)
+    await client.setLiveInputs(true)
+    await client.setLiveOutputs(true)
+    setStatus('')
+    return v
+  }, [client])
+
   const handleConnect = useCallback(async () => {
     try {
       setError(null)
       setStatus('Opening port…')
       await client.connect()
-      setConnected(true)
-      setStatus('Reading firmware…')
-      const v = await client.version()
-      setVersion(v)
-      const devs = await client.listDevices()
-      setDevices(devs)
-      const cfg = await client.getConfig()
-      setConfig(cfg)
-      await client.setLiveInputs(true)
-      await client.setLiveOutputs(true)
-      setStatus('')
+      await initSession()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setStatus('')
@@ -308,7 +327,25 @@ export default function App() {
       }
       setConnected(false)
     }
-  }, [client])
+  }, [client, initSession])
+
+  // Picker-free reconnect over a persisted port grant — the firmware-update flow's way back after
+  // the flash reboot. Null = no granted port attached yet (the caller polls); throws only on a
+  // real session failure after the port opened.
+  const handleConnectGranted = useCallback(async (): Promise<VersionInfo | null> => {
+    if (!(await client.connectGranted())) return null
+    try {
+      return await initSession()
+    } catch (e) {
+      try {
+        await client.disconnect()
+      } catch {
+        /* ignore */
+      }
+      setConnected(false)
+      throw e
+    }
+  }, [client, initSession])
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -905,6 +942,35 @@ export default function App() {
     setTimeout(() => setStatus(''), 4000)
   }
 
+  // Reboot into the ROM bootloader for a firmware flash (STM32 only). Same teardown as
+  // handleReboot — the CDC port is gone the moment the firmware acks — but the flash dialog stays
+  // open: its next step talks WebUSB to the DFU device that replaces the port.
+  const [flashOpen, setFlashOpen] = useState(false)
+  async function handleEnterBootloader() {
+    try {
+      setStatus('Rebooting to bootloader…')
+      await client.dfu()
+    } catch {
+      // The firmware vanishes mid-response; a timeout here is the happy path.
+    }
+    try {
+      await client.disconnect()
+    } catch {
+      /* ignore */
+    }
+    setConnected(false)
+    setDevices([])
+    setConfig(null)
+    setLiveSlots(new Map())
+    setAxisMax(new Map())
+    setOutputs(null)
+    setDirty(false)
+    setVersion(null)
+    setCapturing(null)
+    trackingRef.current = null
+    setStatus('')
+  }
+
   // ------------------ Render ------------------
 
   return (
@@ -919,7 +985,17 @@ export default function App() {
         onSave={handleSave}
         onReset={handleReset}
         onReboot={handleReboot}
+        onFlash={() => setFlashOpen(true)}
         supported={supported}
+      />
+
+      <FirmwareDialog
+        open={flashOpen}
+        onClose={() => setFlashOpen(false)}
+        connected={connected}
+        version={version}
+        onEnterBootloader={handleEnterBootloader}
+        onReconnect={handleConnectGranted}
       />
 
       <main className="container mx-auto max-w-5xl px-4 py-6">
@@ -1042,6 +1118,7 @@ function Header({
   onSave,
   onReset,
   onReboot,
+  onFlash,
 }: {
   connected: boolean
   version: VersionInfo | null
@@ -1053,6 +1130,7 @@ function Header({
   onSave: () => void
   onReset: () => void
   onReboot: () => void
+  onFlash: () => void
 }) {
   return (
     <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -1107,20 +1185,360 @@ function Header({
                 <Power className="h-4 w-4" />
                 Reboot
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onFlash}
+                title="Update the adapter firmware over USB (STM32 only)"
+              >
+                <HardDriveDownload className="h-4 w-4" />
+                Flash
+              </Button>
               <Button variant="outline" size="sm" onClick={onDisconnect}>
                 <Unplug className="h-4 w-4" />
                 Disconnect
               </Button>
             </>
           ) : (
-            <Button size="sm" onClick={onConnect} disabled={!supported}>
-              <Plug className="h-4 w-4" />
-              Connect
-            </Button>
+            <>
+              {/* Also reachable while disconnected: a board sitting in the bootloader (e.g. a
+                  flash that was interrupted after the reboot step) has no serial port to connect
+                  to — the dialog's flash step is the only way back. */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onFlash}
+                title="Flash adapter firmware over USB (works when the board is in bootloader mode)"
+              >
+                <HardDriveDownload className="h-4 w-4" />
+                Flash
+              </Button>
+              <Button size="sm" onClick={onConnect} disabled={!supported}>
+                <Plug className="h-4 w-4" />
+                Connect
+              </Button>
+            </>
           )}
         </div>
       </div>
     </header>
+  )
+}
+
+// ------------------ Firmware update dialog ------------------
+
+// One-click update: fetch the deployed image → reboot the adapter into its ROM bootloader over
+// serial → find the DFU device via the persisted WebUSB grant → erase/write/leave → reconnect
+// over the persisted WebSerial grant → confirm the version. The only manual step that can exist
+// is Chromium's one-time-per-machine device picker (a security floor: requestDevice() needs a
+// fresh user gesture, and by the time we know the grant is missing the original click's
+// activation is spent) — it gets its own button, and every later update runs picker-free.
+function FirmwareDialog({
+  open,
+  onClose,
+  connected,
+  version,
+  onEnterBootloader,
+  onReconnect,
+}: {
+  open: boolean
+  onClose: () => void
+  connected: boolean
+  version: VersionInfo | null
+  onEnterBootloader: () => Promise<void>
+  onReconnect: () => Promise<VersionInfo | null>
+}) {
+  type Stage = 'idle' | 'working' | 'needs-grant' | 'done' | 'error'
+  const [stage, setStage] = useState<Stage>('idle')
+  const [phase, setPhase] = useState('')
+  const [progress, setProgress] = useState<FlashProgress | null>(null)
+  const [failure, setFailure] = useState<string | null>(null)
+  const [newVersion, setNewVersion] = useState<string | null>(null)
+  const [manifest, setManifest] = useState<FirmwareManifest | null>(null)
+  const [localImage, setLocalImage] = useState<{ name: string; data: Uint8Array } | null>(null)
+  // Stashed across the needs-grant pause so "pick device" can resume the same update.
+  const pendingImageRef = useRef<Uint8Array | null>(null)
+
+  const isStm32 = version?.fw === 'fanadapter-stm32'
+  const webusb = isWebUsbSupported()
+  const busy = stage === 'working'
+
+  useEffect(() => {
+    if (!open) return
+    setStage('idle')
+    setFailure(null)
+    setProgress(null)
+    setNewVersion(null)
+    void fetchFirmwareManifest().then(setManifest)
+  }, [open])
+
+  async function pickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    setFailure(null)
+    const f = e.target.files?.[0]
+    if (!f) return
+    const raw = stripDfuSuffix(new Uint8Array(await f.arrayBuffer()))
+    if (!looksLikeFirmware(raw)) {
+      setLocalImage(null)
+      setFailure(
+        `${f.name} does not look like adapter firmware (no Cortex-M vector table at the start).`,
+      )
+      return
+    }
+    setLocalImage({ name: f.name, data: raw })
+  }
+
+  function fail(msg: string) {
+    setFailure(msg)
+    setStage('error')
+  }
+
+  async function runUpdate() {
+    setFailure(null)
+    setProgress(null)
+    setStage('working')
+    try {
+      // 1 · The image: a picked local file wins, else the deployed build.
+      setPhase('Fetching firmware…')
+      const image = localImage ? localImage.data : stripDfuSuffix(await fetchFirmwareImage())
+      if (!looksLikeFirmware(image)) {
+        fail('The deployed firmware image looks corrupt — flash a local .bin instead.')
+        return
+      }
+
+      // 2 · Into the bootloader. Skipped when not connected: the board may already be sitting in
+      // DFU (a previously interrupted update), which is exactly the recovery path.
+      if (connected) {
+        setPhase('Rebooting into the bootloader…')
+        await onEnterBootloader()
+      }
+
+      // 3 · Find the bootloader through the persisted grant.
+      setPhase('Waiting for the bootloader…')
+      const device = await waitForDfuDevice(8000)
+      if (!device) {
+        pendingImageRef.current = image
+        setStage('needs-grant')
+        return
+      }
+      await flashAndReconnect(device, image)
+    } catch (e) {
+      fail(describeFlashError(e))
+    }
+  }
+
+  // The first-update path: the grant didn't exist, the user picked the device from a fresh
+  // gesture, and the stashed image continues from where runUpdate stopped.
+  async function grantAndContinue() {
+    const image = pendingImageRef.current
+    if (!image) return
+    setStage('working')
+    try {
+      const device = await requestDfuDevice()
+      await flashAndReconnect(device, image)
+    } catch (e) {
+      fail(describeFlashError(e))
+    }
+  }
+
+  async function flashAndReconnect(device: USBDevice, image: Uint8Array) {
+    setPhase('Flashing…')
+    const flasher = new DfuseFlasher(device)
+    // The device can be enumerated but not yet claimable for a beat (Windows still binding the
+    // driver right after attach) — retry the open briefly before giving up.
+    let opened = false
+    for (let attempt = 0; !opened; attempt++) {
+      try {
+        await flasher.open()
+        opened = true
+      } catch (e) {
+        if (attempt >= 3) throw e
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+    }
+    try {
+      await flasher.flash(image, setProgress)
+    } finally {
+      await flasher.close()
+    }
+
+    // 4 · Back over serial, silently, on the persisted port grant.
+    setPhase('Waiting for the adapter…')
+    setProgress(null)
+    const deadline = Date.now() + 15000
+    for (;;) {
+      try {
+        const v = await onReconnect()
+        if (v) {
+          setNewVersion(v.ver)
+          setStage('done')
+          return
+        }
+      } catch {
+        /* port present but session bring-up failed — retry until deadline */
+      }
+      if (Date.now() >= deadline) {
+        fail(
+          'Flashed, but the adapter did not come back on its serial port within 15 s. ' +
+            'Check the connection and hit Connect manually.',
+        )
+        return
+      }
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+  }
+
+  function describeFlashError(e: unknown): string {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (/NotFoundError|No device selected/i.test(msg)) {
+      return (
+        'No bootloader device picked. If none was listed: the adapter may not be in bootloader ' +
+        'mode, or Windows has no WinUSB driver bound to "STM32 BOOTLOADER" — installing ' +
+        'STM32CubeProgrammer (or running Zadig once) sets that up.'
+      )
+    }
+    return (
+      `Update failed: ${msg}. The bootloader keeps running after a failed write — ` +
+      'fix the issue and update again.'
+    )
+  }
+
+  const pct =
+    progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
+  const updateLabel = localImage
+    ? `Flash ${localImage.name}`
+    : manifest
+      ? connected && version && manifest.version !== version.ver
+        ? `Update to ${manifest.version}`
+        : `Reinstall ${manifest.version}`
+      : 'Update'
+  const canUpdate = webusb && (localImage !== null || manifest !== null) && (!connected || isStm32)
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o && !busy) onClose()
+      }}
+    >
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Firmware update</DialogTitle>
+          <DialogDescription>
+            Updates the adapter over USB in one go. Saved mappings live in a separate flash bank and
+            survive.
+          </DialogDescription>
+        </DialogHeader>
+
+        {!webusb ? (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              WebUSB is not available in this browser. Use Chrome, Edge, or Brave on desktop.
+            </AlertDescription>
+          </Alert>
+        ) : connected && !isStm32 ? (
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              This adapter runs the Teensy firmware — it flashes with the PJRC loader, not over DFU.
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Installed</span>
+                <span>{connected ? (version?.ver ?? '?') : 'not connected'}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Latest</span>
+                <span>
+                  {manifest
+                    ? `${manifest.version} · ${manifest.commit}`
+                    : 'unavailable (dev build?)'}
+                </span>
+              </div>
+              {!connected && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Not connected — updating anyway works if the board is already in bootloader mode.
+                </p>
+              )}
+            </div>
+
+            {stage === 'needs-grant' ? (
+              <div className="space-y-2">
+                <p className="text-sm">
+                  First update on this machine: Chrome needs you to pick the bootloader device once.
+                  It's remembered — every later update runs hands-free.
+                </p>
+                <Button size="sm" onClick={() => void grantAndContinue()}>
+                  <HardDriveDownload className="h-4 w-4" />
+                  Pick “STM32 BOOTLOADER”…
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" disabled={!canUpdate || busy} onClick={() => void runUpdate()}>
+                {busy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <HardDriveDownload className="h-4 w-4" />
+                )}
+                {busy ? phase : updateLabel}
+              </Button>
+            )}
+
+            {busy && progress && (
+              <div className="space-y-1">
+                <div className="h-2 w-full overflow-hidden rounded bg-muted">
+                  <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {progress.phase === 'erase'
+                    ? `Erasing sector ${progress.done + 1}…`
+                    : progress.phase === 'write'
+                      ? `Writing ${Math.round(progress.done / 1024)} / ${Math.round(progress.total / 1024)} KB`
+                      : 'Booting the new firmware…'}
+                </p>
+              </div>
+            )}
+
+            {stage === 'done' && (
+              <Alert>
+                <CheckCircle2 className="h-4 w-4" />
+                <AlertDescription>
+                  Updated to {newVersion} and reconnected. All done.
+                </AlertDescription>
+              </Alert>
+            )}
+            {failure && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{failure}</AlertDescription>
+              </Alert>
+            )}
+
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer select-none">Flash a local .bin instead</summary>
+              <div className="mt-2 space-y-1">
+                <Input type="file" accept=".bin" onChange={(e) => void pickFile(e)} />
+                {localImage && (
+                  <p>
+                    {localImage.name} — {(localImage.data.length / 1024).toFixed(1)} KB (takes
+                    priority over the deployed build)
+                  </p>
+                )}
+              </div>
+            </details>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" size="sm" disabled={busy} onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
