@@ -9,6 +9,8 @@
 
 #define LANGUAGE_ID 0x0409
 
+extern int console_printf(const char *fmt, ...);
+
 typedef struct {
   bool     in_use;
   uint8_t  daddr;
@@ -209,3 +211,26 @@ static const InputSource s_usb_source = {
 };
 
 void usb_input_init(void) { input_source_register(&s_usb_source); }
+
+// --- interrupt-pipe watchdog ----------------------------------------------------------------------
+// See usb_input.h. Runs at 250 ms — fast enough that a healed drop feels like a hiccup, slow enough
+// to cost nothing. Field symptom this exists for: the busiest device on the hub (analog pedals —
+// ADC noise makes them report near-continuously) went silent after a couple of minutes while still
+// listed as connected, and only a reboot recovered it.
+void usb_input_task(uint32_t now_ms) {
+  static uint32_t s_last_check;
+  if (now_ms - s_last_check < 250u) return;
+  s_last_check = now_ms;
+
+  for (uint8_t i = 0; i < USB_POOL_SIZE; i++) {
+    pool_slot_t *s = &g_pool[i];
+    if (!s->in_use) continue;
+    // mounted guards the umount race (unplug clears in_use via the umount cb in the same tuh_task
+    // pass, but belt and braces); receive_ready true = no transfer in flight = the arm was dropped.
+    if (!tuh_hid_mounted(s->daddr, s->instance)) continue;
+    if (!tuh_hid_receive_ready(s->daddr, s->instance)) continue;
+    bool ok = tuh_hid_receive_report(s->daddr, s->instance);
+    console_printf("[usb] slot %u (%04X:%04X) report pipe was dead — re-arm %s\r\n", i, s->vid,
+                   s->pid, ok ? "ok" : "FAILED, will retry");
+  }
+}

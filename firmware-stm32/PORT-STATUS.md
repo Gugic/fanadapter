@@ -121,6 +121,29 @@ burst of framing/overrun errors; the RX ISR tallies them and STREAMING re-arms t
 burst (`RESTART_ERR_THRESHOLD = 32`, 1 Hz decay so isolated glitches don't trip it). The Teensy only
 ever recovered via the manual re-arm button.
 
+### A device that goes silent but stays "connected" — the dropped report-pipe re-arm
+
+Field symptom (found during SimHub-plugin testing, but client-independent): after a few minutes the
+USB pedals stopped delivering input while still listed as connected; every other hub device kept
+working; only a reboot recovered it — and only for a few minutes.
+
+The HID report pipe is kept alive **solely** by the `tuh_hid_receive_report()` call at the end of
+`tuh_hid_report_received_cb` — TinyUSB (0.18) does not auto-re-arm. That call can fail transiently
+(`usbh_edpt_claim` or `usbh_edpt_xfer` → e.g. a host-channel allocation miss), and both call sites
+ignored the return value. One dropped re-arm = that interface never polls again, while the pool
+slot, `list_devices`, and the mount state all stay healthy. It hits the *pedals* first because
+analog axes + ADC noise make them the chattiest device on the hub — orders of magnitude more
+transfers than a shifter, so the most exposure to any transient.
+
+Fix: both arm sites log a failure, and `usb_input_task()` (main loop, 250 ms) walks the claimed
+pool slots and re-arms any whose interrupt-IN endpoint is idle (`tuh_hid_receive_ready`). The loop
+is single-threaded through `tuh_task()`, so "claimed slot, idle pipe" is never a legitimate state —
+an armed pipe shows busy even when the device NAKs, which is why this can't false-positive on idle
+devices, and also why a *blind* silence-timeout would have been wrong. The `[usb] … report pipe was
+dead` console line is the field confirmation of the transient actually firing. Not covered (no
+evidence yet): a channel wedged *busy* forever — the watchdog would skip it; if silence recurs with
+no watchdog lines, that's the next suspect (needs abort + re-arm, riskier).
+
 ## Gotchas — don't re-derive
 
 - **rhport numbers are FIXED BY HARDWARE; roles are not.** OTG_FS is *always* rhport 0, OTG_HS
@@ -162,10 +185,31 @@ header) — the "B15" silkscreen near it was a red herring.
 `tools/flash.ps1` + `tools/stm32_uart_flash.py` date from there: a DTR-safe AN3155 UART flasher that
 flashes over the bridge (build → flash → Go), prompting you to hold BOOT0 + tap RST. Still useful on
 any board without a usable second USB controller. Full hands-free UART entry is **not** possible on
-these boards: the H7 ROM serves USART only via the *hardware* boot path (a software jump comes up
-USB-DFU-only), the option-byte `BOOT_ADD0` trick is banned (it strands the board into the bootloader,
-DFU-only recovery), and BOOT0 has no pad to wire to. On the current board this is all moot — the
-`dfu` console command jumps to the ROM bootloader on the USB-C, which *is* hands-free.
+these boards: the H7 ROM serves USART only via the *hardware* boot path, the option-byte `BOOT_ADD0`
+trick is banned (it strands the board into the bootloader, DFU-only recovery), and BOOT0 has no pad
+to wire to.
+
+### Hands-free DFU entry: only the token + reset + early-branch works (July 2026)
+
+The FK-era note above said a software jump comes up "USB-DFU-only" — **that was an assumption, and
+it is false.** Bisected on the WeAct board: a **late branch from the running app serves NO ROM
+interfaces at all.** Two variants tried and both left the bus permanently dark until an RST tap:
+
+1. The original `jump_to_bootloader()` (clock-gate OTGs → `HAL_RCC_DeInit` → branch). Worse than
+   dark: the clock gate froze the D+ pullup latched high, so the host never saw a detach — Windows
+   kept a zombie COM port that failed opens with "device not functioning". Looked exactly like a
+   wedged board.
+2. Same, plus a proper `tud_disconnect()` + OTG force-reset first. Clean detach (no zombie port),
+   but still no DFU enumeration — proving the dirty-peripheral theory insufficient. The ROM simply
+   will not start its interfaces when entered by a branch from a running app.
+
+**What works: park a magic token at DTCM base (`0x20000000` — all app RAM is in AXI `0x24000000`,
+so startup never touches it, and DTCM survives `NVIC_SystemReset`), do a real reset, and branch to
+`0x1FF09800` as the FIRST statement of `main()`** — before `HAL_Init`, on a reset-default chip,
+which is the state the ROM actually expects. Validated end-to-end with zero button presses:
+`dfu` command → reset → ROM DFU enumerates → `platformio -t upload` → `:leave` boots the app →
+all hub devices re-enumerate. `check_bootloader_request()` / `request_bootloader_reboot()` in
+`main.c`. The one-shot token clear means a crash after entry can't loop the board into the ROM.
 
 The flasher's **bank-1-only erase** (AN3155 special code `0xFFFE`) is what preserves saved config
 across reflashes — the ~58 KB app lives entirely in bank 1, so bank 2 @ `0x08100000` survives.
