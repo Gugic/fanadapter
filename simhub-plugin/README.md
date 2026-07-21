@@ -91,6 +91,15 @@ pressing Start.
 zero until something moves: the firmware only reports inputs when they change,
 so an idle rig reading all zeros is correct, not broken.
 
+Next to the slot count are two diagnostics for a known, rare firmware bug where
+one device's inputs freeze at their last values while it stays listed
+(STM32 adapters only). Run them **while it is frozen** — results go to the Logs
+tab, every line of which is timestamped: **USB status** logs each slot's report
+pipe state (a growing `age_ms` on a device you're actively moving is the
+signature), and **Kick USB pipes** aborts and re-arms every pipe. Whether a kick
+revives the frozen device is the evidence needed to fix the bug for real, so
+note what you saw.
+
 **Mappings** binds those devices to wheelbase channels. Press **Listen**, hold
 still while it measures the noise floor, then move the control you want. Buttons,
 hat directions and keys commit immediately; an axis is measured until you

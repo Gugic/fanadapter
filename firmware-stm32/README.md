@@ -263,6 +263,23 @@ Handled automatically — the firmware detects the resulting UART error burst an
 handshake. If it ever sticks, `reset_pedals` (webconfig's *Re-arm pedals handshake* button) forces
 it.
 
+**`[pedals] RX error burst` with no power cycle anywhere near the rig.**
+The wheelbase's own link watchdog re-initiates the handshake whenever the adapter's 100 Hz stream
+gaps for long enough — so the burst means "the base gave up on the stream", not "someone pulled
+the plug". The log now says why: the burst line breaks down error types (`fe=` wrong-baud traffic
+from the re-handshaking base, `ore=` the adapter's own UART overran), and a preceding
+`[pedals] stream gap N ms — main loop stalled` line means the adapter caused it (e.g. `save_config`
+blocks on a flash erase for a few seconds — a re-handshake right after hitting Save is expected).
+A burst with *no* gap line before it points at the base side or the wiring instead.
+
+**One device's inputs freeze at their last values, but it's still listed as connected.**
+Known open bug (see PORT-STATUS) — the device stops delivering reports while staying enumerated;
+rebooting the adapter recovers it. While it is frozen, run the diagnostics from the SimHub
+plugin's Devices tab (or send the JSON commands directly): `{"cmd":"usb_status"}` reports each
+slot's pipe state — `busy` plus a growing `age_ms` on a device you're actively moving is the
+signature — and `{"cmd":"usb_kick"}` aborts and re-arms every pipe. Whether the kick revives the
+device is exactly the evidence needed to fix this properly, so please note what happened.
+
 **Gear voltages read slightly off.**
 Recalibrate per gear with `set_gear_dac`, then `save_config`. Reverse's near-rail X reading ~0.2 V
 low is expected (DAC output-buffer clamp) — the base normalizes it during shifter calibration.

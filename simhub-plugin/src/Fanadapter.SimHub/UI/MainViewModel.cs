@@ -57,6 +57,8 @@ namespace Fanadapter.SimHub.UI
             TestPulseCommand = new ParameterCommand(TestPulse, () => IsConnected);
             TestAxisCommand = new ParameterCommand(TestAxis, () => IsConnected);
             RearmPedalsCommand = new RelayCommand(RearmPedals, () => IsConnected);
+            UsbStatusCommand = new RelayCommand(UsbStatus, () => IsConnected);
+            UsbKickCommand = new RelayCommand(UsbKick, () => IsConnected);
             _session.Outputs += OnOutputs;
 
             BuildAxisEditors();
@@ -807,6 +809,8 @@ namespace Fanadapter.SimHub.UI
         public RelayCommand TestPulseCommand { get; private set; }
         public RelayCommand TestAxisCommand { get; private set; }
         public RelayCommand RearmPedalsCommand { get; private set; }
+        public RelayCommand UsbStatusCommand { get; private set; }
+        public RelayCommand UsbKickCommand { get; private set; }
 
         private string _pedalLinkState = "unknown";
         public string PedalLinkState
@@ -926,6 +930,50 @@ namespace Fanadapter.SimHub.UI
             AppendLog("pedal handshake re-armed.");
         }
 
+        // ---------- USB-host diagnostics ----------
+        // For the open field bug where a hub device goes silent while still
+        // enumerated, freezing its last values. Run these WHILE it is frozen:
+        // status shows whether the stuck slot's pipe is still armed and how
+        // long since it last delivered a report; kick aborts and re-arms every
+        // pipe — if inputs resume, the wedge was on the adapter's USB host
+        // controller; if not, the device itself stopped talking. Results land
+        // in the Logs tab. Not RunGuardedAsync: diagnostics don't dirty the config.
+
+        private void UsbStatus() => _ = UsbStatusAsync();
+
+        private async Task UsbStatusAsync()
+        {
+            if (!IsConnected) return;
+            try
+            {
+                var status = await _session.Protocol.GetUsbStatusAsync();
+                AppendLog("usb_status: " + status.ToString(Newtonsoft.Json.Formatting.None));
+            }
+            catch (Exception ex)
+            {
+                AppendLog("usb status failed: " + ex.Message);
+            }
+        }
+
+        private void UsbKick() => _ = UsbKickAsync();
+
+        private async Task UsbKickAsync()
+        {
+            if (!IsConnected) return;
+            try
+            {
+                int aborted = await _session.Protocol.UsbKickAsync();
+                AppendLog(aborted == 0
+                    ? "usb pipes kicked — none were busy (all idle pipes re-armed)."
+                    : string.Format("usb pipes kicked — aborted outstanding transfers on slot mask 0x{0:X2}. " +
+                                    "If the frozen device now responds, the wedge was host-side.", aborted));
+            }
+            catch (Exception ex)
+            {
+                AppendLog("usb kick failed: " + ex.Message);
+            }
+        }
+
         private async Task RefreshPedalStateAsync()
         {
             if (!IsConnected) return;
@@ -948,11 +996,20 @@ namespace Fanadapter.SimHub.UI
 
         private void OnLogLine(string line) => AppendLog(line);
 
-        private void AppendLog(string line) => RunOnUi(() =>
+        private void AppendLog(string line)
         {
-            LogLines.Add(line);
-            while (LogLines.Count > MaxLogLines) LogLines.RemoveAt(0);
-        });
+            // Stamped at receipt, not at render: RunOnUi may queue the append
+            // behind other dispatcher work, and the whole point of the stamp is
+            // ordering diagnostics ("did the reboot come before the stale
+            // replies?") — so take the clock before crossing threads.
+            var stamped = DateTime.Now.ToString("HH:mm:ss.fff",
+                System.Globalization.CultureInfo.InvariantCulture) + "  " + line;
+            RunOnUi(() =>
+            {
+                LogLines.Add(stamped);
+                while (LogLines.Count > MaxLogLines) LogLines.RemoveAt(0);
+            });
+        }
 
         // ---------- Plumbing ----------
 
@@ -1006,6 +1063,18 @@ namespace Fanadapter.SimHub.UI
             RebootCommand.RaiseCanExecuteChanged();
             ToggleStreamingCommand.RaiseCanExecuteChanged();
             ReleaseOutputsCommand.RaiseCanExecuteChanged();
+            // Every connection-gated command must be here: RelayCommand does not
+            // hook CommandManager.RequerySuggested, so a button bound before the
+            // connect keeps its stale disabled state until this fires (the
+            // "Re-arm handshake greyed out while connected" bug).
+            StartCaptureCommand.RaiseCanExecuteChanged();
+            ClearBindingCommand.RaiseCanExecuteChanged();
+            TestGearCommand.RaiseCanExecuteChanged();
+            TestPulseCommand.RaiseCanExecuteChanged();
+            TestAxisCommand.RaiseCanExecuteChanged();
+            RearmPedalsCommand.RaiseCanExecuteChanged();
+            UsbStatusCommand.RaiseCanExecuteChanged();
+            UsbKickCommand.RaiseCanExecuteChanged();
         });
 
         /// <summary>

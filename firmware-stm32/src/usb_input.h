@@ -17,10 +17,30 @@ bool usb_input_on_mount(uint8_t daddr, uint8_t instance, const uint8_t *report_d
 void usb_input_on_umount(uint8_t daddr, uint8_t instance);
 void usb_input_on_report(uint8_t daddr, uint8_t instance, const uint8_t *report, uint16_t len);
 
-// Interrupt-pipe watchdog — call from the main loop. A claimed device can stop delivering reports
-// while still enumerated, freezing its last values (a pedal caught mid-press holds 100% and the
-// wheelbase keeps getting it). Two causes, both recovered here: a dropped re-arm leaves the pipe
-// IDLE, and a wedged host channel leaves it BUSY with a transfer that never completes — the latter
-// needs an abort before re-arming, and is the one seen in the field. Triggered by silence rather
-// than endpoint state, because a healthy NAK-ing device also reads busy. See usb_input.c.
+// Interrupt-pipe watchdog — call from the main loop. Deliberately minimal: it re-arms a pipe that
+// is genuinely IDLE (the arm was dropped and nothing else will ever reschedule it) and touches
+// nothing else. It does NOT recover the field "device goes silent while still enumerated" freeze —
+// a frozen pipe reads BUSY, indistinguishable from a healthy NAK-ing one, and an earlier version
+// that auto-aborted busy pipes fired constantly on untouched devices and decoded garbage. Read the
+// scope comment in usb_input.c before making this cleverer.
 void usb_input_task(uint32_t now_ms);
+
+// --- manual diagnostics (the usb_status / usb_kick JSON commands in protocol.c) ------------------
+typedef struct {
+  bool     in_use;
+  uint16_t vid, pid;
+  bool     mounted;     // interface still enumerated (tuh_hid_mounted)
+  bool     busy;        // transfer outstanding. Healthy devices are near-always busy: a device
+                        // with nothing to report NAKs, and a NAK loop reads as busy.
+  uint32_t reports;     // total reports received since claim
+  uint32_t age_ms;      // ms since the last report (since claim if none yet)
+  uint32_t idle_rearms; // times usb_input_task() re-armed a dropped pipe
+} UsbSlotDiag;
+
+// Snapshot one slot's pipe state. Returns false only for an out-of-range slot.
+bool usb_input_diag(uint8_t slot, UsbSlotDiag *out);
+
+// One-shot recovery probe: abort any outstanding transfer and re-arm every claimed pipe. Returns
+// the bitmask of slots that were busy and got aborted. User-initiated diagnostic ONLY — never wire
+// this to a timer (see the scope comment in usb_input.c).
+uint32_t usb_input_kick(void);

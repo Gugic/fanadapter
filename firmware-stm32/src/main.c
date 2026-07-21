@@ -291,14 +291,31 @@ static void led_init(void) {
 static int console_emit(const char *buf, uint32_t len, bool lossy) {
   // 1) USART1 — always present (the universal fallback console), now interrupt-driven.
   if (lossy) {
-    // Keep headroom so a burst of events can never squeeze out a command response.
-    if (console_tx_used() < CONSOLE_TX_RING_SZ / 2u) console_tx_push(buf, len);
+    // Keep headroom so a burst of events can never squeeze out a command response — and drop
+    // ALL-OR-NOTHING. A partially-queued line is malformed JSON on the wire (see the CDC leg for
+    // the damage that does). The headroom gate already guarantees room for any current event line
+    // (<=320 B vs >=1 KB free), but check explicitly so a longer future line can't be half-queued.
+    uint16_t used = console_tx_used();
+    if (used < CONSOLE_TX_RING_SZ / 2u && (uint32_t)(CONSOLE_TX_RING_SZ - 1u - used) >= len)
+      console_tx_push(buf, len);
+  } else if (tud_mounted()) {
+    // A client is enumerated on the USB CDC — THAT copy is authoritative, and this leg is only a
+    // debug mirror. NEVER apply backpressure here: this ring drains at ~11.5 KB/s, so waiting for
+    // room while streaming an 8 KB get_config held the main loop ~720 ms — pedals_update() missed
+    // ~70 consecutive frames, the wheelbase's link watchdog declared the stream dead and re-initiated
+    // its handshake at 250000 baud, and the resulting framing-error burst got logged as
+    // "wheelbase restart?" with no power cycle anywhere near the rig. Mirror what fits, drop the
+    // rest; a terminal passively watching USART1 during CDC bursts sees torn lines, which is the
+    // acceptable cost.
+    console_tx_push(buf, len);
   } else {
-    // Bounded by WALL-CLOCK, not iterations. An iteration count is meaningless here: 20k spins
-    // take ~3 ms while draining this ring at 115200 takes ~175 ms, so a count-based guard expired
-    // with the ring still full and silently dropped chunks — which truncated get_config (~8 KB,
-    // streamed) and made every client time out on connect. One chunk's worth of room appears in
-    // ~9 ms, so 50 ms is generous while still bounding a wedged sink.
+    // No CDC client — USART1 IS the console (bring-up, CH340 bridge), so responses must arrive
+    // intact: wait for room. Bounded by WALL-CLOCK, not iterations. An iteration count is
+    // meaningless here: 20k spins take ~3 ms while draining this ring at 115200 takes ~175 ms, so
+    // a count-based guard expired with the ring still full and silently dropped chunks — which
+    // truncated get_config (~8 KB, streamed) and made every client time out on connect. One
+    // chunk's worth of room appears in ~9 ms, so 50 ms is generous while still bounding a wedged
+    // sink.
     uint32_t sent     = 0;
     uint32_t deadline = HAL_GetTick() + 50u;
     while (sent < len) {
@@ -323,20 +340,35 @@ static int console_emit(const char *buf, uint32_t len, bool lossy) {
   //    closed while still enumerated — a shut browser tab, an exited script) burn 1000 tud_task()
   //    calls on EVERY line: the second half of the starvation described above.
   if (tud_mounted()) {
-    uint32_t sent     = 0;
-    uint32_t deadline = HAL_GetTick() + 20u;
-    while (sent < len) {
-      uint32_t avail = tud_cdc_write_available();
-      if (avail) {
-        uint32_t w = (len - sent < avail) ? (len - sent) : avail;
-        tud_cdc_write(buf + sent, w);
-        sent += w;
+    if (lossy) {
+      // ALL-OR-NOTHING, checked before a single byte is written. This used to write what fit and
+      // bail when the FIFO filled, which put a TRUNCATED event line on the wire — and the next
+      // intact command response was appended straight onto it, so the client could parse NEITHER.
+      // Field failure (2026-07-21): `{"event":"outputs",...,"shift_up":fals` glued to
+      // `{"ok":true}` swallowed a reply, and because the clients match replies strictly FIFO, the
+      // whole reply stream went permanently one-behind — every later request timed out and every
+      // reply arrived "stale". A dropped event costs nothing (superseded ~30x/s); a partial one
+      // poisons the stream. The FIFO is 2048 B (tusb_config.h) and event lines are <=320 B, so a
+      // whole line always fits once the host drains.
+      if (tud_cdc_write_available() >= len) {
+        tud_cdc_write(buf, len);
         tud_cdc_write_flush();
-      } else {
-        if (lossy) break; // the next frame supersedes this one; never wait for it
-        tud_cdc_write_flush();
-        tud_task(); // service the device so the host can empty the FIFO
-        if ((int32_t)(HAL_GetTick() - deadline) >= 0) break;
+      }
+    } else {
+      uint32_t sent     = 0;
+      uint32_t deadline = HAL_GetTick() + 20u;
+      while (sent < len) {
+        uint32_t avail = tud_cdc_write_available();
+        if (avail) {
+          uint32_t w = (len - sent < avail) ? (len - sent) : avail;
+          tud_cdc_write(buf + sent, w);
+          sent += w;
+          tud_cdc_write_flush();
+        } else {
+          tud_cdc_write_flush();
+          tud_task(); // service the device so the host can empty the FIFO
+          if ((int32_t)(HAL_GetTick() - deadline) >= 0) break;
+        }
       }
     }
   }

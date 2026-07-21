@@ -39,6 +39,11 @@ static uint32_t       s_last_stream_ms;
 #define RESTART_ERR_THRESHOLD 32u
 static volatile uint32_t s_rx_err_count;
 static uint32_t          s_err_decay_ms;
+// Per-type tallies (one ISR entry can set several flags, so these can sum past s_rx_err_count).
+// They exist to make the burst log self-explanatory: FE-dominant = wrong-baud traffic, i.e. the
+// wheelbase re-initiated its handshake (its link watchdog gave up — power cycle OR our stream
+// gapped); ORE-dominant = our ISR was starved and we overran ourselves.
+static volatile uint32_t s_rx_err_fe, s_rx_err_ore, s_rx_err_ne;
 
 // Warmup: on boot, silently drain RX for ~2 s before engaging the handshake, giving the wheelbase a
 // clean silence window to reset its end after our reboot (otherwise it can hang mid-retry). 0 once done.
@@ -145,6 +150,7 @@ static void reset_to_step0(void) {
   s_state            = STATE_STEP0;
   reset_step2();
   s_rx_err_count     = 0; // matched baud again — clear the restart-detection tally
+  s_rx_err_fe = s_rx_err_ore = s_rx_err_ne = 0;
   s_last_activity_ms = HAL_GetTick();
 }
 
@@ -284,6 +290,7 @@ void pedals_update(void) {
           s_state          = STATE_STREAMING;
           s_last_stream_ms = HAL_GetTick();
           s_rx_err_count   = 0; // arm restart detection from a clean slate
+          s_rx_err_fe = s_rx_err_ore = s_rx_err_ne = 0;
           s_err_decay_ms   = HAL_GetTick();
         }
         break;
@@ -304,12 +311,18 @@ void pedals_update(void) {
   if (s_state == STATE_STREAMING) {
     uint32_t now = HAL_GetTick();
 
-    // Wheelbase-restart auto-recovery: a burst of RX framing/overrun errors means the wheelbase is
-    // re-handshaking at 250000 while we stream at 115200. Re-arm via the known-good boot entry (2 s
-    // warmup drains the noisy line, then STEP0 @ 250000 catches the wheelbase's fresh 0x0A).
+    // Link-loss auto-recovery: a burst of RX errors means the wheelbase is re-handshaking at
+    // 250000 while we stream at 115200. NOT necessarily a power cycle — the base's own link
+    // watchdog re-initiates the handshake whenever our 100 Hz stream gaps long enough (field
+    // case: get_config once stalled the loop ~720 ms via USART1-mirror backpressure). The type
+    // breakdown tells the story: fe = wrong-baud traffic (base re-handshaking, or its power-down
+    // noise), ore = our ISR was starved. Re-arm via the known-good boot entry (2 s warmup drains
+    // the noisy line, then STEP0 @ 250000 catches the wheelbase's fresh 0x0A).
     if (s_rx_err_count >= RESTART_ERR_THRESHOLD) {
-      console_printf("[pedals] RX error burst (%lu) — wheelbase restart? re-arming handshake\r\n",
-                     (unsigned long)s_rx_err_count);
+      console_printf("[pedals] RX error burst (%lu: fe=%lu ore=%lu ne=%lu) — wheelbase link reset; "
+                     "re-arming handshake\r\n",
+                     (unsigned long)s_rx_err_count, (unsigned long)s_rx_err_fe,
+                     (unsigned long)s_rx_err_ore, (unsigned long)s_rx_err_ne);
       s_warmup_until = now + WARMUP_MS;
       reset_to_step0();
       return;
@@ -321,7 +334,15 @@ void pedals_update(void) {
       if (s_rx_err_count) s_rx_err_count--;
     }
 
-    if ((uint32_t)(now - s_last_stream_ms) >= 10u) {
+    // Stream-gap sentinel: 10+ missed frames means the main loop was held somewhere. The base's
+    // link watchdog tolerates little; a long enough gap and it abandons the stream and
+    // re-handshakes — which then shows up above as an FE burst. With the client's log timestamps,
+    // a gap line printed BEFORE a burst line pins the causality on us, not the base.
+    uint32_t gap = (uint32_t)(now - s_last_stream_ms);
+    if (gap >= 100u)
+      console_printf("[pedals] stream gap %lu ms — main loop stalled\r\n", (unsigned long)gap);
+
+    if (gap >= 10u) {
       s_last_stream_ms = now;
       send_pedal_frame();
     }
@@ -339,11 +360,16 @@ void USART2_IRQHandler(void) {
       s_rx_head            = next;
     }
   }
-  // Tally framing/overrun/noise errors before clearing — a baud mismatch (a power-cycled wheelbase
-  // re-handshaking at 250000 while we stream at 115200) produces a burst of these; STREAMING uses the
-  // tally to auto-re-arm. Matched-baud traffic produces none, so this never false-triggers in steady state.
-  if (s_uart.Instance->ISR & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE)) {
+  // Tally framing/overrun/noise errors before clearing — a re-handshaking wheelbase (250000 baud
+  // while we sit at 115200) produces a burst of these; STREAMING uses the tally to auto-re-arm.
+  // Matched-baud traffic produces none. Per-type counts make the burst log say WHY (fe = wrong
+  // baud / line noise, ore = this ISR ran late).
+  uint32_t isr = s_uart.Instance->ISR;
+  if (isr & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE)) {
     if (s_rx_err_count < 0xFFFFFFFFu) s_rx_err_count++;
+    if (isr & USART_ISR_FE) s_rx_err_fe++;
+    if (isr & USART_ISR_ORE) s_rx_err_ore++;
+    if (isr & USART_ISR_NE) s_rx_err_ne++;
   }
   __HAL_UART_CLEAR_FLAG(&s_uart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_PEF);
 }

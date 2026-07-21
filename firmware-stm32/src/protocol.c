@@ -13,6 +13,7 @@
 #include "mapping.h"
 #include "pedals.h"
 #include "stm32h7xx_hal.h" // NVIC_SystemReset
+#include "usb_input.h"     // usb_status / usb_kick diagnostics
 
 extern int console_printf(const char *fmt, ...);
 // Droppable variants — for the streaming telemetry events only. See console_emit() in main.c.
@@ -404,6 +405,35 @@ static void cmd_pedals_status(void) {
                  pedals_get_handbrake());
 }
 
+// USB-host pipe diagnostics for the open field bug: a hub device goes silent while still
+// enumerated, freezing its last values. These interrogate a freeze in the act. `usb_status`
+// snapshots each claimed slot's pipe (busy = transfer outstanding — healthy devices near-always
+// are, since a device with nothing to say NAKs; the tell is `age_ms` growing on a device the user
+// is actively moving). `usb_kick` aborts + re-arms every claimed pipe: if inputs resume, the wedge
+// was host-side (a dwc2 channel stuck busy); if not, the device itself stopped talking. Both
+// STM32-only; the Teensy answers unknown_cmd. Streamed in chunks on the intact console path, like
+// get_config.
+static void cmd_usb_status(void) {
+  console_printf("{\"uptime_ms\":%lu,\"slots\":[", (unsigned long)HAL_GetTick());
+  bool first = true;
+  for (uint8_t i = 0; i < USB_POOL_SIZE; i++) {
+    UsbSlotDiag d;
+    if (!usb_input_diag(i, &d) || !d.in_use) continue;
+    console_printf("%s{\"slot\":%u,\"vid\":%u,\"pid\":%u,\"mounted\":%s,\"busy\":%s,"
+                   "\"reports\":%lu,\"age_ms\":%lu,\"idle_rearms\":%lu}",
+                   first ? "" : ",", i, d.vid, d.pid, d.mounted ? "true" : "false",
+                   d.busy ? "true" : "false", (unsigned long)d.reports, (unsigned long)d.age_ms,
+                   (unsigned long)d.idle_rearms);
+    first = false;
+  }
+  console_printf("]}\r\n");
+}
+
+static void cmd_usb_kick(void) {
+  uint32_t aborted = usb_input_kick();
+  console_printf("{\"ok\":true,\"aborted_mask\":%lu}\r\n", (unsigned long)aborted);
+}
+
 // ---------------- events ------------------------------------------------------------------------
 static void emit_attached(const InputDeviceInfo *d) {
   char mbuf[DEVICE_STR_LEN * 2], pbuf[DEVICE_STR_LEN * 2];
@@ -504,6 +534,8 @@ void protocol_handle_line(const char *line) {
   else if (!strcmp(cmd, "dfu")) cmd_dfu();
   else if (!strcmp(cmd, "reset_pedals")) cmd_reset_pedals();
   else if (!strcmp(cmd, "pedals_status")) cmd_pedals_status();
+  else if (!strcmp(cmd, "usb_status")) cmd_usb_status();
+  else if (!strcmp(cmd, "usb_kick")) cmd_usb_kick();
   else send_err("unknown_cmd");
 }
 
