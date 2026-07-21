@@ -20,7 +20,7 @@ extern int console_printf(const char *fmt, ...);
 extern int console_event_printf(const char *fmt, ...);
 extern int console_event_write(const char *s);
 
-#define PROTO_VERSION    5
+#define PROTO_VERSION    6 // 6: stream_axes (no-reply set_outputs variant for the PC pedal path)
 #define FW_NAME          "fanadapter-stm32"
 #define FW_VER           "0.6.0"
 #define LIVE_PERIOD_MS    33u // ~30 Hz; the console is the bottleneck (USART1 @115200 8E1)
@@ -321,6 +321,21 @@ static void cmd_set_outputs(const json_kv *kv, int n) {
   send_ok();
 }
 
+// No-reply variant of set_outputs for the PC-side pedal hot path (protocol 6). An acked command
+// costs a full round-trip per update — measured 7.9 ms over native CDC, capping an ack-waiting
+// streamer at ~127 Hz and adding the ack wait as jitter. Pedals deserve neither, so this one
+// answers NOTHING: the client fires it at its own fixed rate and never blocks. No reply also
+// means it never enters the clients' strictly-FIFO reply matching, so a stream frame can never
+// desync command/response pairing. Axes only — gears stay on the acked set_gear (low-rate, and
+// the confirmation matters there). Same sticky-override semantics as set_outputs.
+static void cmd_stream_axes(const json_kv *kv, int n) {
+  long v;
+  if (json_get_int(kv, n, "throttle", &v)) mapping_set_axis_override(CH_THROTTLE, (uint16_t)v);
+  if (json_get_int(kv, n, "brake", &v)) mapping_set_axis_override(CH_BRAKE, (uint16_t)v);
+  if (json_get_int(kv, n, "clutch", &v)) mapping_set_axis_override(CH_CLUTCH, (uint16_t)v);
+  if (json_get_int(kv, n, "handbrake", &v)) mapping_set_axis_override(CH_HANDBRAKE, (uint16_t)v);
+}
+
 static void cmd_pulse_shift(const json_kv *kv, int n) {
   char dir[8];
   if (!json_get_str(kv, n, "direction", dir, sizeof(dir))) {
@@ -579,6 +594,7 @@ void protocol_handle_line(const char *line) {
   else if (!strcmp(cmd, "test_gear")) cmd_test_gear(kv, n);
   else if (!strcmp(cmd, "set_gear")) cmd_set_gear(kv, n);
   else if (!strcmp(cmd, "set_outputs")) cmd_set_outputs(kv, n);
+  else if (!strcmp(cmd, "stream_axes")) cmd_stream_axes(kv, n);
   else if (!strcmp(cmd, "pulse_shift")) cmd_pulse_shift(kv, n);
   else if (!strcmp(cmd, "release_outputs")) cmd_release_outputs();
   else if (!strcmp(cmd, "test_axis")) cmd_test_axis(kv, n);

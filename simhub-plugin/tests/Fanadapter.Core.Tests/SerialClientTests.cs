@@ -180,6 +180,41 @@ namespace Fanadapter.Core.Tests
         }
     }
 
+    public class SerialClientPostTests
+    {
+        private static (SerialClient, FakeTransport) Connected()
+        {
+            var transport = new FakeTransport();
+            transport.Open();
+            return (new SerialClient(transport), transport);
+        }
+
+        [Fact]
+        public async Task PostWritesWithoutTouchingTheReplyQueue()
+        {
+            // The whole point of the fire-and-forget path: a posted command
+            // must not occupy a pending slot, or the next real reply would be
+            // matched to it and every response after would shift by one.
+            var (client, transport) = Connected();
+
+            client.Post(new JObject { ["cmd"] = "stream_axes", ["throttle"] = 123 });
+            Assert.Equal("{\"cmd\":\"stream_axes\",\"throttle\":123}\n", transport.Written[0]);
+
+            var pending = client.SendAsync(new JObject { ["cmd"] = "version" });
+            transport.ReceiveLine("{\"ok\":true}");
+            Assert.True((await pending).Value<bool>("ok"));
+        }
+
+        [Fact]
+        public void PostWhileClosedThrows()
+        {
+            var transport = new FakeTransport();
+            var client = new SerialClient(transport);
+            Assert.Throws<InvalidOperationException>(
+                () => client.Post(new JObject { ["cmd"] = "stream_axes" }));
+        }
+    }
+
     public class SerialClientResyncTests
     {
         private static (SerialClient, FakeTransport) Connected()
