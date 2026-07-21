@@ -440,6 +440,37 @@ export class SerialClient {
   async pedalsStatus(): Promise<PedalsStatus> {
     return this.send<PedalsStatus & Record<string, unknown>>({ cmd: 'pedals_status' })
   }
+
+  // USB-host pipe diagnostics (STM32 only) for the "device goes silent while still enumerated"
+  // freeze. usbStatus snapshots each claimed slot's report pipe; usbKick aborts + re-arms every
+  // pipe as a one-shot recovery probe — if inputs resume, the wedge was host-side. Surfaced in the
+  // SimHub plugin's Devices tab; kept here so the protocol clients stay in lockstep.
+  async usbStatus(): Promise<UsbStatus> {
+    return this.send<UsbStatus & Record<string, unknown>>({ cmd: 'usb_status' })
+  }
+
+  async usbKick(): Promise<number> {
+    const reply = await this.send<{ aborted_mask?: number } & Record<string, unknown>>({
+      cmd: 'usb_kick',
+    })
+    return reply.aborted_mask ?? 0
+  }
+}
+
+export interface UsbSlotDiag {
+  slot: number
+  vid: number
+  pid: number
+  mounted: boolean
+  busy: boolean
+  reports: number
+  age_ms: number
+  idle_rearms: number
+}
+
+export interface UsbStatus {
+  uptime_ms: number
+  slots: UsbSlotDiag[]
 }
 
 export interface PedalsStatus {

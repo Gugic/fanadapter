@@ -18,6 +18,10 @@ Current hardware: **WeAct MiniSTM32H743VITX** (STM32H743VIT6, 2 MB flash / 1 MB 
 LDO VCORE), both USB controllers live at once. Bring-up happened on a different board — see
 [Historical](#historical-fk743m3-bring-up) at the end.
 
+One field bug is **open**: a hub device occasionally goes silent while still enumerated, freezing
+its inputs at their last values until reboot. Diagnostics are in place — see
+[Remaining](#remaining).
+
 ## Milestones (M0–M7, all hardware-validated)
 
 - **M0 — plumbing:** USART1 RX (interrupt + 16-byte FIFO, ISR-drained, **priority 5 = above USB**
@@ -196,6 +200,80 @@ The lesson generalises: **before blaming a peripheral, account for how long the 
 `console_printf` is not free, and anything on the main-loop path that calls it is a latency bug in
 waiting.
 
+#### The freeze came back with the console fixed — a USB-host component exists after all (2026-07-21)
+
+The non-blocking console eliminated the lag and the pedal-stream collapse (gear changes instant,
+soaks clean), but a session on the rig still produced the original freeze: the Simnet pedal froze
+at axis 0 = 4095 mid-drive — throttle held at 100% at the wheelbase — while every other device
+kept working and the slot stayed listed. So the console starvation explained the *coarse/late/
+laggy* symptoms, but "one device goes silent while still enumerated" has its own cause in the USB
+host path (or the device itself hangs until a bus reset — an adapter reboot resets the bus, which
+is why rebooting always recovers it).
+
+The failed-attempts list above still stands: blind auto-recovery made things worse. What's new is
+**instrumentation to interrogate the next freeze in the act**, wired to buttons on the SimHub
+plugin's Devices tab (results land in its Logs tab):
+
+- **`usb_status`** — per claimed slot: `{mounted, busy, reports, age_ms, idle_rearms}`. A healthy
+  device near-always reads `busy` (NAK looping); the tell is `age_ms` growing while the user is
+  actively moving that device.
+- **`usb_kick`** — abort + re-arm every claimed pipe, once, on demand. If the frozen device comes
+  back, the wedge is host-side (a dwc2 channel stuck busy) and a *targeted* recovery can be built
+  on that evidence. If it stays silent, the device itself stopped talking and the next lever is a
+  hub port reset (SetPortFeature(PORT_RESET)), not anything channel-level.
+
+Run `usb_status` WHILE frozen, note the numbers, then kick and watch. Until that experiment has
+data, resist "fixing" this blind — that is exactly how failed attempts 1 and 2 happened.
+
+### A partially-dropped event line poisoned the reply stream (fixed 2026-07-21)
+
+The lossy CDC leg of `console_emit()` wrote *what fit* into the USB FIFO and bailed when it
+filled. Result on the wire, caught in the field:
+
+    {"event":"outputs","gear":"gear_N","shift_up":fals{"ok":true}
+
+— a truncated `outputs` event with the next (intact, non-lossy) command reply glued on. The client
+can parse neither line, so the reply is effectively destroyed — and because every client matches
+replies strictly FIFO (it must: the firmware answers in order), the queue goes permanently
+one-behind: **every subsequent request times out and every reply arrives "stale", until
+reconnect.** That was the endless `[stale reply to pedals_status]` spam in the SimHub log.
+
+Fixed on both sides. The lossy paths (UART ring *and* CDC) now check for room for the WHOLE line
+before writing a single byte, else drop it entirely — a dropped event is free, a partial one is
+poison. And `Fanadapter.Core/SerialClient.cs` self-heals from any future wire corruption: two
+consecutive stale absorptions with no success between them trigger a `version` probe whose reply
+(the only one carrying an `"fw"` field) re-anchors the queue; one isolated stale still just
+absorbs, as before.
+
+### "RX error burst — wheelbase restart?" with no power cycle: the USART1 mirror was starving the loop (fixed 2026-07-21)
+
+The user was right to be suspicious: no one power-cycled anything. The chain, confirmed by
+arithmetic that matches a previous measurement exactly:
+
+1. Every console write is mirrored to USART1 — **including the ~8.3 KB `get_config` response,
+   even when nobody is on USART1** — and the non-lossy path applied backpressure: wait for TX-ring
+   room. The ring drains at 115200 ≈ 11.5 KB/s, so `get_config` held the main loop **~720 ms**
+   (8332 B / 11.5 KB/s = 723 ms — the mysterious "get_config takes 720 ms" measured earlier was
+   never CDC speed; it was the dead mirror's baud rate).
+2. `pedals_update()` therefore missed ~70 consecutive frames on every client connect.
+3. The wheelbase's own link watchdog declared the stream dead and re-initiated its handshake —
+   sending 0x0A at **250000** baud into our 115200 receiver, which manifests as a framing-error
+   burst: `RX error burst (33)`, i.e. just past the 32 threshold.
+4. Our auto-recovery re-armed and completed the handshake, so it looked like a spontaneous
+   wheelbase restart. It was us all along.
+
+Fix: when `tud_mounted()` (a CDC client exists and is the authoritative copy), the non-lossy
+USART1 leg mirrors what fits and drops the rest — it never blocks the loop. When no CDC client is
+enumerated, USART1 *is* the console and keeps the full wait-for-room semantics. Two forensic aids
+were added so the next anomaly explains itself in the client's timestamped log: the burst line now
+breaks down error types (`fe=` wrong-baud traffic from a re-handshaking base, `ore=` our ISR ran
+late), and STREAMING logs `[pedals] stream gap N ms — main loop stalled` whenever 10+ frames were
+missed — a gap line printed *before* a burst line pins the causality on us.
+
+Related, still true: `save_config` blocks on a bank-2 flash erase (seconds), which will gap the
+stream and provoke exactly this base-side re-handshake. Rare and user-initiated; the gap sentinel
+now makes it visible rather than mysterious.
+
 ## Gotchas — don't re-derive
 
 - **rhport numbers are FIXED BY HARDWARE; roles are not.** OTG_FS is *always* rhport 0, OTG_HS
@@ -221,8 +299,11 @@ waiting.
 
 ## Remaining
 
-Polish only: **DAC gear recalibration** against a specific wheelbase if any column reads off
-(`set_gear_dac` per gear, then `save_config`). The defaults engaged every gear cleanly here.
+- **The input-freeze field bug is OPEN.** See "The freeze came back with the console fixed" above.
+  Next occurrence: `usb_status` + `usb_kick` from the SimHub Devices tab *while frozen* — that
+  experiment decides host-side wedge vs device hang.
+- Polish: **DAC gear recalibration** against a specific wheelbase if any column reads off
+  (`set_gear_dac` per gear, then `save_config`). The defaults engaged every gear cleanly here.
 
 ## Historical: FK743M3 bring-up
 

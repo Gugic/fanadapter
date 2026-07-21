@@ -199,6 +199,24 @@ namespace Fanadapter.Core
         /// <summary>Re-arms the CSL Elite pedal-port handshake from step 0.</summary>
         public Task ResetPedalsAsync() => SendOkAsync(Cmd("reset_pedals"));
 
+        /// <summary>
+        /// Snapshot of every claimed USB-host slot's pipe state (busy flag,
+        /// report count, ms since the last report). STM32 only. Returned raw:
+        /// this is a diagnostic for the "device goes silent while still
+        /// enumerated" freeze, meant to be logged, not modeled.
+        /// </summary>
+        public Task<JObject> GetUsbStatusAsync() => SendAsync(Cmd("usb_status"));
+
+        /// <summary>
+        /// Aborts and re-arms every claimed USB-host report pipe. STM32 only.
+        /// One-shot recovery probe for a frozen device: if inputs resume, the
+        /// wedge was on the adapter's host controller; if not, the device
+        /// itself stopped talking. Returns the bitmask of slots whose
+        /// outstanding transfer was aborted.
+        /// </summary>
+        public async Task<int> UsbKickAsync() =>
+            (await SendAsync(Cmd("usb_kick")).ConfigureAwait(false)).Value<int?>("aborted_mask") ?? 0;
+
         // ---------- Plumbing ----------
 
         private static JObject Cmd(string name) => new JObject { ["cmd"] = name };

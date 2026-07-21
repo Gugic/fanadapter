@@ -5,6 +5,7 @@
 
 #include "hid_parse.h"
 #include "input_source.h"
+#include "stm32h7xx_hal.h" // HAL_GetTick for the per-slot report age (usb_status diagnostics)
 #include "tusb.h"
 
 #define LANGUAGE_ID 0x0409
@@ -24,6 +25,10 @@ typedef struct {
   uint8_t  axis_count, button_count;
   bool     has_hat, has_keyboard;
   uint32_t change_seq;
+  // Diagnostics for the field "device goes silent while still enumerated" bug — see usb_status.
+  uint32_t report_count;     // total reports received since claim (changed or not)
+  uint32_t last_report_tick; // HAL tick of the last report (claim time until the first one)
+  uint32_t idle_rearms;      // times usb_input_task() found the pipe idle and re-armed it
 } pool_slot_t;
 
 static pool_slot_t g_pool[USB_POOL_SIZE];
@@ -89,6 +94,8 @@ bool usb_input_on_mount(uint8_t daddr, uint8_t instance, const uint8_t *report_d
     return false;
   }
 
+  s->last_report_tick = HAL_GetTick(); // age counts from claim until the first report lands
+
   g_change_seq++;
   s->change_seq++;
   return true;
@@ -104,6 +111,8 @@ void usb_input_on_umount(uint8_t daddr, uint8_t instance) {
 void usb_input_on_report(uint8_t daddr, uint8_t instance, const uint8_t *report, uint16_t len) {
   pool_slot_t *s = find_slot(daddr, instance);
   if (!s) return;
+  s->report_count++;
+  s->last_report_tick = HAL_GetTick();
   bool changed = (s->itf_protocol == HID_ITF_PROTOCOL_KEYBOARD)
                      ? hid_decode_boot_keyboard(report, len, &s->state)
                      : hid_decode_report(&s->layout, report, len, &s->state);
@@ -259,6 +268,48 @@ void usb_input_task(uint32_t now_ms) {
     // Idle = no transfer outstanding = the arm was dropped. A healthy device never looks like
     // this, so this cannot false-positive; anything busy is left strictly alone.
     if (!tuh_hid_receive_ready(s->daddr, s->instance)) continue;
+    s->idle_rearms++;
     tuh_hid_receive_report(s->daddr, s->instance);
   }
+}
+
+// --- manual diagnostics (usb_status / usb_kick JSON commands, protocol.c) -------------------------
+// The freeze is rare (minutes to an hour into a session) and unreproducible on demand, so these
+// exist to interrogate it IN THE ACT instead of guessing: usb_status says whether the frozen
+// slot's pipe is armed and when it last delivered; usb_kick then distinguishes the two remaining
+// theories. If a kick revives the device, the wedge was host-side (a dwc2 channel stuck busy). If
+// the re-armed pipe stays silent while the user works the control, the device itself stopped
+// talking and only a port-level reset can bring it back.
+
+bool usb_input_diag(uint8_t slot, UsbSlotDiag *out) {
+  if (slot >= USB_POOL_SIZE) return false;
+  pool_slot_t *s = &g_pool[slot];
+  memset(out, 0, sizeof(*out));
+  out->in_use = s->in_use;
+  if (!s->in_use) return true;
+  out->vid         = s->vid;
+  out->pid         = s->pid;
+  out->mounted     = tuh_hid_mounted(s->daddr, s->instance);
+  out->busy        = !tuh_hid_receive_ready(s->daddr, s->instance);
+  out->reports     = s->report_count;
+  out->age_ms      = HAL_GetTick() - s->last_report_tick;
+  out->idle_rearms = s->idle_rearms;
+  return true;
+}
+
+uint32_t usb_input_kick(void) {
+  uint32_t aborted = 0;
+  for (uint8_t i = 0; i < USB_POOL_SIZE; i++) {
+    pool_slot_t *s = &g_pool[i];
+    if (!s->in_use || !tuh_hid_mounted(s->daddr, s->instance)) continue;
+    if (!tuh_hid_receive_ready(s->daddr, s->instance)) {
+      // Aborting a live transfer can leave a partial report behind that decodes as one frame of
+      // garbage — acceptable for a one-shot user-initiated probe, and exactly why this must never
+      // run automatically (see the scope comment above usb_input_task).
+      tuh_hid_receive_abort(s->daddr, s->instance);
+      aborted |= (1u << i);
+    }
+    tuh_hid_receive_report(s->daddr, s->instance);
+  }
+  return aborted;
 }

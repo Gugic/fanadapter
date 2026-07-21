@@ -173,7 +173,15 @@
                     <StackPanel Margin="8">
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,4"
                                    Text="Devices plugged into the adapter's own USB hub. Windows cannot see these at all, so this is the only place to check whether the adapter is receiving an input. Values stay at zero until something moves — the adapter only reports inputs when they change." />
-                        <TextBlock Text="{Binding DevicesSummary}" Opacity="0.7" Margin="0,0,0,10" />
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="{Binding DevicesSummary}" Opacity="0.7" VerticalAlignment="Center" />
+                            <!-- Diagnostics for the "inputs frozen but device still listed" failure: run
+                                 them while it is stuck; results land in the Logs tab. -->
+                            <styles:SHButtonSecondary Command="{Binding UsbStatusCommand}" Margin="16,0,0,0"
+                                                      ToolTip="Log each USB slot's pipe state (armed, report count, ms since last report). Use while an input is frozen.">USB status</styles:SHButtonSecondary>
+                            <styles:SHButtonSecondary Command="{Binding UsbKickCommand}" Margin="8,0,0,0"
+                                                      ToolTip="Abort and re-arm every USB report pipe. If a frozen device comes back, the wedge was in the adapter's USB host — tell the log what you saw.">Kick USB pipes</styles:SHButtonSecondary>
+                        </StackPanel>
 
                         <ItemsControl ItemsSource="{Binding Devices}">
                             <ItemsControl.ItemTemplate>
