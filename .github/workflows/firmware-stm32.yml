@@ -1,0 +1,54 @@
+name: Verify STM32 firmware & publish flashable image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'firmware-stm32/**'
+      - '.github/workflows/firmware-stm32.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'firmware-stm32/**'
+      - '.github/workflows/firmware-stm32.yml'
+
+concurrency:
+  group: firmware-stm32-${{ github.ref }}
+  cancel-in-progress: true
+
+# PlatformIO pinned to the version tested locally; the TinyUSB dependency is
+# already pinned to a commit SHA in platformio.ini, and the ststm32 platform +
+# toolchain resolve from platformio.ini's board requirements.
+env:
+  PLATFORMIO_VERSION: 6.1.19
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The platform + ARM toolchain download is ~1 GB; cache it keyed on the
+      # build config so only a platformio.ini change re-downloads.
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ runner.os }}-${{ hashFiles('firmware-stm32/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio==${PLATFORMIO_VERSION}
+
+      - name: Build (weact_h743)
+        run: platformio run -d firmware-stm32 -e weact_h743
+
+      # The artifact is what webconfig's Flash dialog consumes: firmware.bin
+      # carries a 16-byte dfu-suffix (for dfu-util matching) which the web
+      # flasher strips before writing. Grab it from any run of this workflow —
+      # a release pipeline can be layered on later.
+      - name: Upload flashable image
+        uses: actions/upload-artifact@v4
+        with:
+          name: fanadapter-stm32-firmware
+          path: firmware-stm32/.pio/build/weact_h743/firmware.bin
+          if-no-files-found: error

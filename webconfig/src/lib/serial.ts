@@ -98,6 +98,30 @@ export class SerialClient {
       )
     }
     const port = await navigator.serial.requestPort()
+    await this.openPort(port)
+  }
+
+  /**
+   * Reconnect without the port picker, using a previously-granted port — WebSerial grants persist
+   * per origin+device, so after the first Connect this can reopen the adapter silently. Used by
+   * the firmware-update flow to come back up after the flash reboot. Prefers the STM32 native CDC
+   * (1209:FA00) when identifiable, else a sole granted port; returns false when nothing granted is
+   * currently attached (caller keeps polling — the board may still be re-enumerating).
+   */
+  async connectGranted(): Promise<boolean> {
+    if (!this.isSupported()) return false
+    const ports = await navigator.serial.getPorts()
+    const stm32 = ports.find((p) => {
+      const info = p.getInfo()
+      return info.usbVendorId === 0x1209 && info.usbProductId === 0xfa00
+    })
+    const port = stm32 ?? (ports.length === 1 ? ports[0] : undefined)
+    if (!port) return false
+    await this.openPort(port)
+    return true
+  }
+
+  private async openPort(port: SerialPort): Promise<void> {
     // 8E1: the STM32 USART1 console runs 8-data / EVEN-parity / 1-stop (it shares the format with the
     // ROM bootloader so one bridge config carries both console + flashing). Parity is ignored by a
     // native USB CDC (Teensy / STM32-CDC), so this is harmless there and required over the UART bridge.
@@ -401,6 +425,13 @@ export class SerialClient {
     await this.send({ cmd: 'reboot' }, 1500)
   }
 
+  // Reboot into the ROM bootloader for a firmware flash (STM32 only — the Teensy answers
+  // unknown_cmd). Acks first, then the CDC port disappears and a DFU device (0483:df11) takes its
+  // place; callers should disconnect() right after this resolves, then drive lib/dfu.ts.
+  async dfu(): Promise<void> {
+    await this.send({ cmd: 'dfu' }, 1500)
+  }
+
   // Re-arm the CSL Elite pedals UART handshake (back to Step 0 / 250000 baud).
   async resetPedals(): Promise<void> {
     await this.send({ cmd: 'reset_pedals' })
@@ -432,6 +463,7 @@ declare global {
       flowControl?: 'none' | 'hardware'
     }): Promise<void>
     setSignals(signals: { dataTerminalReady?: boolean; requestToSend?: boolean }): Promise<void>
+    getInfo(): { usbVendorId?: number; usbProductId?: number }
     close(): Promise<void>
     readable: ReadableStream<Uint8Array> | null
     writable: WritableStream<Uint8Array> | null

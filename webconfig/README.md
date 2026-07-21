@@ -66,6 +66,7 @@ webconfig/
       types.ts            # TypeScript mirror of the firmware's Config schema
       scaleAxis.ts        # Client-side replica of the firmware's scaleAxis() math
       crc32.ts            # Client-side CRC-32/ISO-HDLC encoder (matches firmware)
+      dfu.ts              # WebUSB DfuSe flasher for the STM32 ROM bootloader (the Flash dialog)
       utils.ts            # Tailwind CSS class merging helper
   tailwind.config.js      # Styling design tokens and theme settings
   vite.config.ts          # Vite build config
@@ -100,6 +101,24 @@ Because multiple UI modules can request details from the Teensy simultaneously, 
 - Commands (non-event JSON strings) are pushed to the queue and executed sequentially. When a JSON reply is returned, it is matched with the oldest pending promise.
 - Event packages (`{"event":"..."}`) are intercepted, bypassed, and fanned out to active UI subscribers.
 - Non-JSON text lines are transformed into virtual log events (`{type: "log"}`) and rendered inside the configurator's **Logs** console.
+
+---
+
+### Firmware updates (STM32 adapters)
+
+The header's **Flash** button opens a one-click updater: the Pages deploy builds the STM32
+firmware and publishes `firmware/fanadapter-stm32.{json,bin}` beside the app, so the dialog shows
+"Installed vs Latest" from a same-origin fetch and a single **Update** press then runs the whole
+cycle — `{"cmd":"dfu"}` reboots the adapter into its ROM bootloader, the DFU device (0483:df11) is
+found through the **persisted WebUSB grant**, `src/lib/dfu.ts` erases/writes/boots it over the
+DfuSe protocol, and the app reconnects through the **persisted WebSerial grant** and confirms the
+new version. The only manual step that can exist is Chromium's device picker on the very first
+update per machine (`requestDevice()` needs a fresh user gesture, so it lives on its own button);
+every later update is hands-free. Saved mappings live in a different flash bank than the code and
+survive. STM32-only — a Teensy adapter flashes with the PJRC loader instead. An expandable
+"local .bin" path covers dev builds (drop one in `webconfig/public/firmware/` to test the deployed
+flow locally — that dir is gitignored). On Windows the DFU device must have the WinUSB driver
+bound (STM32CubeProgrammer's installer or one Zadig run does it).
 
 ---
 

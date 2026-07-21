@@ -43,6 +43,27 @@
 
                     <TextBlock Margin="0,6,0,0" Opacity="0.7" TextWrapping="Wrap"
                                Text="Changes apply to the adapter immediately but live in its RAM until saved. Reset also only takes effect after a save." />
+
+                    <styles:SHSectionSeparator />
+
+                    <!-- One-click firmware update (STM32 only). The whole cycle is automatic:
+                         reboot to bootloader, flash over WinUSB, reconnect. -->
+                    <StackPanel Orientation="Horizontal">
+                        <styles:SHButtonSecondary Command="{Binding Firmware.UpdateCommand}"
+                                                  VerticalAlignment="Center"
+                                                  Content="{Binding Firmware.UpdateButtonText}" />
+                        <styles:SHButtonSecondary Command="{Binding Firmware.BrowseCommand}"
+                                                  VerticalAlignment="Center" Margin="8,0,0,0">Browse .bin…</styles:SHButtonSecondary>
+                        <TextBlock Text="{Binding Firmware.LatestText}" Opacity="0.7"
+                                   VerticalAlignment="Center" Margin="10,0,0,0" />
+                    </StackPanel>
+                    <ProgressBar Value="{Binding Firmware.ProgressPercent, Mode=OneWay}"
+                                 Maximum="100" Height="6" Margin="0,6,0,0"
+                                 Visibility="{Binding Firmware.IsRunning, Converter={StaticResource BoolToVisibility}}" />
+                    <TextBlock Text="{Binding Firmware.StatusText}" Opacity="0.7"
+                               TextWrapping="Wrap" Margin="0,4,0,0" />
+                    <TextBlock Opacity="0.7" TextWrapping="Wrap" Margin="0,2,0,0"
+                               Text="Reboots the adapter into its bootloader, flashes, and reconnects — saved mappings survive. Update firmware pulls the latest published build; Browse .bin flashes a local file (use this until the firmware is published). Also works with no connection if the board is stuck in bootloader mode." />
                 </StackPanel>
             </styles:SHSection>
 

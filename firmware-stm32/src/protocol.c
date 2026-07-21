@@ -377,6 +377,18 @@ static void cmd_reboot(void) {
   NVIC_SystemReset();
 }
 
+// Reboot into the ROM bootloader (USB DFU on the USB-C) via the token + reset + early-branch path
+// in main.c — the CDC port disappears and a DFU device (0483:df11) appears in its place. Used by
+// webconfig's firmware flasher. STM32-only by nature; the Teensy answers unknown_cmd, same as the
+// direct-output commands. The ok is flushed first — it is the client's cue to start watching for
+// the DFU device.
+extern void request_bootloader_reboot(void);
+static void cmd_dfu(void) {
+  send_ok();
+  for (volatile uint32_t d = 0; d < 800000u; d++) __NOP(); // let the ok + any CDC FIFO drain
+  request_bootloader_reboot();
+}
+
 static void cmd_reset_pedals(void) {
   pedals_force_reset();
   send_ok();
@@ -465,6 +477,7 @@ void protocol_handle_line(const char *line) {
   else if (!strcmp(cmd, "test_axis")) cmd_test_axis(kv, n);
   else if (!strcmp(cmd, "test_pulse")) cmd_test_pulse(kv, n);
   else if (!strcmp(cmd, "reboot")) cmd_reboot();
+  else if (!strcmp(cmd, "dfu")) cmd_dfu();
   else if (!strcmp(cmd, "reset_pedals")) cmd_reset_pedals();
   else if (!strcmp(cmd, "pedals_status")) cmd_pedals_status();
   else send_err("unknown_cmd");

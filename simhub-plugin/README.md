@@ -113,6 +113,23 @@ one for half a second so you can find the right pair alone at the rig.
 Changes apply to the adapter immediately but live in its RAM. **Save to adapter**
 is what makes them survive a power cycle.
 
+### Firmware updates (STM32 adapters)
+
+**Update firmware** in the ADAPTER section runs the whole cycle on its own:
+downloads the latest published build (the same one webconfig serves, from the
+project's GitHub Pages deploy), reboots the adapter into its ROM bootloader,
+flashes it over WinUSB, waits for the serial port to come back and reconnects.
+No buttons on the board, no device picker, no toolchain — saved mappings live
+in a separate flash bank and survive. Also works with no connection when the
+board is stuck in bootloader mode from an interrupted update — running the
+update again is the recovery.
+
+Windows needs the WinUSB driver bound to `STM32 BOOTLOADER` (installing
+STM32CubeProgrammer or one Zadig run does it; any machine where `dfu-util`
+works already has it). Forks hosting their own Pages deploy can point the
+updater elsewhere via the `FirmwareUrl` plugin setting. Teensy adapters flash
+with the PJRC loader instead — the button stays disabled there.
+
 ## Build
 
 ```sh

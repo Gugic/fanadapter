@@ -64,6 +64,12 @@ namespace Fanadapter.SimHub.UI
             RefreshPropertyListCommand = new RelayCommand(RefreshPropertyList);
             ReleaseOutputsCommand = new RelayCommand(ReleaseOutputs, () => IsConnected);
 
+            // Reconnect after the flash goes through ConnectAsync so the port gets remembered and
+            // telemetry re-enabled exactly like a manual connect.
+            Firmware = new FirmwareUpdateViewModel(
+                _session, plugin.Settings.FirmwareUrl, AppendLog, RunOnUi, ConnectAsync);
+            _ = Firmware.RefreshManifestAsync();
+
             // Live input runs at ~60 Hz on Normal priority. Coalescing frames to
             // a tick still caps the work no matter how many devices are moving,
             // but the priority matters more than the interval: Background only
@@ -143,6 +149,8 @@ namespace Fanadapter.SimHub.UI
         }
 
         public bool SupportsDirectOutput => _session.SupportsDirectOutput;
+
+        public FirmwareUpdateViewModel Firmware { get; }
 
         public RelayCommand ConnectCommand { get; }
         public RelayCommand DisconnectCommand { get; }
@@ -974,6 +982,7 @@ namespace Fanadapter.SimHub.UI
             OnPropertyChanged(nameof(StreamingButtonText));
             OnPropertyChanged(nameof(StreamingStatus));
             RaiseCommandStates();
+            Firmware?.OnSessionChanged();
         });
 
         private void RaiseCommandStates() => RunOnUi(() =>

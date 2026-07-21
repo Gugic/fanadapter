@@ -311,6 +311,12 @@ namespace Fanadapter.Core
         /// </summary>
         public bool SupportsDirectOutput =>
             Firmware != null && Firmware.IndexOf("stm32", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        /// <summary>
+        /// The dfu command (reboot into the ROM bootloader for a firmware update) is likewise
+        /// STM32-only; the Teensy flashes with the PJRC loader instead.
+        /// </summary>
+        public bool SupportsDfu => SupportsDirectOutput;
     }
 
     public class DeviceSlot

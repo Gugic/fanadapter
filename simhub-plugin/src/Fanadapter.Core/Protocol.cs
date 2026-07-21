@@ -187,6 +187,15 @@ namespace Fanadapter.Core
         /// </summary>
         public Task RebootAsync() => SendOkAsync(Cmd("reboot"), 1500);
 
+        /// <summary>
+        /// Reboots into the ROM bootloader for a firmware flash: the COM port
+        /// disappears and a USB DFU device (0483:DF11) takes its place. STM32
+        /// only — the Teensy answers unknown_cmd, same as the direct-output
+        /// commands. The plugin has no flasher; webconfig's Flash dialog (or
+        /// dfu-util) does the programming. Close the port right after this.
+        /// </summary>
+        public Task DfuAsync() => SendOkAsync(Cmd("dfu"), 1500);
+
         /// <summary>Re-arms the CSL Elite pedal-port handshake from step 0.</summary>
         public Task ResetPedalsAsync() => SendOkAsync(Cmd("reset_pedals"));
 

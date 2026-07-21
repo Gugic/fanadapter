@@ -447,7 +447,9 @@ static void check_bootloader_request(void) {
   } // never returns
 }
 
-static void request_bootloader_reboot(void) {
+// Non-static: also reachable as the JSON command {"cmd":"dfu"} (protocol.c), which is how
+// webconfig's firmware flasher enters the bootloader without the user finding a console.
+void request_bootloader_reboot(void) {
   // Detach cleanly so the host drops the CDC port before the reset, not on a timeout after it.
   tud_disconnect();
   HAL_Delay(100);

@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local firmware drop for testing the in-browser updater (CI generates the real one at deploy)
+public/firmware/

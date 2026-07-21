@@ -14,6 +14,13 @@ namespace Fanadapter.SimHub
         /// <summary>Connect on plugin start without waiting for the user.</summary>
         public bool AutoConnect { get; set; } = true;
 
+        /// <summary>
+        /// Where the firmware updater looks for the published build. Null/empty = the canonical
+        /// GitHub Pages deploy (<see cref="FirmwareChannel.DefaultBaseUrl"/>); forks running
+        /// their own Pages set this to theirs.
+        /// </summary>
+        public string FirmwareUrl { get; set; }
+
         public DriveSettings Drive { get; set; } = new DriveSettings();
     }
 }
