@@ -213,10 +213,40 @@ static const InputSource s_usb_source = {
 void usb_input_init(void) { input_source_register(&s_usb_source); }
 
 // --- interrupt-pipe watchdog ----------------------------------------------------------------------
-// See usb_input.h. Runs at 250 ms — fast enough that a healed drop feels like a hiccup, slow enough
-// to cost nothing. Field symptom this exists for: the busiest device on the hub (analog pedals —
-// ADC noise makes them report near-continuously) went silent after a couple of minutes while still
-// listed as connected, and only a reboot recovered it.
+// See usb_input.h. Field symptom this exists for: a device on the hub goes silent while still
+// listed as connected, freezing its last values (a pedal caught mid-press stays at 100% and the
+// wheelbase keeps receiving that), and only a reboot recovers it.
+//
+// Two distinct failures, and the second is the one that actually bites:
+//
+//  1. IDLE pipe — the re-arm in tuh_hid_report_received_cb failed and nothing rescheduled it.
+//     Recovery is just tuh_hid_receive_report().
+//  2. BUSY pipe — a transfer is submitted but never completes: the host channel is wedged. The
+//     first version of this watchdog skipped exactly this case (it only re-armed idle pipes) and
+//     never fired in the field, which is how we learned the wedge is the real mode. Recovery
+//     needs tuh_hid_receive_abort() to tear the dead transfer down and release the endpoint,
+//     then a fresh arm.
+//
+// SCOPE, learned the hard way — read before making this cleverer:
+//
+// An earlier revision escalated to tuh_hid_receive_abort() whenever a claimed slot went quiet, on
+// the theory that a wedged host channel was silencing the pedals. On the bench it looked like a
+// clean recovery. On the rig it was actively harmful, for two reasons worth keeping written down:
+//
+//   * A quiet device is INDISTINGUISHABLE from a wedged one here. A device with nothing to report
+//     NAKs, and a NAK-looping endpoint reads exactly as busy as a dead one. So the escalation
+//     fired constantly on the untouched shifters — and aborting a live transfer can leave a
+//     partial report in the endpoint buffer, which then decodes as garbage axis values.
+//   * console_printf() BLOCKS until the sink drains, and this runs in the main loop ahead of
+//     pedals_update(). Logging each episode stalled the loop badly enough that the 100 Hz pedal
+//     cadence collapsed — the wheelbase fell back to analog and gear changes arrived a MINUTE
+//     late. Exactly the failure the AGENTS.md loop-order warning describes.
+//
+// So this is deliberately minimal and SILENT: re-arm a pipe that is genuinely idle (the arm was
+// dropped and nothing else will ever reschedule it — cheap, and it cannot fire on a healthy
+// device, which always has a transfer outstanding). Nothing here may block, and nothing here may
+// touch a transfer that is still in flight. The "device goes silent while still enumerated" bug is
+// NOT fixed by this and remains open; see PORT-STATUS.
 void usb_input_task(uint32_t now_ms) {
   static uint32_t s_last_check;
   if (now_ms - s_last_check < 250u) return;
@@ -225,12 +255,10 @@ void usb_input_task(uint32_t now_ms) {
   for (uint8_t i = 0; i < USB_POOL_SIZE; i++) {
     pool_slot_t *s = &g_pool[i];
     if (!s->in_use) continue;
-    // mounted guards the umount race (unplug clears in_use via the umount cb in the same tuh_task
-    // pass, but belt and braces); receive_ready true = no transfer in flight = the arm was dropped.
     if (!tuh_hid_mounted(s->daddr, s->instance)) continue;
+    // Idle = no transfer outstanding = the arm was dropped. A healthy device never looks like
+    // this, so this cannot false-positive; anything busy is left strictly alone.
     if (!tuh_hid_receive_ready(s->daddr, s->instance)) continue;
-    bool ok = tuh_hid_receive_report(s->daddr, s->instance);
-    console_printf("[usb] slot %u (%04X:%04X) report pipe was dead — re-arm %s\r\n", i, s->vid,
-                   s->pid, ok ? "ok" : "FAILED, will retry");
+    tuh_hid_receive_report(s->daddr, s->instance);
   }
 }

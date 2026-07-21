@@ -408,13 +408,10 @@ void tuh_hid_report_received_cb(uint8_t daddr, uint8_t instance, uint8_t const *
                                 uint16_t len) {
   usb_input_on_report(daddr, instance, report, len);
   // Re-arm to keep polling. This CAN fail transiently (endpoint claim / host channel allocation),
-  // and ignoring that used to kill the device permanently: nothing else ever re-arms the pipe, so
-  // the device stayed listed as connected but never delivered another report until a reboot. The
-  // usb_input_task watchdog now recovers any dropped arm within 250 ms; the log line here is the
-  // field evidence of the underlying transient actually firing.
-  if (!tuh_hid_receive_report(daddr, instance)) {
-    console_printf("[usb] re-arm failed addr=%u inst=%u — watchdog will retry\r\n", daddr, instance);
-  }
+  // and nothing else reschedules it, so usb_input_task re-arms a dropped pipe within 250 ms.
+  // Deliberately NOT logged: this is the hottest path in the loop and console_printf blocks until
+  // the sink drains — logging here stalls the loop and collapses the 100 Hz pedal cadence.
+  tuh_hid_receive_report(daddr, instance);
 }
 
 //--------------------------------------------------------------------+
