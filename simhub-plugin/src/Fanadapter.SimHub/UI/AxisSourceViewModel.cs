@@ -59,6 +59,45 @@ namespace Fanadapter.SimHub.UI
 
         public bool IsConfigured => _model.IsConfigured;
 
+        // ---------- Auto-detect ----------
+
+        private bool _isDetecting;
+        public bool IsDetecting
+        {
+            get => _isDetecting;
+            set
+            {
+                _isDetecting = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(DetectButtonText));
+                if (!value) DetectStatus = null;
+            }
+        }
+
+        public string DetectButtonText => _isDetecting ? "Cancel" : "Detect";
+
+        private string _detectStatus;
+        public string DetectStatus
+        {
+            get => _detectStatus;
+            set { _detectStatus = value; OnPropertyChanged(); }
+        }
+
+        /// <summary>Fills every field from a completed detection in one go.</summary>
+        public void ApplyDetection(AxisDetection d)
+        {
+            _model.PropertyName = d.PropertyName;
+            _model.InputMin = Math.Round(d.InputMin, 3);
+            _model.InputMax = Math.Round(d.InputMax, 3);
+            _model.Invert = d.Invert;
+            OnPropertyChanged(nameof(PropertyName));
+            OnPropertyChanged(nameof(InputMin));
+            OnPropertyChanged(nameof(InputMax));
+            OnPropertyChanged(nameof(Invert));
+            OnPropertyChanged(nameof(IsConfigured));
+            _onChanged();
+        }
+
         // ---------- Live readout ----------
 
         private string _rawText = "—";

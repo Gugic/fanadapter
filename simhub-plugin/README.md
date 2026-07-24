@@ -73,11 +73,19 @@ that tab. Gears appear twice:
 - **Select** bindings latch — the gear stays until another one is chosen. Use
   these for a button that should select a gear and stay there.
 
-Pedals work differently: pick the **SimHub property** carrying each one. Any
-property works — a controller axis published by SimHub's input plugins, or your
-own NCalc expression. Set the range to match the property (SimHub's own axis
-properties are 0–100) and watch the live readout to check the direction before
-pressing Start.
+Pedals are configured per channel, and the easy path is **Detect**: click it,
+keep everything still for half a second, then press that pedal fully and
+release. The plugin samples every property SimHub publishes, finds the one you
+moved, and fills in the property name, raw range and direction automatically —
+properties that were already moving on their own (live game telemetry, clocks)
+are excluded, and when telemetry reacts to the pedal in a running session the
+controller-input property still wins. Detect needs no adapter connection.
+
+Manual setup remains for the cases Detect can't guess: pick the **SimHub
+property** yourself (any property works — a controller axis published by
+SimHub's input plugins, or your own NCalc expression), set the range to match
+it (SimHub's own axis properties are 0–100), and watch the live readout to
+check the direction before pressing Start.
 
 On current firmware (protocol 6+) the pedal stream is **fire-and-forget at a
 fixed 100 Hz**: each update is one-way with no acknowledgement round-trip in
