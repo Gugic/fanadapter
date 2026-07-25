@@ -29,6 +29,20 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // Two rules that arrived with eslint-plugin-react-hooks v7 (pulled in by
+      // the eslint 10 upgrade, which was itself the only fix for the
+      // brace-expansion advisory). Both flag PRE-EXISTING App.tsx patterns
+      // unrelated to whatever change is in flight, so they're warnings rather
+      // than a wall across every future PR — but they are real findings, not
+      // noise, and want fixing in their own pass:
+      //   set-state-in-effect (8×): the sync-a-prop-into-local-state effect
+      //     (`useEffect(() => setY(String(dac.y)), [dac.y])`). Costs a double
+      //     render; the fix is deriving the value or keying the component.
+      //   purity (1×): `Date.now()` read during render for the capture
+      //     countdown label (App.tsx ~2391) — genuinely unstable render output.
+      // Promote back to 'error' once App.tsx is cleaned up.
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/purity': 'warn',
       // Hardened/Strict Rules overrides:
       '@typescript-eslint/no-unused-vars': [
         'error',
