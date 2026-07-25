@@ -1,6 +1,6 @@
 # fanadapter
 
-USB HID → Fanatec wheelbase adapter using a Teensy 4.1, combined with a browser-based WebSerial configuration UI.
+USB HID → Fanatec wheelbase adapter — on a Teensy 4.1 or an STM32H743 — combined with a browser-based WebSerial configuration UI and a SimHub plugin.
 
 An open-source adapter that lets arbitrary USB HID sim racing peripherals (H-pattern shifters, sequential shifters, handbrakes, and USB pedals — plus gamepads, D-pad/Hat controllers, and keyboards) connect to a Fanatec wheelbase as if they were native Fanatec gear. This is particularly valuable on game consoles (PS4/PS5/Xbox Series X|S) where third-party USB peripherals cannot be plugged directly into the console.
 
@@ -53,7 +53,7 @@ The project is structured into five main directories:
    An alternative build of the same adapter on an **STM32H743** core board (WeAct MiniSTM32H743VITX), written in C on PlatformIO + STM32Cube HAL + TinyUSB. Full feature parity with the Teensy build and validated on the same wheelbase — it speaks the identical JSON protocol and config schema, so one `webconfig` serves both. Cheaper and easier to source than a Teensy, with a real DAC (no RC filter needed on the gear outputs) and two USB controllers, at the cost of a fussier toolchain.
 
 3. **[`webconfig/`](webconfig/README.md)**  
-   A beautiful, modern React 19 + TypeScript + Tailwind + shadcn/ui configuration interface. It runs directly in desktop Chromium-based browsers (Chrome, Edge, Brave) and communicates with the firmware over WebSerial (line-based JSON) to capture binds, calibrate axis deadzones, and test outputs.
+   A beautiful, modern React 19 + TypeScript + Tailwind + shadcn/ui configuration interface. It runs directly in desktop Chromium-based browsers (Chrome, Edge, Brave) and communicates with the firmware over WebSerial (line-based JSON) to capture binds, calibrate axis deadzones, and test outputs. It also does one-click STM32 firmware updates over WebUSB/DFU — no toolchain, no button-pressing (the SimHub plugin carries the same updater over WinUSB).
    
 4. **[`simhub-plugin/`](simhub-plugin/README.md)**  
    A [SimHub](https://www.simhubdash.com/) plugin (C# / .NET Framework 4.8 / WPF) that speaks the same JSON protocol over a COM port. Devices plugged into the **PC** are captured and mapped by SimHub's own input system, and the plugin turns the result into direct output commands to the wheelbase; devices plugged into the **adapter's own USB hub** are configured through a mirror of the webconfig UI. Also publishes the adapter's live state as SimHub properties for dashboards.
