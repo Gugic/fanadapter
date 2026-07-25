@@ -913,11 +913,11 @@ export default function App() {
     }
   }
 
-  // Soft-reset the Teensy. The firmware drops USB immediately after acking,
+  // Soft-reset the adapter. The firmware drops USB immediately after acking,
   // so we tear our side down too — the user reconnects when ready.
   async function handleReboot() {
     try {
-      setStatus('Rebooting Teensy…')
+      setStatus('Rebooting adapter…')
       await client.reboot()
     } catch {
       // The firmware vanishes mid-response; a timeout or disconnect here
@@ -938,7 +938,7 @@ export default function App() {
     setVersion(null)
     setCapturing(null)
     trackingRef.current = null
-    setStatus('Teensy rebooted — click Connect when it re-enumerates')
+    setStatus('Adapter rebooted — click Connect when it re-enumerates')
     setTimeout(() => setStatus(''), 4000)
   }
 
@@ -1180,7 +1180,7 @@ function Header({
                 variant="outline"
                 size="sm"
                 onClick={onReboot}
-                title="Soft-reboot the Teensy. EEPROM is preserved; live USB host pool is reset."
+                title="Soft-reboot the adapter. Saved config is preserved; the live USB host pool is reset."
               >
                 <Power className="h-4 w-4" />
                 Reboot
@@ -1263,12 +1263,24 @@ function FirmwareDialog({
   const webusb = isWebUsbSupported()
   const busy = stage === 'working'
 
+  // Clear the previous run's outcome as the dialog opens, so a failed flash
+  // isn't still on screen next time. Done as a render-time adjustment against
+  // the previous `open` rather than in an effect: an effect would paint the
+  // stale error for one frame first. A picked local .bin deliberately survives,
+  // so reopening doesn't lose the file the user just browsed for.
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
+    if (open) {
+      setStage('idle')
+      setFailure(null)
+      setProgress(null)
+      setNewVersion(null)
+    }
+  }
+
   useEffect(() => {
     if (!open) return
-    setStage('idle')
-    setFailure(null)
-    setProgress(null)
-    setNewVersion(null)
     void fetchFirmwareManifest().then(setManifest)
   }, [open])
 
@@ -1553,7 +1565,7 @@ function ConnectGate({ supported, onConnect }: { supported: boolean; onConnect: 
           Connect to a fanadapter
         </CardTitle>
         <CardDescription>
-          Plug the Teensy into this computer via USB. WebSerial works in Chrome, Edge, and Brave on
+          Plug the adapter into this computer via USB. WebSerial works in Chrome, Edge, and Brave on
           desktop.
         </CardDescription>
       </CardHeader>
@@ -2227,6 +2239,9 @@ function BindingSlotRow({
 
 // ------------------ Axis calibration ------------------
 
+/** Length of the "recalibrate from live" sampling window. */
+const CAPTURE_SECONDS = 4
+
 function AxisCalibration({
   binding,
   devices,
@@ -2279,44 +2294,47 @@ function AxisCalibration({
 
   const processed = scaleAxisJS(liveRaw, binding)
 
-  const [captureBuf, setCaptureBuf] = useState<{ min: number; max: number; until: number } | null>(
-    null,
-  )
+  // Recalibration sampler. The travel extremes accumulate in a REF, not state:
+  // they are only read once, when the window closes, so re-rendering on every
+  // one of the ~30/s live samples would be pure waste. Only the deadline is
+  // state (it drives the button's disabled/label state and the timer effect),
+  // plus a ticked countdown so the label doesn't have to read the clock during
+  // render — `react-hooks/purity` rightly flags that as unstable output.
+  const sampleRef = useRef<{ min: number; max: number } | null>(null)
+  const [sampleUntil, setSampleUntil] = useState<number | null>(null)
+  const [secondsLeft, setSecondsLeft] = useState(0)
+  const sampling = sampleUntil !== null
 
-  // End-of-recalibration timer (separate effect so it survives renders
-  // where deps churn but the buffer hasn't actually moved).
   useEffect(() => {
-    if (!captureBuf) return
-    const remain = Math.max(0, captureBuf.until - Date.now())
-    const id = setTimeout(() => {
-      setCaptureBuf((cur) => {
-        if (!cur) return cur
-        void onUpdateField('rawMin', cur.min)
-        void onUpdateField('rawMax', cur.max)
-        return null
-      })
-    }, remain)
-    return () => clearTimeout(id)
-  }, [captureBuf, onUpdateField])
-
-  // Track live min/max during the capture window. Return prev reference
-  // when nothing changed so React doesn't re-render in a loop.
-  useEffect(() => {
-    if (!captureBuf) return
-    setCaptureBuf((prev) => {
-      if (!prev) return prev
-      const newMin = Math.min(prev.min, liveRaw)
-      const newMax = Math.max(prev.max, liveRaw)
-      if (newMin === prev.min && newMax === prev.max) return prev
-      return { ...prev, min: newMin, max: newMax }
-    })
-    // captureBuf intentionally NOT in deps — we only want this to fire on
-    // liveRaw changes; the setter handles the no-op case.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const acc = sampleRef.current
+    if (!acc) return
+    if (liveRaw < acc.min) acc.min = liveRaw
+    if (liveRaw > acc.max) acc.max = liveRaw
   }, [liveRaw])
 
+  useEffect(() => {
+    if (sampleUntil === null) return
+    const id = setInterval(() => {
+      const left = Math.ceil((sampleUntil - Date.now()) / 1000)
+      if (left > 0) {
+        setSecondsLeft(left)
+        return
+      }
+      const acc = sampleRef.current
+      sampleRef.current = null
+      setSampleUntil(null)
+      if (acc) {
+        void onUpdateField('rawMin', acc.min)
+        void onUpdateField('rawMax', acc.max)
+      }
+    }, 200)
+    return () => clearInterval(id)
+  }, [sampleUntil, onUpdateField])
+
   function startCaptureMinMax() {
-    setCaptureBuf({ min: liveRaw, max: liveRaw, until: Date.now() + 4000 })
+    sampleRef.current = { min: liveRaw, max: liveRaw }
+    setSecondsLeft(CAPTURE_SECONDS)
+    setSampleUntil(Date.now() + CAPTURE_SECONDS * 1000)
   }
 
   const invertId = `invert-${binding.vid}-${binding.pid}-${binding.index}`
@@ -2384,12 +2402,12 @@ function AxisCalibration({
           size="sm"
           variant="outline"
           onClick={startCaptureMinMax}
-          disabled={!!captureBuf}
+          disabled={sampling}
           className="w-full"
         >
-          {captureBuf
-            ? `Sampling for 4 s… ${Math.ceil((captureBuf.until - Date.now()) / 1000)}s`
-            : 'Recalibrate from live (4 s)'}
+          {sampling
+            ? `Sampling for ${CAPTURE_SECONDS} s… ${secondsLeft}s`
+            : `Recalibrate from live (${CAPTURE_SECONDS} s)`}
         </Button>
         <p className="text-[10px] text-muted-foreground">
           Move the axis through its full range while sampling. The observed min and max replace the
@@ -2447,8 +2465,7 @@ function NumberField({
   min?: number
   max?: number
 }) {
-  const [local, setLocal] = useState(String(value))
-  useEffect(() => setLocal(String(value)), [value])
+  const [local, setLocal] = useDraft(value, () => String(value))
   return (
     <div className="space-y-1">
       <Label className="text-xs text-muted-foreground">{label}</Label>
@@ -2475,8 +2492,7 @@ function PulseMsField({
   value: number
   onCommit: (v: number) => void | Promise<void>
 }) {
-  const [local, setLocal] = useState(String(value))
-  useEffect(() => setLocal(String(value)), [value])
+  const [local, setLocal] = useDraft(value, () => String(value))
   return (
     <Input
       id="pulse-ms"
@@ -2510,8 +2526,7 @@ function SliderField({
   // postpone the firmware roundtrip until the user releases the thumb.
   // A 64-step slider over a 65535 range would otherwise emit ~1000 set_binding
   // commands per full sweep.
-  const [local, setLocal] = useState(value)
-  useEffect(() => setLocal(value), [value])
+  const [local, setLocal] = useDraft(value, () => value)
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
@@ -2561,8 +2576,9 @@ function RangeSliderField({
   onCommitLow: (v: number) => void
   onCommitHigh: (v: number) => void
 }) {
-  const [local, setLocal] = useState<[number, number]>([low, high])
-  useEffect(() => setLocal([low, high]), [low, high])
+  // Joined key: the draft is a fresh array every render, so the comparison has
+  // to be on the two scalars that actually define it.
+  const [local, setLocal] = useDraft<[number, number]>(`${low}:${high}`, () => [low, high])
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
@@ -2765,10 +2781,10 @@ function OutputsView({
         <CardHeader>
           <CardTitle>Wheelbase pedal link</CardTitle>
           <CardDescription>
-            CSL Elite UART handshake state lives on Serial3. After a Teensy soft reboot the
-            wheelbase may stay in its prior streaming state and skip the next handshake — re-arming
-            forces a fresh Step 0 / 250000 baud attempt without unplugging USB. Check the Logs tab
-            for handshake progress.
+            CSL Elite UART handshake state lives on the adapter's pedal-port UART. After a soft
+            reboot the wheelbase may stay in its prior streaming state and skip the next handshake —
+            re-arming forces a fresh Step 0 / 250000 baud attempt without unplugging USB. Check the
+            Logs tab for handshake progress.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -2853,6 +2869,32 @@ function OutputsView({
   )
 }
 
+/**
+ * Local draft state for a control the user edits at interaction rate (typing in
+ * a number field, dragging a slider) that must still adopt the authoritative
+ * value whenever it changes underneath — a config reload, a reset to defaults,
+ * or the wizard writing the field.
+ *
+ * This is React's "adjust state when a prop changes" pattern: compare against
+ * the previous source during render and re-seed immediately. The obvious
+ * alternative — `useEffect(() => setLocal(value), [value])` — commits a render
+ * showing the stale draft and only then re-renders with the new one, which is a
+ * wasted pass and what `react-hooks/set-state-in-effect` flags.
+ *
+ * `source` must be a primitive so the identity comparison is meaningful; for a
+ * composite draft (a range slider's two thumbs) pass a joined string and build
+ * the object in `seed`, which only runs when `source` actually changes.
+ */
+function useDraft<D>(source: unknown, seed: () => D): [D, (value: D) => void] {
+  const [draft, setDraft] = useState(seed)
+  const [prevSource, setPrevSource] = useState(source)
+  if (!Object.is(source, prevSource)) {
+    setPrevSource(source)
+    setDraft(seed())
+  }
+  return [draft, setDraft]
+}
+
 function GearDacRow({
   gear,
   dac,
@@ -2864,10 +2906,8 @@ function GearDacRow({
   onUpdate: (x: number, y: number) => void | Promise<void>
   onTest: () => void
 }) {
-  const [x, setX] = useState(String(dac.x))
-  const [y, setY] = useState(String(dac.y))
-  useEffect(() => setX(String(dac.x)), [dac.x])
-  useEffect(() => setY(String(dac.y)), [dac.y])
+  const [x, setX] = useDraft(dac.x, () => String(dac.x))
+  const [y, setY] = useDraft(dac.y, () => String(dac.y))
   return (
     <>
       <div className="font-mono">{gear.replace('gear_', '')}</div>
