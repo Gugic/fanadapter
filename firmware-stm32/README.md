@@ -1,26 +1,25 @@
 # fanadapter — STM32H743 build & wiring guide
 
-The **STM32H743 build** of fanadapter: a full-featured alternative to the Teensy 4.1 build in
-[`firmware/`](../firmware/README.md). Same WebSerial JSON protocol, byte-identical `Config`
-schema, same [`webconfig`](../webconfig/README.md) UI — so everything in the
-[main README](../README.md) and the [hardware reference](../schematics/README.md) applies here
-too. Only the microcontroller and its wiring differ.
+The **STM32H743 build** of fanadapter — **this is the actively developed build; build this one.**
+The original Teensy 4.1 sketch in [`firmware/`](../firmware/README.md) is archived and gets no new
+features. Same WebSerial JSON protocol, byte-identical `Config` schema, same
+[`webconfig`](../webconfig/README.md) UI, so everything in the [main README](../README.md) and the
+[hardware reference](../schematics/README.md) applies here too — only the microcontroller and its
+wiring differ.
 
-Written in **C** on **PlatformIO + STM32Cube HAL + TinyUSB** (not Arduino). Feature parity with
-the Teensy build, hardware-validated end to end on a real wheelbase including a full driving
-session.
+Written in **C** on **PlatformIO + STM32Cube HAL + TinyUSB** (not Arduino). Full feature parity
+with the Teensy build plus everything added since the port (PC/SimHub direct output, one-click DFU
+flashing, USB diagnostics), hardware-validated end to end on a real wheelbase including full
+driving sessions.
 
-> Building the Teensy version instead? Stop here — go to [`firmware/README.md`](../firmware/README.md).
-> This directory is only for the STM32 variant.
-
-**Why pick this over the Teensy?** The board is cheaper and easier to source, and it has a real
-DAC — so the H-pattern gear outputs drive the shifter port directly and the **RC filter stage
-disappears** from the build. Also 2 MB of flash and a second USB controller, so config storage and
-a native console cost you nothing extra.
+**Why this board?** It's cheaper and easier to source than a Teensy, and it has a real DAC — so
+the H-pattern gear outputs drive the shifter port directly and the **RC filter stage disappears**
+from the build. Also 2 MB of flash and a second USB controller, so config storage and a native
+console cost you nothing extra.
 
 **Trade-offs, honestly:** the toolchain is fussier than Arduino, the first flash needs a manual
-BOOT0/RST dance, and you still hand-wire a USB breakout to the host header (the Teensy wants a
-soldered host header instead — call that a wash).
+BOOT0/RST dance (every flash after that is hands-free — see §4), and you hand-wire a USB breakout
+to the host header rather than soldering one on.
 
 ---
 

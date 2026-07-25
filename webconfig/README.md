@@ -42,7 +42,7 @@ npm run build
 npm run lint
 ```
 
-When running `npm run dev`, Vite will serve the application at `http://localhost:5173/fanadapter/`. Open this URL in Chrome, Edge, or Brave, click **Connect**, and choose the Teensy USB Serial CDC device from the browser permission pop-up.
+When running `npm run dev`, Vite will serve the application at `http://localhost:5173/fanadapter/`. Open this URL in Chrome, Edge, or Brave, click **Connect**, and choose the adapter's USB serial (CDC) device from the browser permission pop-up.
 
 ### Custom Subfolder Deployment
 

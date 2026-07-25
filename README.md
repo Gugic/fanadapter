@@ -17,7 +17,8 @@ USB handbrake ─────────┤                          [STM32H743
 USB pedals ────────────┘                                          RJ12
 ```
 
-The two firmware builds are interchangeable — same protocol, same config schema, same UI.
+Both firmware builds speak the same protocol, config schema and UI, but the **STM32H743 build is
+the active one** — the Teensy sketch is archived and no longer developed.
 
 ---
 
@@ -46,8 +47,8 @@ Because the Teensy 4.1 has a single onboard USB host port, a **powered USB 2.0 h
 
 The project is structured into five main directories:
 
-1. **[`firmware/`](firmware/README.md)**  
-   The Arduino sketch (Teensyduino) designed for the Teensy 4.1. It reads USB HID inputs from the devices pool via `USBHost_t36`, evaluates custom user mappings, manages calibration saved to EEPROM, and emulates CSL Elite V2 pedals along with driving shifter and handbrake ports.
+1. **[`firmware/`](firmware/README.md)** — ⚠️ *archived, no longer developed*  
+   The original Arduino sketch (Teensyduino) for the Teensy 4.1. It reads USB HID inputs from the devices pool via `USBHost_t36`, evaluates custom user mappings, manages calibration saved to EEPROM, and emulates CSL Elite V2 pedals along with driving shifter and handbrake ports. **Build the STM32 version below instead** — this one still works but gets no new features, and everything added since the port (PC/SimHub direct output, one-click DFU flashing, USB diagnostics) is STM32-only. Its README remains the shared reference for the JSON protocol, config schema and RJ12 wiring.
 
 2. **[`firmware-stm32/`](firmware-stm32/README.md)**  
    An alternative build of the same adapter on an **STM32H743** core board (WeAct MiniSTM32H743VITX), written in C on PlatformIO + STM32Cube HAL + TinyUSB. Full feature parity with the Teensy build and validated on the same wheelbase — it speaks the identical JSON protocol and config schema, so one `webconfig` serves both. Cheaper and easier to source than a Teensy, with a real DAC (no RC filter needed on the gear outputs) and two USB controllers, at the cost of a fussier toolchain.
