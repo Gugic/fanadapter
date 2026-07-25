@@ -97,16 +97,16 @@ Same-VID/PID device aggregation across the 8 host pool slots is layered *under* 
 
 ### Cross-file invariants (firmware ↔ webconfig ↔ SimHub plugin)
 
-The firmware contracts now have **three** consumers, and a schema change has to move all of them together — the firmware, the TypeScript, and the C#. Missing one is silent: nothing fails to compile, the client just misreads the device.
+**`firmware-stm32/` is the source of truth.** It is the actively developed build, so a contract change starts there and then moves the TypeScript and the C# in the same commit. Missing one is silent: nothing fails to compile, the client just misreads the device. The archived Teensy sketch in `firmware/` is a **frozen fourth mirror** — it still implements these contracts (identically, by construction: the `Config` layout is `static_assert`-locked to the same 1132 bytes on both), and `firmware/README.md` remains the canonical prose reference for them, but it does not gain new ones. When you change a shared contract, decide deliberately whether the Teensy follows and say which in the commit message; when you add something new, it is STM32-only unless someone explicitly ports it.
 
-| Firmware | Webconfig | SimHub plugin | What must match |
-|---|---|---|---|
-| `mapping.h` (`Config`, `InputBinding`, `ChannelBindings`) | `webconfig/src/lib/types.ts` | `Fanadapter.Core/Model.cs` | Field names, types, channel keys. JSON wire shape must round-trip. |
-| `mapping.cpp` (`scaleAxis`) | `webconfig/src/lib/scaleAxis.ts` | `Fanadapter.Core/ScaleAxis.cs` | Identical math. Every client's "processed" preview must mirror what the firmware actually writes. |
-| `mapping.cpp` (CRC-32/ISO-HDLC) | `webconfig/src/lib/crc32.ts` | — | Same polynomial / init / final-XOR. Currently unused on the JS side but reserved for preset validation. |
-| — | `App.tsx` capture flow | `Fanadapter.Core/CaptureEngine.cs` | Same three-phase thresholds and commit maths. Not a firmware contract, but a divergence means the two clients calibrate the same pedal differently. |
-| — | `src/lib/dfu.ts` (DfuSe flasher) | `Fanadapter.Core/DfuseFlasher.cs` | Same DfuSe sequence (set-address before every block, wBlockNum=2, leave = zero-length DNLOAD), suffix strip, plausibility check, sector-erase policy. The contract is ST's ROM (AN3156), not our firmware — but a divergence means the two clients flash differently. Both consume the Pages deploy's `firmware/fanadapter-stm32.{json,bin}`. |
-| `protocol.cpp` (`CHANNEL_NAMES`, JSON command shapes) | `webconfig/src/lib/serial.ts`, `types.ts` (`CHANNELS`) | `Fanadapter.Core/Protocol.cs`, `Model.cs` | Channel name strings, command names, request/response shapes. |
+| Firmware (STM32 — source of truth) | Webconfig | SimHub plugin | Archived Teensy mirror | What must match |
+|---|---|---|---|---|
+| `src/mapping.h` (`Config`, `InputBinding`, `ChannelBindings`) | `webconfig/src/lib/types.ts` | `Fanadapter.Core/Model.cs` | `firmware/mapping.h` | Field names, types, channel keys. JSON wire shape must round-trip. Both builds `static_assert` the same 1132-byte layout. |
+| `src/mapping.c` (`scale_axis`) | `webconfig/src/lib/scaleAxis.ts` | `Fanadapter.Core/ScaleAxis.cs` | `firmware/mapping.cpp` (`scaleAxis`) | Identical math. Every client's "processed" preview must mirror what the firmware actually writes. |
+| `src/mapping.c` (CRC-32/ISO-HDLC) | `webconfig/src/lib/crc32.ts` | — | `firmware/mapping.cpp` | Same polynomial / init / final-XOR. Currently unused on the JS side but reserved for preset validation. |
+| — | `App.tsx` capture flow | `Fanadapter.Core/CaptureEngine.cs` | — | Same three-phase thresholds and commit maths. Not a firmware contract, but a divergence means the two clients calibrate the same pedal differently. |
+| — | `src/lib/dfu.ts` (DfuSe flasher) | `Fanadapter.Core/DfuseFlasher.cs` | — | Same DfuSe sequence (set-address before every block, wBlockNum=2, leave = zero-length DNLOAD), suffix strip, plausibility check, sector-erase policy. The contract is ST's ROM (AN3156), not our firmware — but a divergence means the two clients flash differently. Both consume the Pages deploy's `firmware/fanadapter-stm32.{json,bin}`. |
+| `src/protocol.c` (`CHANNEL_NAMES`, JSON command shapes, `PROTO_VERSION`) | `webconfig/src/lib/serial.ts`, `types.ts` (`CHANNELS`) | `Fanadapter.Core/Protocol.cs`, `Model.cs` | `firmware/protocol.cpp` (frozen at protocol 5) | Channel name strings, command names, request/response shapes. The STM32 is **protocol 6**; the Teensy stayed at 5 and answers `unknown_cmd` for everything added since — clients must feature-gate, not assume (`SupportsDirectOutput`, `SupportsAxisStreaming`, `SupportsDfu` in Model.cs). |
 
 Both clients defensively accept the v2 (array) and legacy v1 (single object) channel shapes so they keep rendering against older firmware — `getChannelBindings()` in types.ts, `ChannelBindingsConverter` in Model.cs. Keep both fallbacks when changing the schema.
 
