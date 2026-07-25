@@ -130,6 +130,14 @@
                                                                       RelativeSource={RelativeSource AncestorType=ItemsControl}}"
                                                                   Text="{Binding PropertyName, UpdateSourceTrigger=LostFocus}"
                                                                   VerticalAlignment="Center" />
+                                                        <styles:SHButtonSecondary Command="{Binding DataContext.DetectAxisCommand,
+                                                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                                  CommandParameter="{Binding}"
+                                                                                  Content="{Binding DetectButtonText}"
+                                                                                  ToolTip="Press this, then press the pedal fully and release — the property, range and direction are filled in automatically."
+                                                                                  Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding DetectStatus}" VerticalAlignment="Center"
+                                                                   Margin="12,0,0,0" FontStyle="Italic" Opacity="0.85" />
                                                     </StackPanel>
 
                                                     <StackPanel Orientation="Horizontal" Margin="90,0,0,0">

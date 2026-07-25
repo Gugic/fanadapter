@@ -1,5 +1,19 @@
 # fanadapter Firmware Reference
 
+> ## ⚠️ Archived — the Teensy build is no longer developed
+>
+> Active development moved to the **[STM32H743 build](../firmware-stm32/README.md)**, which has full
+> feature parity, is hardware-validated on a real wheelbase, and is cheaper and easier to source.
+> This Teensy sketch is left in place as a working historical build: it is **not final**, receives no
+> new features or fixes, and later protocol additions (the direct-output command set that the SimHub
+> plugin drives, `dfu` flashing, the USB diagnostics) exist **only** on the STM32 — the Teensy
+> answers `unknown_cmd` for those.
+>
+> **This document is still the canonical reference** for everything the two builds share — the JSON
+> API, the `Config` schema, the channel model, calibration procedure, and the RJ12 port/wiring
+> details — and the STM32 docs link into it rather than duplicating it. Read it for the protocol and
+> hardware; build from `firmware-stm32/` for a working adapter.
+
 The `firmware/` directory contains the Arduino sketch (Teensyduino) that runs on the Teensy 4.1. It handles USB host HID polling, custom binding evaluation, EEPROM state storage, a serial JSON API, and emulates Fanatec gear over RJ12 outputs.
 
 ---

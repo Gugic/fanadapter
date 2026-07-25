@@ -29,6 +29,11 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // set-state-in-effect and purity (both from eslint-plugin-react-hooks v7)
+      // are left at their default 'error'. The patterns they caught are fixed:
+      // prop→draft mirroring goes through `useDraft` (render-time adjustment
+      // instead of a sync effect), and the capture countdown ticks from state
+      // rather than reading Date.now() during render.
       // Hardened/Strict Rules overrides:
       '@typescript-eslint/no-unused-vars': [
         'error',

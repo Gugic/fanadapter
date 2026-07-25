@@ -1,6 +1,6 @@
 # fanadapter
 
-USB HID → Fanatec wheelbase adapter using a Teensy 4.1, combined with a browser-based WebSerial configuration UI.
+USB HID → Fanatec wheelbase adapter — on a Teensy 4.1 or an STM32H743 — combined with a browser-based WebSerial configuration UI and a SimHub plugin.
 
 An open-source adapter that lets arbitrary USB HID sim racing peripherals (H-pattern shifters, sequential shifters, handbrakes, and USB pedals — plus gamepads, D-pad/Hat controllers, and keyboards) connect to a Fanatec wheelbase as if they were native Fanatec gear. This is particularly valuable on game consoles (PS4/PS5/Xbox Series X|S) where third-party USB peripherals cannot be plugged directly into the console.
 
@@ -17,7 +17,8 @@ USB handbrake ─────────┤                          [STM32H743
 USB pedals ────────────┘                                          RJ12
 ```
 
-The two firmware builds are interchangeable — same protocol, same config schema, same UI.
+Both firmware builds speak the same protocol, config schema and UI, but the **STM32H743 build is
+the active one** — the Teensy sketch is archived and no longer developed.
 
 ---
 
@@ -46,14 +47,14 @@ Because the Teensy 4.1 has a single onboard USB host port, a **powered USB 2.0 h
 
 The project is structured into five main directories:
 
-1. **[`firmware/`](firmware/README.md)**  
-   The Arduino sketch (Teensyduino) designed for the Teensy 4.1. It reads USB HID inputs from the devices pool via `USBHost_t36`, evaluates custom user mappings, manages calibration saved to EEPROM, and emulates CSL Elite V2 pedals along with driving shifter and handbrake ports.
+1. **[`firmware/`](firmware/README.md)** — ⚠️ *archived, no longer developed*  
+   The original Arduino sketch (Teensyduino) for the Teensy 4.1. It reads USB HID inputs from the devices pool via `USBHost_t36`, evaluates custom user mappings, manages calibration saved to EEPROM, and emulates CSL Elite V2 pedals along with driving shifter and handbrake ports. **Build the STM32 version below instead** — this one still works but gets no new features, and everything added since the port (PC/SimHub direct output, one-click DFU flashing, USB diagnostics) is STM32-only. Its README remains the shared reference for the JSON protocol, config schema and RJ12 wiring.
 
 2. **[`firmware-stm32/`](firmware-stm32/README.md)**  
    An alternative build of the same adapter on an **STM32H743** core board (WeAct MiniSTM32H743VITX), written in C on PlatformIO + STM32Cube HAL + TinyUSB. Full feature parity with the Teensy build and validated on the same wheelbase — it speaks the identical JSON protocol and config schema, so one `webconfig` serves both. Cheaper and easier to source than a Teensy, with a real DAC (no RC filter needed on the gear outputs) and two USB controllers, at the cost of a fussier toolchain.
 
 3. **[`webconfig/`](webconfig/README.md)**  
-   A beautiful, modern React 19 + TypeScript + Tailwind + shadcn/ui configuration interface. It runs directly in desktop Chromium-based browsers (Chrome, Edge, Brave) and communicates with the firmware over WebSerial (line-based JSON) to capture binds, calibrate axis deadzones, and test outputs.
+   A beautiful, modern React 19 + TypeScript + Tailwind + shadcn/ui configuration interface. It runs directly in desktop Chromium-based browsers (Chrome, Edge, Brave) and communicates with the firmware over WebSerial (line-based JSON) to capture binds, calibrate axis deadzones, and test outputs. It also does one-click STM32 firmware updates over WebUSB/DFU — no toolchain, no button-pressing (the SimHub plugin carries the same updater over WinUSB).
    
 4. **[`simhub-plugin/`](simhub-plugin/README.md)**  
    A [SimHub](https://www.simhubdash.com/) plugin (C# / .NET Framework 4.8 / WPF) that speaks the same JSON protocol over a COM port. Devices plugged into the **PC** are captured and mapped by SimHub's own input system, and the plugin turns the result into direct output commands to the wheelbase; devices plugged into the **adapter's own USB hub** are configured through a mirror of the webconfig UI. Also publishes the adapter's live state as SimHub properties for dashboards.

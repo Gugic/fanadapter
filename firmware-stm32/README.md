@@ -1,26 +1,25 @@
 # fanadapter — STM32H743 build & wiring guide
 
-The **STM32H743 build** of fanadapter: a full-featured alternative to the Teensy 4.1 build in
-[`firmware/`](../firmware/README.md). Same WebSerial JSON protocol, byte-identical `Config`
-schema, same [`webconfig`](../webconfig/README.md) UI — so everything in the
-[main README](../README.md) and the [hardware reference](../schematics/README.md) applies here
-too. Only the microcontroller and its wiring differ.
+The **STM32H743 build** of fanadapter — **this is the actively developed build; build this one.**
+The original Teensy 4.1 sketch in [`firmware/`](../firmware/README.md) is archived and gets no new
+features. Same WebSerial JSON protocol, byte-identical `Config` schema, same
+[`webconfig`](../webconfig/README.md) UI, so everything in the [main README](../README.md) and the
+[hardware reference](../schematics/README.md) applies here too — only the microcontroller and its
+wiring differ.
 
-Written in **C** on **PlatformIO + STM32Cube HAL + TinyUSB** (not Arduino). Feature parity with
-the Teensy build, hardware-validated end to end on a real wheelbase including a full driving
-session.
+Written in **C** on **PlatformIO + STM32Cube HAL + TinyUSB** (not Arduino). Full feature parity
+with the Teensy build plus everything added since the port (PC/SimHub direct output, one-click DFU
+flashing, USB diagnostics), hardware-validated end to end on a real wheelbase including full
+driving sessions.
 
-> Building the Teensy version instead? Stop here — go to [`firmware/README.md`](../firmware/README.md).
-> This directory is only for the STM32 variant.
-
-**Why pick this over the Teensy?** The board is cheaper and easier to source, and it has a real
-DAC — so the H-pattern gear outputs drive the shifter port directly and the **RC filter stage
-disappears** from the build. Also 2 MB of flash and a second USB controller, so config storage and
-a native console cost you nothing extra.
+**Why this board?** It's cheaper and easier to source than a Teensy, and it has a real DAC — so
+the H-pattern gear outputs drive the shifter port directly and the **RC filter stage disappears**
+from the build. Also 2 MB of flash and a second USB controller, so config storage and a native
+console cost you nothing extra.
 
 **Trade-offs, honestly:** the toolchain is fussier than Arduino, the first flash needs a manual
-BOOT0/RST dance, and you still hand-wire a USB breakout to the host header (the Teensy wants a
-soldered host header instead — call that a wash).
+BOOT0/RST dance (every flash after that is hands-free — see §4), and you hand-wire a USB breakout
+to the host header rather than soldering one on.
 
 ---
 
@@ -229,7 +228,34 @@ flasher. Disconnect webconfig before flashing or opening a terminal.
 
 ---
 
-## 6. Troubleshooting
+## 6. JSON commands — STM32-only additions
+
+The core protocol (`version`, `list_devices`, `get_config`, `set_binding`, `save_config`, the
+`live` / `outputs` events, …) is shared with the Teensy and documented in its
+[JSON API reference](../firmware/README.md#json-api-reference). This build reports **`protocol` 6**
+(the Teensy is 5) and answers these additional commands, which the Teensy rejects with
+`unknown_cmd`:
+
+| Request | Response / effect |
+|---|---|
+| `{"cmd":"set_gear","channel":"gear_3"}` | Direct output: force the H-pattern gear, overriding the USB-device mapping. Sticky until `release_outputs`. Channels `gear_R`, `gear_1`..`gear_7`, `gear_N`. |
+| `{"cmd":"set_outputs","throttle":40000,"brake":0,...}` | Direct output: set any subset of the four pedal axes (0..65535). Acked. Absent channels keep their current override. |
+| `{"cmd":"stream_axes","throttle":40000,...}` | **No reply.** The pedal hot path (protocol ≥ 6): identical effect to `set_outputs`' axis half, but answers nothing, so a client streams it at rate without a round-trip and it never touches FIFO reply matching. |
+| `{"cmd":"pulse_shift","direction":"up"\|"down"}` | Direct output: one sequential shift pulse. |
+| `{"cmd":"release_outputs"}` | Drops all direct-output overrides; the adapter's own USB-device mapping takes the wheelbase back. |
+| `{"cmd":"pedals_status"}` | `{"state":"STREAMING_115K",...}` — pedal-port link state + last-sent axis values. |
+| `{"cmd":"dfu"}` | Acks, then reboots into the ROM bootloader for a hands-free reflash (§4). The CDC port disappears and a DFU device takes its place. |
+| `{"cmd":"usb_status"}` | USB-host diagnostics: per claimed slot `{mounted,busy,reports,age_ms,idle_rearms,da}`, plus a raw dwc2 host-channel dump and request-queue counters. See the input-freeze note in Troubleshooting. |
+| `{"cmd":"usb_kick"}` | Aborts + re-arms every claimed HID pipe; returns the aborted-slot bitmask. Measured NOT to revive a wedged pipe — a diagnostic, not a fix. |
+| `{"cmd":"usb_stall","ms":2000}` | Skips USB-host servicing for `ms` while everything else runs — the freeze reproducer. Diagnostic only. |
+
+The direct-output set (`set_gear` / `set_outputs` / `stream_axes` / `pulse_shift` /
+`release_outputs`) is what the SimHub plugin drives for PC-attached controllers; overrides are
+**sticky with no firmware-side timeout**, so a client that sets them must release on exit.
+
+---
+
+## 7. Troubleshooting
 
 **Dark LED, no console, 0 V on the USB pins — but DFU works.**
 You almost certainly have an **STM32H723VGT6**, not an H743. See §1. Check the chip before
@@ -287,7 +313,7 @@ low is expected (DAC output-buffer clamp) — the base normalizes it during shif
 
 ---
 
-## 7. Source layout
+## 8. Source layout
 
 | File | Purpose |
 |---|---|
@@ -312,7 +338,7 @@ with webconfig**. Change one side, change the other — see the cross-file invar
 
 ---
 
-## 8. Port history
+## 9. Port history
 
 Development notes, milestone log, bugs already fixed (and why), and the abandoned bring-up
 hardware live in **[`PORT-STATUS.md`](PORT-STATUS.md)**. Read that before changing firmware code;
