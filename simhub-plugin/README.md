@@ -110,11 +110,16 @@ switch games. Two things end it, both deliberate: **Stop driving pedals** and
 change, disconnect) leaves the choice intact so the stream comes back. If the
 choice can't be honoured on a connect — a Teensy answered, or no pedal has a
 source property — the plugin logs why and keeps it for next time rather than
-quietly forgetting it.
+quietly forgetting it. Stop and Release take effect even if saving settings
+fails; that failure is logged, and the choice may need to be saved again before
+restarting SimHub.
 
 Live pedal readouts use the pane's Normal-priority timer, with unchanged values
 suppressed. Closing and reopening the pane reattaches its session listeners and
 re-enables input telemetry; output telemetry stays on for dashboard properties.
+Reopening preserves mapping and pulse-width edits on the current connection.
+Reconnects and explicit config reloads load the adapter's fresh settings instead.
+The Start/Stop button also follows automatic pedal-stream resume.
 
 > **Overrides are sticky.** The firmware has no timeout, so whatever was last
 > sent stays applied until it is released. The plugin releases automatically
@@ -186,8 +191,17 @@ dotnet build simhub-plugin/FanadapterSimHub.sln -c Release
 dotnet test  simhub-plugin/FanadapterSimHub.sln -c Release
 ```
 
-Tests cover `Fanadapter.Core`, which has no SimHub references — they run on a
-machine with no SimHub installed.
+The solution includes Core tests and SimHub/WPF lifecycle tests. The latter
+require the configured SimHub installation and use an in-memory adapter without
+opening a COM port. They cover stopping when settings persistence fails,
+preserving edits across pane navigation, loading new config snapshots, and
+refreshing WPF bindings after automatic stream resume.
+
+Core has no SimHub references. To run its tests without SimHub installed:
+
+```sh
+dotnet test simhub-plugin/tests/Fanadapter.Core.Tests/Fanadapter.Core.Tests.csproj -c Release
+```
 
 If SimHub is not at `C:\Program Files (x86)\SimHub\`, create an untracked
 `simhub-plugin/Directory.Build.props.user`:
@@ -207,6 +221,7 @@ If SimHub is not at `C:\Program Files (x86)\SimHub\`, create an untracked
 | `src/Fanadapter.Core/` | Transport, protocol, schema, `scaleAxis`, the capture engine. **No SimHub references** — the unit-testable half, and where the C# mirrors of the firmware contracts live. |
 | `src/Fanadapter.SimHub/` | The plugin: SimHub interfaces, actions, properties, the drive controller and the WPF settings UI. |
 | `tests/Fanadapter.Core.Tests/` | xunit tests for Core. |
+| `tests/Fanadapter.SimHub.Tests/` | WPF and drive lifecycle regression tests against SimHub's assemblies, with an in-memory adapter. |
 | `.simhub-version` | The SimHub release CI builds against. |
 
 Changing anything that mirrors a firmware contract — the config schema, the

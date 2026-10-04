@@ -196,8 +196,13 @@ namespace Fanadapter.SimHub
         public void ReleaseOutputsByUser()
         {
             Settings.Drive.AxisStreamingEnabled = false;
-            SaveSettings();
             Drive?.ReleaseAll();
+            try { SaveSettings(); }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Info(
+                    "[Fanadapter] outputs released, but the stopped pedal-driving choice could not be saved: " + ex.Message);
+            }
         }
 
         public void DataUpdate(PluginManager pluginManager, ref GameData data)

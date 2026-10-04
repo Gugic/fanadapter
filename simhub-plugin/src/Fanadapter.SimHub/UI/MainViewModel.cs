@@ -874,10 +874,6 @@ namespace Fanadapter.SimHub.UI
                 _plugin.SaveSettings();
                 drive.StartStreaming();
             }
-
-            OnPropertyChanged(nameof(IsStreaming));
-            OnPropertyChanged(nameof(StreamingButtonText));
-            OnPropertyChanged(nameof(StreamingStatus));
         }
 
         private void ReleaseOutputs()
@@ -886,11 +882,15 @@ namespace Fanadapter.SimHub.UI
             // and it would be a nasty surprise for the stream to reappear on the
             // next game change.
             _plugin.ReleaseOutputsByUser();
+            AppendLog("outputs released — the adapter's own mapping is back in control.");
+        }
+
+        private void OnDriveStreamingChanged() => RunOnUi(() =>
+        {
             OnPropertyChanged(nameof(IsStreaming));
             OnPropertyChanged(nameof(StreamingButtonText));
             OnPropertyChanged(nameof(StreamingStatus));
-            AppendLog("outputs released — the adapter's own mapping is back in control.");
-        }
+        });
 
         // ---------- Drive feedback (did that shift actually happen?) ----------
 
@@ -1270,6 +1270,8 @@ namespace Fanadapter.SimHub.UI
 
         private void OnSessionStateChanged() => SyncFromSession();
 
+        private Config _editorConfig;
+
         /// <summary>
         /// Marshalled as a whole, not just its notifications: it rebuilds the
         /// mapping and output editors, and WPF rejects changes to a bound
@@ -1278,11 +1280,18 @@ namespace Fanadapter.SimHub.UI
         /// </summary>
         private void SyncFromSession() => RunOnUi(() =>
         {
-            // The config arrives with the connection, so the editors are rebuilt
-            // whenever session state changes rather than on a separate signal
-            // that could arrive first.
-            LoadChannelsFromConfig();
-            LoadOutputsFromConfig();
+            // A connect or explicit reload supplies a new config snapshot.
+            // Rebuild for that snapshot, preserving live edits otherwise.
+            var config = _session.Config;
+            if (!ReferenceEquals(config, _editorConfig))
+            {
+                LoadChannelsFromConfig();
+                LoadOutputsFromConfig();
+                _editorConfig = config;
+            }
+            // Reopening the same connection keeps the existing editors. Capture,
+            // Clear and pulse-width edits go straight to the board but are not
+            // all mirrored into this connection's get_config snapshot.
 
             // Devices likewise, and for a sharper reason: the plugin auto-connects in Init(),
             // long before SimHub builds the settings UI, so the DevicesChanged raised during
@@ -1351,6 +1360,7 @@ namespace Fanadapter.SimHub.UI
         }
 
         private bool _attached;
+        private DriveController _attachedDrive;
 
         /// <summary>
         /// Starts the timers and subscribes to the session. Idempotent, and it
@@ -1376,6 +1386,8 @@ namespace Fanadapter.SimHub.UI
             _session.DevicesChanged += OnDevicesChanged;
             _session.LiveInput += OnLiveInput;
             _session.Outputs += OnOutputs;
+            _attachedDrive = _plugin.Drive;
+            if (_attachedDrive != null) _attachedDrive.StreamingChanged += OnDriveStreamingChanged;
 
             _liveTimer.Start();
             _slowTimer.Start();
@@ -1398,6 +1410,8 @@ namespace Fanadapter.SimHub.UI
             _session.DevicesChanged -= OnDevicesChanged;
             _session.LiveInput -= OnLiveInput;
             _session.Outputs -= OnOutputs;
+            if (_attachedDrive != null) _attachedDrive.StreamingChanged -= OnDriveStreamingChanged;
+            _attachedDrive = null;
 
             SyncInputTelemetry();
         }

@@ -128,6 +128,9 @@ namespace Fanadapter.SimHub
 
         public bool IsStreaming => _streamTask != null && !_streamTask.IsCompleted;
 
+        /// <summary>Raised on the caller's thread when streaming starts or stops.</summary>
+        public event Action StreamingChanged;
+
         /// <summary>
         /// The last gear/shift command and what became of it, or null if none has
         /// been issued. Volatile because the pump thread writes it and the UI
@@ -223,6 +226,7 @@ namespace Fanadapter.SimHub
             var token = _streamCancel.Token;
             ResetSentState();
             _streamTask = Task.Run(() => StreamAsync(token), token);
+            StreamingChanged?.Invoke();
             _log("pedal streaming started");
         }
 
@@ -278,6 +282,7 @@ namespace Fanadapter.SimHub
             cancel.Dispose();
 
             ResetSentState();
+            StreamingChanged?.Invoke();
             _log("pedal streaming stopped");
         }
 
