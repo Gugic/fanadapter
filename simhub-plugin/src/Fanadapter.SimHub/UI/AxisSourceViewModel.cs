@@ -100,25 +100,46 @@ namespace Fanadapter.SimHub.UI
 
         // ---------- Live readout ----------
 
+        // The readout ticks ~30 times a second, and a pedal at rest reports the
+        // same value every time. Suppressing unchanged notifications is what
+        // keeps that rate cheaper than the 5 Hz one it replaced.
+
         private string _rawText = "—";
         public string RawText
         {
             get => _rawText;
-            private set { _rawText = value; OnPropertyChanged(); }
+            private set
+            {
+                if (_rawText == value) return;
+                _rawText = value;
+                OnPropertyChanged();
+            }
         }
 
         private double _scaledPercent;
         public double ScaledPercent
         {
             get => _scaledPercent;
-            private set { _scaledPercent = value; OnPropertyChanged(); }
+            private set
+            {
+                // Exact comparison on purpose: this is assigned from a rounded
+                // value, so equal readings really are bit-identical.
+                if (_scaledPercent.Equals(value)) return;
+                _scaledPercent = value;
+                OnPropertyChanged();
+            }
         }
 
         private string _scaledText = "—";
         public string ScaledText
         {
             get => _scaledText;
-            private set { _scaledText = value; OnPropertyChanged(); }
+            private set
+            {
+                if (_scaledText == value) return;
+                _scaledText = value;
+                OnPropertyChanged();
+            }
         }
 
         /// <summary>Called on a UI timer with the property's current value.</summary>

@@ -12,13 +12,40 @@ namespace Fanadapter.Core
     /// </summary>
     public class DriveSettings
     {
-        /// <summary>Master switch for streaming pedal axes to the adapter.</summary>
+        /// <summary>
+        /// Whether the user wants pedals driven from this PC. A *desired* state,
+        /// not a live one: it is persisted, and every successful connect
+        /// re-applies it (see DriveController.ResumeIfEnabled). SimHub rebuilds
+        /// its plugins on every game change, so without that the choice would
+        /// quietly lapse each time the user switched games.
+        /// </summary>
         public bool AxisStreamingEnabled { get; set; }
 
         public AxisSource Throttle { get; set; } = new AxisSource();
         public AxisSource Brake { get; set; } = new AxisSource();
         public AxisSource Clutch { get; set; } = new AxisSource();
         public AxisSource Handbrake { get; set; } = new AxisSource();
+
+        /// <summary>
+        /// Every pedal channel, in the order the firmware's axis commands take
+        /// them. Null-tolerant on purpose: these come back from a deserialised
+        /// settings blob, which can carry an explicit null for a channel.
+        /// </summary>
+        public AxisSource[] AllAxes() => new[] { Throttle, Brake, Clutch, Handbrake };
+
+        /// <summary>
+        /// At least one pedal has a source property. Streaming without one sends
+        /// nothing at all, so resuming into that state would show "driving" over
+        /// a link carrying no pedal data.
+        /// </summary>
+        public bool HasConfiguredAxis()
+        {
+            foreach (var axis in AllAxes())
+            {
+                if (axis != null && axis.IsConfigured) return true;
+            }
+            return false;
+        }
 
         public AxisSource For(string channel)
         {

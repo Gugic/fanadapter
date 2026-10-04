@@ -96,5 +96,29 @@ namespace Fanadapter.Core.Tests
                 Assert.NotNull(drive.For(channel));
             }
         }
+
+        [Fact]
+        public void HasConfiguredAxisIsFalseUntilSomePedalHasASource()
+        {
+            var drive = new DriveSettings();
+            Assert.False(drive.HasConfiguredAxis());
+
+            // Any one channel is enough — a clutch-only setup is legitimate.
+            drive.Clutch.PropertyName = "InputStatus.Pedals_Rz";
+            Assert.True(drive.HasConfiguredAxis());
+        }
+
+        [Fact]
+        public void HasConfiguredAxisSurvivesAChannelDeserialisedAsNull()
+        {
+            // Settings come back from SimHub's JSON store, which can hand back an
+            // explicit null for a channel. Resuming the pedal stream asks this
+            // question on every connect, so it must not be the thing that throws.
+            var drive = new DriveSettings { Throttle = null, Brake = null, Clutch = null, Handbrake = null };
+            Assert.False(drive.HasConfiguredAxis());
+
+            drive.Brake = new AxisSource { PropertyName = "InputStatus.Pedals_Y" };
+            Assert.True(drive.HasConfiguredAxis());
+        }
     }
 }

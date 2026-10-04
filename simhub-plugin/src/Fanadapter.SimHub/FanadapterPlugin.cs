@@ -124,7 +124,7 @@ namespace Fanadapter.SimHub
             // The escape hatch. Overrides are sticky, so a user who binds
             // something wrong needs a way to hand control back without
             // restarting SimHub.
-            this.AddAction("ReleaseOutputs", (a, b) => Drive.ReleaseAll());
+            this.AddAction("ReleaseOutputs", (a, b) => ReleaseOutputsByUser());
             this.AddAction("RearmPedals", (a, b) => Drive.RearmPedals());
         }
 
@@ -152,18 +152,53 @@ namespace Fanadapter.SimHub
                 try
                 {
                     await Session.ConnectAsync(port);
-                    await Session.Protocol.SetLiveOutputsAsync(true);
                     global::SimHub.Logging.Current.Info("[Fanadapter] connected on " + port);
                 }
                 catch (Exception ex)
                 {
                     global::SimHub.Logging.Current.Info(
                         "[Fanadapter] auto-connect to " + port + " failed: " + ex.Message);
+                    return;
+                }
+
+                // Connected and usable from here on, so the two follow-ups report
+                // their own failures. Telemetry used to share the connect's catch,
+                // which meant a hiccup enabling it also skipped the resume below
+                // and read as a dead adapter in the log.
+                try { await Session.Protocol.SetLiveOutputsAsync(true); }
+                catch (Exception ex)
+                {
+                    global::SimHub.Logging.Current.Info(
+                        "[Fanadapter] output telemetry could not be enabled: " + ex.Message);
+                }
+
+                // This is what carries "driving pedals" across a SimHub restart
+                // and across every game change, since each of those runs Init
+                // again with a freshly built DriveController.
+                try { Drive.ResumeIfEnabled(); }
+                catch (Exception ex)
+                {
+                    global::SimHub.Logging.Current.Info(
+                        "[Fanadapter] pedal streaming could not resume: " + ex.Message);
                 }
             });
         }
 
         public void SaveSettings() => this.SaveCommonSettings(SettingsKey, Settings);
+
+        /// <summary>
+        /// The user deliberately handing control back — the pane's button and the
+        /// bindable action both land here. It revokes the persisted "driving
+        /// pedals" choice, unlike the releases that happen on shutdown or a game
+        /// change: those have to leave it alone so streaming can resume, whereas
+        /// this one must not come back by itself on the next game change.
+        /// </summary>
+        public void ReleaseOutputsByUser()
+        {
+            Settings.Drive.AxisStreamingEnabled = false;
+            SaveSettings();
+            Drive?.ReleaseAll();
+        }
 
         public void DataUpdate(PluginManager pluginManager, ref GameData data)
         {

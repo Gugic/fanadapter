@@ -73,6 +73,15 @@ that tab. Gears appear twice:
 - **Select** bindings latch — the gear stays until another one is chosen. Use
   these for a button that should select a gear and stay there.
 
+Above the editors is a strip answering "did that actually happen": two lamps
+that flash on each shift, the gear the adapter reports holding, and the last
+command with its timestamp — in red, with the error, when one fails. The lamps
+light on either of the two confirmations available: the adapter acknowledging
+the command, and the outputs stream showing the pin driven. Neither is
+sufficient alone (a 50 ms pulse can fall between two ~30 Hz telemetry frames),
+and neither can prove the *wheelbase* registered the shift — nothing on that
+link reports back.
+
 Pedals are configured per channel, and the easy path is **Detect**: click it,
 keep everything still for half a second, then press that pedal fully and
 release. The plugin samples every property SimHub publishes, finds the one you
@@ -93,11 +102,28 @@ the hot path and no change-suppression dead-band, so PC-attached pedals get
 the same cadence the wheelbase itself is fed at. On older firmware the plugin
 falls back to acknowledged commands (~8 ms per update, still ~100 Hz-class).
 
+**Start driving pedals sticks.** The choice is saved and re-applied on every
+connect, so it survives a SimHub restart — and, just as importantly, a game
+change, because SimHub tears its plugins down and rebuilds them each time you
+switch games. Two things end it, both deliberate: **Stop driving pedals** and
+**Release outputs**. A release that the plugin does on its own (shutdown, game
+change, disconnect) leaves the choice intact so the stream comes back. If the
+choice can't be honoured on a connect — a Teensy answered, or no pedal has a
+source property — the plugin logs why and keeps it for next time rather than
+quietly forgetting it.
+
+Live pedal readouts use the pane's Normal-priority timer, with unchanged values
+suppressed. Closing and reopening the pane reattaches its session listeners and
+re-enables input telemetry; output telemetry stays on for dashboard properties.
+
 > **Overrides are sticky.** The firmware has no timeout, so whatever was last
 > sent stays applied until it is released. The plugin releases automatically
 > when you stop streaming, when it disconnects, and when SimHub shuts it down —
-> but if something ever ends up stuck, **Release outputs** (a button, and also a
-> bindable action) hands every channel back to the adapter's own mapping.
+> but if SimHub is killed outright, nothing runs to release, and the wheelbase
+> keeps the last pedal values until something does. **Release outputs** (a
+> button, and also a bindable action) hands every channel back to the adapter's
+> own mapping; reconnecting with streaming enabled also takes the pedals back
+> over, which clears a stuck state by overwriting it.
 
 ### Devices, Mappings, Outputs — for the adapter's own hardware
 

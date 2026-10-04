@@ -16,9 +16,15 @@ namespace Fanadapter.SimHub.UI
             ViewModel = new MainViewModel(plugin);
             DataContext = ViewModel;
 
-            // SimHub builds a fresh settings control each time the pane is
-            // opened, so the old one has to stop listening or every session
-            // event fans out to a growing pile of dead view models.
+            // Detaching keeps a closed pane from listening — otherwise every
+            // session event fans out to a growing pile of dead view models.
+            //
+            // But it MUST be paired with a re-attach: WPF raises Unloaded
+            // whenever the control leaves the visual tree, navigating to another
+            // SimHub page does that, and what comes back is this same instance.
+            // Without the Loaded half, returning to the pane gave a UI whose
+            // buttons still worked and whose readouts were all frozen.
+            Loaded += (s, e) => ViewModel.Attach();
             Unloaded += (s, e) => ViewModel.Detach();
         }
     }

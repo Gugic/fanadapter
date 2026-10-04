@@ -79,6 +79,68 @@
                                 <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
                                            Text="Hold bindings engage a gear while the control is held and return to neutral on release — real H-pattern behaviour. Select bindings latch instead, for a button that should stay in gear." />
 
+                                <!-- Did that shift actually happen? The lamps flash on the adapter's
+                                     acknowledgement and on seeing the output pin driven; the line
+                                     beside them is the last command either way, failures included. -->
+                                <Border Padding="10" Margin="0,0,0,10" CornerRadius="3"
+                                        Background="#14FFFFFF" BorderThickness="1" BorderBrush="#22FFFFFF">
+                                    <DockPanel>
+                                        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                                            <Border Width="30" Height="30" CornerRadius="15"
+                                                    BorderThickness="1" BorderBrush="#33FFFFFF">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#18FFFFFF" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding ShiftUpLamp}" Value="True">
+                                                                <Setter Property="Background" Value="#FF35C46A" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="▲" FontSize="13" HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                            </Border>
+
+                                            <Border Width="30" Height="30" CornerRadius="15" Margin="6,0,0,0"
+                                                    BorderThickness="1" BorderBrush="#33FFFFFF">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#18FFFFFF" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding ShiftDownLamp}" Value="True">
+                                                                <Setter Property="Background" Value="#FF35C46A" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="▼" FontSize="13" HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                            </Border>
+
+                                            <TextBlock Text="Gear" VerticalAlignment="Center" Opacity="0.7"
+                                                       Margin="18,0,6,0" />
+                                            <TextBlock Text="{Binding DriveGear}" VerticalAlignment="Center"
+                                                       FontSize="16" FontWeight="Bold" MinWidth="70" />
+                                        </StackPanel>
+
+                                        <TextBlock Text="{Binding LastDriveAction}" VerticalAlignment="Center"
+                                                   Margin="16,0,0,0" TextWrapping="Wrap">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Opacity" Value="0.85" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding LastDriveActionFailed}" Value="True">
+                                                            <Setter Property="Foreground" Value="#FFE05252" />
+                                                            <Setter Property="Opacity" Value="1" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DockPanel>
+                                </Border>
+
                                 <ui:ControlsEditor ActionName="FanadapterPlugin.ShiftUp" FriendlyName="Shift up" />
                                 <ui:ControlsEditor ActionName="FanadapterPlugin.ShiftDown" FriendlyName="Shift down" />
 
