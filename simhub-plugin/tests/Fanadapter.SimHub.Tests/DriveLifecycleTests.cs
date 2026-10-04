@@ -126,7 +126,7 @@ namespace Fanadapter.SimHub.Tests
                         notifications++;
                     };
                     rig.Plugin.Settings.Drive.AxisStreamingEnabled = true;
-                    rig.Plugin.Settings.Drive.Throttle.PropertyName = "TestThrottle";
+                    rig.Plugin.Settings.Drive.Throttle.AxisName = "TestThrottle";
                     rig.Pane.Attach(); // Must not subscribe twice.
 
                     PumpUntil(Task.Run(() => rig.Drive.ResumeIfEnabled()));

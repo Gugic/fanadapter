@@ -8,10 +8,7 @@ using SimHub.Plugins.UI.Axis;
 namespace Fanadapter.SimHub.UI
 {
     /// <summary>
-    /// Editor for one pedal channel: which SimHub source feeds it, how that
-    /// source maps onto the firmware's 0..65535, and what the result
-    /// currently is. The live readout is the point — "which property is my brake
-    /// on and is it the right way round" is otherwise pure guesswork.
+    /// Native SimHub axis assignment and live preview for one pedal channel.
     /// </summary>
     public class AxisSourceViewModel : INotifyPropertyChanged
     {
@@ -32,23 +29,6 @@ namespace Fanadapter.SimHub.UI
 
         public string Channel { get; }
         public string Label { get; }
-
-        public bool UseSimHubAxis
-        {
-            get => _model.UseSimHubAxis;
-            set
-            {
-                if (_model.UseSimHubAxis == value) return;
-                _model.UseSimHubAxis = value;
-                OnPropertyChanged();
-                OnPropertyChanged(nameof(IsPropertySource));
-                OnPropertyChanged(nameof(IsConfigured));
-                UpdateReadout(null);
-                _onChanged();
-            }
-        }
-
-        public bool IsPropertySource => !UseSimHubAxis;
 
         private AxisAssignment _axis;
         public AxisAssignment Axis
@@ -82,77 +62,7 @@ namespace Fanadapter.SimHub.UI
 
         public object ReadValue(PluginManager manager) => AxisSourceReader.Read(manager, _model);
 
-        public string PropertyName
-        {
-            get => _model.PropertyName;
-            set
-            {
-                _model.PropertyName = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-                OnPropertyChanged();
-                OnPropertyChanged(nameof(IsConfigured));
-                _onChanged();
-            }
-        }
-
-        public double InputMin
-        {
-            get => _model.InputMin;
-            set { _model.InputMin = value; OnPropertyChanged(); _onChanged(); }
-        }
-
-        public double InputMax
-        {
-            get => _model.InputMax;
-            set { _model.InputMax = value; OnPropertyChanged(); _onChanged(); }
-        }
-
-        public bool Invert
-        {
-            get => _model.Invert;
-            set { _model.Invert = value; OnPropertyChanged(); _onChanged(); }
-        }
-
         public bool IsConfigured => _model.IsConfigured;
-
-        // ---------- Auto-detect ----------
-
-        private bool _isDetecting;
-        public bool IsDetecting
-        {
-            get => _isDetecting;
-            set
-            {
-                _isDetecting = value;
-                OnPropertyChanged();
-                OnPropertyChanged(nameof(DetectButtonText));
-                if (!value) DetectStatus = null;
-            }
-        }
-
-        public string DetectButtonText => _isDetecting ? "Cancel" : "Detect";
-
-        private string _detectStatus;
-        public string DetectStatus
-        {
-            get => _detectStatus;
-            set { _detectStatus = value; OnPropertyChanged(); }
-        }
-
-        /// <summary>Fills every field from a completed detection in one go.</summary>
-        public void ApplyDetection(AxisDetection d)
-        {
-            if (!IsPropertySource) return;
-            _model.PropertyName = d.PropertyName;
-            _model.InputMin = Math.Round(d.InputMin, 3);
-            _model.InputMax = Math.Round(d.InputMax, 3);
-            _model.Invert = d.Invert;
-            OnPropertyChanged(nameof(PropertyName));
-            OnPropertyChanged(nameof(InputMin));
-            OnPropertyChanged(nameof(InputMax));
-            OnPropertyChanged(nameof(Invert));
-            OnPropertyChanged(nameof(IsConfigured));
-            _onChanged();
-        }
 
         // ---------- Live readout ----------
 
@@ -198,7 +108,7 @@ namespace Fanadapter.SimHub.UI
             }
         }
 
-        /// <summary>Called on a UI timer with the property's current value.</summary>
+        /// <summary>Called on a UI timer with the native assignment's current value.</summary>
         public void UpdateReadout(object rawValue)
         {
             if (!_model.IsConfigured)
@@ -211,9 +121,7 @@ namespace Fanadapter.SimHub.UI
 
             if (rawValue == null)
             {
-                // Distinguish "no such property" from "property reads zero" —
-                // a typo'd name is the most likely setup mistake here.
-                RawText = UseSimHubAxis ? "axis unavailable — move the pedal" : "no such property";
+                RawText = "axis unavailable — move the pedal";
                 ScaledText = "—";
                 ScaledPercent = 0;
                 return;

@@ -51,8 +51,6 @@ namespace Fanadapter.SimHub
         public static object Read(PluginManager manager, AxisSource source)
         {
             if (manager == null || source == null || !source.IsConfigured) return null;
-            if (!source.UseSimHubAxis) return manager.GetPropertyValue(source.PropertyName);
-
             var assignment = GetAssignment(source);
             if (!Enum.IsDefined(typeof(AxisMovement), assignment.AxisMovement) || assignment.AxisMovement == AxisMovement.None)
                 return null;

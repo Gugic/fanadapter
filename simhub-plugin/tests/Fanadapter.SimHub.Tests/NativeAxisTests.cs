@@ -18,20 +18,19 @@ namespace Fanadapter.SimHub.Tests
     public class NativeAxisTests
     {
         [Fact]
-        public void StandardPickerReplacementAndClearPersistWithoutChangingPropertySetup()
+        public void StandardPickerReplacementAndClearPersist()
         {
             OnSta(() =>
             {
                 using (var host = new AxisHost())
                 {
                     host.Register("Brake", 0.25);
-                    var source = new AxisSource { PropertyName = "Old.Brake", InputMax = 65535, Invert = true };
+                    var source = new AxisSource();
                     var saves = 0;
                     var editor = new AxisSourceViewModel("brake", "Brake", source, () => saves++);
                     var picker = new AxisPickerControl();
                     picker.SetBinding(AxisPickerControl.AxisProperty,
                         new Binding(nameof(AxisSourceViewModel.Axis)) { Source = editor, Mode = BindingMode.TwoWay });
-                    editor.UseSimHubAxis = true;
                     picker.Axis = new AxisAssignment
                     {
                         AxisName = "ControlMapperPlugin.Brake", AxisMovement = AxisMovement.MaxToMin,
@@ -50,12 +49,11 @@ namespace Fanadapter.SimHub.Tests
                     picker.Axis.AxisName = null;
                     Assert.False(editor.IsConfigured);
                     Assert.Null(source.AxisName);
-                    Assert.True(saves >= 3);
-                    editor.UseSimHubAxis = false;
-                    Assert.True(editor.IsConfigured);
-                    Assert.Equal("Old.Brake", source.PropertyName);
-                    Assert.Equal(65535, source.InputMax);
-                    Assert.True(source.Invert);
+                    Assert.True(saves >= 2);
+                    var restored = JsonConvert.DeserializeObject<AxisSource>(JsonConvert.SerializeObject(source));
+                    Assert.False(restored.IsConfigured);
+                    AxisSourceReader.Initialize(new DriveSettings { Brake = restored });
+                    Assert.Null(AxisSourceReader.Read(host.Manager, restored));
                 }
             });
         }
@@ -68,7 +66,7 @@ namespace Fanadapter.SimHub.Tests
                 using (var host = new AxisHost())
                 {
                     var source = JsonConvert.DeserializeObject<AxisSource>(
-                        "{\"UseSimHubAxis\":true,\"AxisName\":\"ControlMapperPlugin.Brake\",\"AxisMovement\":\"MinToMax\"}");
+                        "{\"AxisName\":\"ControlMapperPlugin.Brake\",\"AxisMovement\":\"MinToMax\"}");
                     AxisSourceReader.Initialize(new DriveSettings { Brake = source });
                     Assert.Null(AxisSourceReader.Read(host.Manager, source));
                     host.Register("Brake", 0.6);
@@ -101,8 +99,8 @@ namespace Fanadapter.SimHub.Tests
                     host.Register("Brake", 0.75);
                     var settings = new DriveSettings
                     {
-                        Throttle = new AxisSource { UseSimHubAxis = true, AxisName = "ControlMapperPlugin.Throttle" },
-                        Brake = new AxisSource { UseSimHubAxis = true, AxisName = "ControlMapperPlugin.Brake" },
+                        Throttle = new AxisSource { AxisName = "ControlMapperPlugin.Throttle" },
+                        Brake = new AxisSource { AxisName = "ControlMapperPlugin.Brake" },
                     };
                     AxisSourceReader.Initialize(settings);
                     var pipe = new ReplyTransport();
