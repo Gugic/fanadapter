@@ -65,7 +65,7 @@ namespace Fanadapter.SimHub.UI
             UsbKickCommand = new RelayCommand(UsbKick, () => IsConnected);
 
             BuildAxisEditors();
-            ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => CanStream);
+            ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => IsStreaming || CanStream);
             RefreshPropertyListCommand = new RelayCommand(RefreshPropertyList);
             ReleaseOutputsCommand = new RelayCommand(ReleaseOutputs, () => IsConnected);
             DetectAxisCommand = new ParameterCommand(ToggleAxisDetect);
@@ -670,7 +670,7 @@ namespace Fanadapter.SimHub.UI
         private void ToggleAxisDetect(object parameter)
         {
             var axis = parameter as AxisSourceViewModel;
-            if (axis == null) return;
+            if (axis == null || !axis.IsPropertySource) return;
 
             if (_detectAxis == axis)
             {
@@ -714,6 +714,7 @@ namespace Fanadapter.SimHub.UI
             var detector = _detector;
             var axis = _detectAxis;
             if (detector == null || axis == null) return;
+            if (!axis.IsPropertySource) { CancelAxisDetect(null); return; }
 
             var pm = _plugin.PluginManager;
             if (pm == null) { CancelAxisDetect(null); return; }
@@ -796,7 +797,7 @@ namespace Fanadapter.SimHub.UI
                         : "Connect to the adapter first.";
                 }
                 if (!_session.SupportsDirectOutput) return "This firmware cannot be driven from the PC.";
-                if (!AxisSources.Any(a => a.IsConfigured)) return "Set a source property on at least one pedal.";
+                if (!AxisSources.Any(a => a.IsConfigured)) return "Set a source on at least one pedal.";
                 if (!IsStreaming) return "Idle — the adapter's own USB mapping is in control.";
 
                 var error = _plugin.Drive?.LastError;
@@ -811,6 +812,7 @@ namespace Fanadapter.SimHub.UI
             var drive = _plugin.Settings.Drive;
             void OnEdited()
             {
+                if (_detectAxis != null && !_detectAxis.IsPropertySource) CancelAxisDetect(null);
                 _plugin.SaveSettings();
                 RunOnUi(() =>
                 {
@@ -890,6 +892,7 @@ namespace Fanadapter.SimHub.UI
             OnPropertyChanged(nameof(IsStreaming));
             OnPropertyChanged(nameof(StreamingButtonText));
             OnPropertyChanged(nameof(StreamingStatus));
+            ToggleStreamingCommand.RaiseCanExecuteChanged();
         });
 
         // ---------- Drive feedback (did that shift actually happen?) ----------
@@ -1013,9 +1016,9 @@ namespace Fanadapter.SimHub.UI
         }
 
         /// <summary>
-        /// Pulls each configured pedal property and pushes it at the editors.
-        /// Four dictionary lookups per pass — the same properties the drive
-        /// stream itself reads at 100 Hz — so the cost is in the notifications,
+        /// Pulls each configured pedal source and pushes it at the editors.
+        /// The same source values the drive stream itself reads at 100 Hz —
+        /// so the cost is in the notifications,
         /// which is why the view model suppresses unchanged ones.
         /// </summary>
         private void UpdateAxisReadouts()
@@ -1028,7 +1031,7 @@ namespace Fanadapter.SimHub.UI
                 {
                     // A property name that no longer exists throws rather than
                     // returning null in some SimHub builds.
-                    try { value = pm.GetPropertyValue(axis.PropertyName); }
+                    try { value = axis.ReadValue(pm); }
                     catch { value = null; }
                 }
                 axis.UpdateReadout(value);

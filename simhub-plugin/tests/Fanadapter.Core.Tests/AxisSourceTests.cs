@@ -1,4 +1,5 @@
 using Fanadapter.Core;
+using Newtonsoft.Json;
 using Xunit;
 
 namespace Fanadapter.Core.Tests
@@ -119,6 +120,53 @@ namespace Fanadapter.Core.Tests
 
             drive.Brake = new AxisSource { PropertyName = "InputStatus.Pedals_Y" };
             Assert.True(drive.HasConfiguredAxis());
+        }
+
+        [Theory]
+        [InlineData(0, 0)]
+        [InlineData(0.5, 32768)]
+        [InlineData(1, 65535)]
+        public void NativeAxisUsesProcessedUnitRangeWithoutPropertyCalibration(double value, int expected)
+        {
+            var source = new AxisSource
+            {
+                UseSimHubAxis = true, AxisName = "ControlMapperPlugin.Brake",
+                InputMin = 1000, InputMax = 65000, Invert = true,
+            };
+            Assert.Equal(expected, source.Scale(value));
+        }
+
+        [Fact]
+        public void SourceChoiceIsIndependentForEachPedalAndKeepsInactiveSettings()
+        {
+            var drive = new DriveSettings();
+            drive.Throttle.PropertyName = "Test.Throttle";
+            drive.Brake = new AxisSource
+            {
+                UseSimHubAxis = true, AxisName = "ControlMapperPlugin.Brake", AxisMovement = "MaxToMin",
+                PropertyName = "Old.Brake", InputMin = 1000, InputMax = 65000, Invert = true,
+            };
+            var restored = JsonConvert.DeserializeObject<DriveSettings>(JsonConvert.SerializeObject(drive));
+            Assert.False(restored.Throttle.UseSimHubAxis);
+            Assert.True(restored.Brake.UseSimHubAxis);
+            Assert.Equal("ControlMapperPlugin.Brake", restored.Brake.AxisName);
+            Assert.Equal("MaxToMin", restored.Brake.AxisMovement);
+            restored.Brake.UseSimHubAxis = false;
+            Assert.Equal(65535, restored.Brake.Scale(1000));
+            Assert.Equal("Old.Brake", restored.Brake.PropertyName);
+        }
+
+        [Fact]
+        public void LegacySettingsKeepPropertyModeAndNativeModeRequiresItsOwnAssignment()
+        {
+            var source = JsonConvert.DeserializeObject<AxisSource>(
+                "{\"PropertyName\":\"Old.Brake\",\"InputMin\":0,\"InputMax\":65535,\"Invert\":true}");
+            Assert.False(source.UseSimHubAxis);
+            Assert.Equal(65535, source.Scale(0));
+            source.UseSimHubAxis = true;
+            Assert.False(source.IsConfigured);
+            source.AxisName = "ControlMapperPlugin.Brake";
+            Assert.True(source.IsConfigured);
         }
     }
 }

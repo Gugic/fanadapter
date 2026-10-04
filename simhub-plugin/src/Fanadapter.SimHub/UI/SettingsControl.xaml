@@ -5,6 +5,7 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:styles="clr-namespace:SimHub.Plugins.Styles;assembly=SimHub.Plugins"
              xmlns:ui="clr-namespace:SimHub.Plugins.UI;assembly=SimHub.Plugins"
+             xmlns:axis="clr-namespace:SimHub.Plugins.UI.Axis;assembly=SimHub.Plugins"
              mc:Ignorable="d">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -77,7 +78,7 @@
                         <styles:SHSubSection Title="Shifter and buttons">
                             <StackPanel>
                                 <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
-                                           Text="Hold bindings engage a gear while the control is held and return to neutral on release — real H-pattern behaviour. Select bindings latch instead, for a button that should stay in gear." />
+                                           Text="Hold bindings engage a gear while the control is held and return to neutral on release — real H-pattern behaviour. Select bindings latch instead, for a button that should stay in gear. These SimHub editors also accept Control Mapper roles." />
 
                                 <!-- Did that shift actually happen? The lamps flash on the adapter's
                                      acknowledgement and on seeing the output pin driven; the line
@@ -168,7 +169,7 @@
                         <styles:SHSubSection Title="Pedals">
                             <StackPanel>
                                 <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
-                                           Text="Pick the SimHub property carrying each pedal — any controller axis SimHub publishes, or your own NCalc expression. Set the range to match the property (0–100 for SimHub's own axis properties) and watch the live column to check direction." />
+                                           Text="Choose a source for each pedal. Enable the SimHub axis picker to use its standard capture dialog, which prefers Control Mapper roles when available. Mapper calibration is already applied. Leave it off to use a property with the range and direction set below." />
 
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Find property" VerticalAlignment="Center" Margin="0,0,8,0" />
@@ -187,30 +188,45 @@
                                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                                         <TextBlock Text="{Binding Label}" FontWeight="Bold"
                                                                    Width="90" VerticalAlignment="Center" />
-                                                        <ComboBox IsEditable="True" MinWidth="300"
-                                                                  ItemsSource="{Binding DataContext.AvailableProperties,
-                                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                                  Text="{Binding PropertyName, UpdateSourceTrigger=LostFocus}"
-                                                                  VerticalAlignment="Center" />
-                                                        <styles:SHButtonSecondary Command="{Binding DataContext.DetectAxisCommand,
-                                                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                                                  CommandParameter="{Binding}"
-                                                                                  Content="{Binding DetectButtonText}"
-                                                                                  ToolTip="Press this, then press the pedal fully and release — the property, range and direction are filled in automatically."
-                                                                                  Margin="8,0,0,0" VerticalAlignment="Center" />
-                                                        <TextBlock Text="{Binding DetectStatus}" VerticalAlignment="Center"
-                                                                   Margin="12,0,0,0" FontStyle="Italic" Opacity="0.85" />
+                                                        <styles:SHToggleCheckbox IsChecked="{Binding UseSimHubAxis}"
+                                                                                 VerticalAlignment="Center">Use SimHub axis picker</styles:SHToggleCheckbox>
+                                                    </StackPanel>
+
+                                                    <axis:AxisPickerControl Axis="{Binding Axis, Mode=TwoWay}"
+                                                                            Visibility="{Binding UseSimHubAxis, Converter={StaticResource BoolToVisibility}}"
+                                                                            HorizontalAlignment="Left" MinWidth="300" Margin="90,0,0,4" />
+
+                                                    <StackPanel Margin="90,0,0,4"
+                                                                Visibility="{Binding IsPropertySource, Converter={StaticResource BoolToVisibility}}">
+                                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                                            <ComboBox IsEditable="True" MinWidth="300"
+                                                                      ItemsSource="{Binding DataContext.AvailableProperties,
+                                                                          RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                      Text="{Binding PropertyName, UpdateSourceTrigger=LostFocus}"
+                                                                      VerticalAlignment="Center" />
+                                                            <styles:SHButtonSecondary Command="{Binding DataContext.DetectAxisCommand,
+                                                                                          RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                                      CommandParameter="{Binding}"
+                                                                                      Content="{Binding DetectButtonText}"
+                                                                                      ToolTip="Press this, then press the pedal fully and release — the property, range and direction are filled in automatically."
+                                                                                      Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                            <TextBlock Text="{Binding DetectStatus}" VerticalAlignment="Center"
+                                                                       Margin="12,0,0,0" FontStyle="Italic" Opacity="0.85" />
+                                                        </StackPanel>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="Range" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                            <TextBox Text="{Binding InputMin}" Width="70" VerticalAlignment="Center" />
+                                                            <TextBlock Text="to" VerticalAlignment="Center" Margin="6,0" />
+                                                            <TextBox Text="{Binding InputMax}" Width="70" VerticalAlignment="Center" />
+                                                            <styles:SHToggleCheckbox IsChecked="{Binding Invert}"
+                                                                                     VerticalAlignment="Center" Margin="16,0,0,0">Invert</styles:SHToggleCheckbox>
+                                                        </StackPanel>
                                                     </StackPanel>
 
                                                     <StackPanel Orientation="Horizontal" Margin="90,0,0,0">
-                                                        <TextBlock Text="Range" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                                        <TextBox Text="{Binding InputMin}" Width="70" VerticalAlignment="Center" />
-                                                        <TextBlock Text="to" VerticalAlignment="Center" Margin="6,0" />
-                                                        <TextBox Text="{Binding InputMax}" Width="70" VerticalAlignment="Center" />
-                                                        <styles:SHToggleCheckbox IsChecked="{Binding Invert}"
-                                                                                 VerticalAlignment="Center" Margin="16,0,0,0">Invert</styles:SHToggleCheckbox>
+                                                        <TextBlock Text="Live" VerticalAlignment="Center" Opacity="0.7" />
                                                         <TextBlock Text="{Binding RawText}" VerticalAlignment="Center"
-                                                                   Margin="24,0,0,0" Opacity="0.7" MinWidth="120" />
+                                                                   Margin="8,0,0,0" Opacity="0.7" MinWidth="120" />
                                                         <TextBlock Text="{Binding ScaledText}" VerticalAlignment="Center"
                                                                    Margin="8,0,0,0" FontWeight="Bold" MinWidth="60" />
                                                         <ProgressBar Value="{Binding ScaledPercent, Mode=OneWay}" Maximum="100"

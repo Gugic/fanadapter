@@ -2,12 +2,14 @@ using System;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Fanadapter.Core;
+using SimHub.Plugins;
+using SimHub.Plugins.UI.Axis;
 
 namespace Fanadapter.SimHub.UI
 {
     /// <summary>
-    /// Editor for one pedal channel: which SimHub property feeds it, how that
-    /// property's range maps onto the firmware's 0..65535, and what the result
+    /// Editor for one pedal channel: which SimHub source feeds it, how that
+    /// source maps onto the firmware's 0..65535, and what the result
     /// currently is. The live readout is the point — "which property is my brake
     /// on and is it the right way round" is otherwise pure guesswork.
     /// </summary>
@@ -22,10 +24,63 @@ namespace Fanadapter.SimHub.UI
             Label = label;
             _model = model;
             _onChanged = onChanged;
+            _axis = AxisSourceReader.GetAssignment(model);
+            // The stream shares this assignment beyond the pane's lifetime;
+            // subscribing weakly keeps it from retaining a discarded pane.
+            PropertyChangedEventManager.AddHandler(_axis, OnAxisAssignmentChanged, string.Empty);
         }
 
         public string Channel { get; }
         public string Label { get; }
+
+        public bool UseSimHubAxis
+        {
+            get => _model.UseSimHubAxis;
+            set
+            {
+                if (_model.UseSimHubAxis == value) return;
+                _model.UseSimHubAxis = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(IsPropertySource));
+                OnPropertyChanged(nameof(IsConfigured));
+                UpdateReadout(null);
+                _onChanged();
+            }
+        }
+
+        public bool IsPropertySource => !UseSimHubAxis;
+
+        private AxisAssignment _axis;
+        public AxisAssignment Axis
+        {
+            get => _axis;
+            set
+            {
+                if (ReferenceEquals(_axis, value)) return;
+                PropertyChangedEventManager.RemoveHandler(_axis, OnAxisAssignmentChanged, string.Empty);
+                _axis = value ?? new AxisAssignment();
+                AxisSourceReader.SetAssignment(_model, _axis);
+                PropertyChangedEventManager.AddHandler(_axis, OnAxisAssignmentChanged, string.Empty);
+                OnPropertyChanged();
+                SaveAxisAssignment();
+            }
+        }
+
+        private void OnAxisAssignmentChanged(object sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(AxisAssignment.AxisName) ||
+                e.PropertyName == nameof(AxisAssignment.AxisMovement)) SaveAxisAssignment();
+        }
+
+        private void SaveAxisAssignment()
+        {
+            _model.AxisName = _axis.AxisName;
+            _model.AxisMovement = _axis.AxisMovement.ToString();
+            OnPropertyChanged(nameof(IsConfigured));
+            _onChanged();
+        }
+
+        public object ReadValue(PluginManager manager) => AxisSourceReader.Read(manager, _model);
 
         public string PropertyName
         {
@@ -86,6 +141,7 @@ namespace Fanadapter.SimHub.UI
         /// <summary>Fills every field from a completed detection in one go.</summary>
         public void ApplyDetection(AxisDetection d)
         {
+            if (!IsPropertySource) return;
             _model.PropertyName = d.PropertyName;
             _model.InputMin = Math.Round(d.InputMin, 3);
             _model.InputMax = Math.Round(d.InputMax, 3);
@@ -157,7 +213,7 @@ namespace Fanadapter.SimHub.UI
             {
                 // Distinguish "no such property" from "property reads zero" —
                 // a typo'd name is the most likely setup mistake here.
-                RawText = "no such property";
+                RawText = UseSimHubAxis ? "axis unavailable — move the pedal" : "no such property";
                 ScaledText = "—";
                 ScaledPercent = 0;
                 return;
