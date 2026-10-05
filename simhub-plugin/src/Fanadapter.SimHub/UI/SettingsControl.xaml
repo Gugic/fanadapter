@@ -6,7 +6,6 @@
              xmlns:styles="clr-namespace:SimHub.Plugins.Styles;assembly=SimHub.Plugins"
              xmlns:ui="clr-namespace:SimHub.Plugins.UI;assembly=SimHub.Plugins"
              xmlns:axis="clr-namespace:SimHub.Plugins.UI.Axis;assembly=SimHub.Plugins"
-             xmlns:controls="http://metro.mahapps.com/winfx/xaml/controls"
              mc:Ignorable="d">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -185,18 +184,19 @@
                                                                                 HorizontalAlignment="Left" MinWidth="300" />
                                                     </StackPanel>
 
-                                                    <StackPanel Orientation="Horizontal" Margin="90,0,0,4"
-                                                                ToolTip="The input range that maps to 0–100% output. Lower full travel to require less pedal travel or force. Applies after Control Mapper calibration.">
-                                                        <TextBlock Text="Released at" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                                        <controls:NumericUpDown Value="{Binding InputMinPercent, Mode=TwoWay}"
-                                                                                Minimum="0" Maximum="100" Interval="0.1"
-                                                                                StringFormat="0.###" Width="90" InterceptMouseWheel="False" />
-                                                        <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,16,0" />
-                                                        <TextBlock Text="Full travel at" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                                        <controls:NumericUpDown Value="{Binding InputMaxPercent, Mode=TwoWay}"
-                                                                                Minimum="0" Maximum="100" Interval="0.1"
-                                                                                StringFormat="0.###" Width="90" InterceptMouseWheel="False" />
-                                                        <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
+                                                    <ui:TitledRangeSlider Title="Input range (%)"
+                                                                          LowerValue="{Binding InputMinPercent, Mode=TwoWay}"
+                                                                          UpperValue="{Binding InputMaxPercent, Mode=TwoWay}"
+                                                                          Minimum="0" Maximum="100" MinRange="0.1"
+                                                                          ShowCheckbox="False" Margin="90,0,0,4"
+                                                                          TitleTooltip="Drag the left handle to set released and the right handle to set full travel. Lower full travel to require less pedal travel or force. Applies after Control Mapper calibration." />
+                                                    <StackPanel Orientation="Horizontal" Margin="90,0,0,4" Opacity="0.7">
+                                                        <TextBlock>
+                                                            <Run Text="Released at: " /><Run Text="{Binding InputMinPercent, Mode=OneWay, StringFormat={}{0:0.0}%}" />
+                                                        </TextBlock>
+                                                        <TextBlock Margin="16,0,0,0">
+                                                            <Run Text="Full travel at: " /><Run Text="{Binding InputMaxPercent, Mode=OneWay, StringFormat={}{0:0.0}%}" />
+                                                        </TextBlock>
                                                     </StackPanel>
                                                     <TextBlock Text="{Binding RangeError}" Margin="90,0,0,4"
                                                                Foreground="OrangeRed" TextWrapping="Wrap" />
