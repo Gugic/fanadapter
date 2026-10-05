@@ -92,14 +92,22 @@ first. Throttle, brake, clutch and handbrake each have their own assignment.
 
 The picker supplies a processed 0–1 value using its selected direction;
 Control Mapper's calibration and filters are already applied to mapped roles.
-The plugin converts that value to the adapter's 0–65535 range. Assignments
-persist and work during automatic resume even if the settings pane has not
+Each pedal also has a percentage input range: **Released at** maps to 0%
+output and **Full travel at** maps to 100%, with values outside that range
+clamped. Defaults are 0–100%. To get full braking at roughly the old 45,000
+out of 65,535 input, set the brake's **Full travel at** to **68.7%**. This
+adjustment applies to the processed SimHub input, so leave it at 0–100% if
+Control Mapper already supplies the range you want. Direction stays in the
+native picker. The live input and output readouts both show percentages.
+
+The plugin converts the adjusted value to the adapter's 0–65535 range.
+Assignments and ranges persist and work during automatic resume even if the settings pane has not
 been opened. An unavailable or uninitialized axis shows in the live readout
 and sends no new value; it never falls back to a physical controller.
 
-The old property picker, Detect flow and plugin-specific range/inversion
-controls have been removed. Previously saved property bindings need to be
-assigned once through the native picker; existing native assignments remain.
+The old property picker and Detect flow have been removed. Previously saved
+property bindings need to be assigned once through the native picker; existing
+native assignments remain.
 Watch the live readout to check the direction before pressing Start.
 
 On current firmware (protocol 6+) the pedal stream is **fire-and-forget at a

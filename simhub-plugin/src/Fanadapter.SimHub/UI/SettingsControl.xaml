@@ -6,6 +6,7 @@
              xmlns:styles="clr-namespace:SimHub.Plugins.Styles;assembly=SimHub.Plugins"
              xmlns:ui="clr-namespace:SimHub.Plugins.UI;assembly=SimHub.Plugins"
              xmlns:axis="clr-namespace:SimHub.Plugins.UI.Axis;assembly=SimHub.Plugins"
+             xmlns:controls="http://metro.mahapps.com/winfx/xaml/controls"
              mc:Ignorable="d">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -184,10 +185,27 @@
                                                                                 HorizontalAlignment="Left" MinWidth="300" />
                                                     </StackPanel>
 
+                                                    <StackPanel Orientation="Horizontal" Margin="90,0,0,4"
+                                                                ToolTip="The input range that maps to 0–100% output. Lower full travel to require less pedal travel or force. Applies after Control Mapper calibration.">
+                                                        <TextBlock Text="Released at" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                        <controls:NumericUpDown Value="{Binding InputMinPercent, Mode=TwoWay}"
+                                                                                Minimum="0" Maximum="100" Interval="0.1"
+                                                                                StringFormat="0.###" Width="90" InterceptMouseWheel="False" />
+                                                        <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,16,0" />
+                                                        <TextBlock Text="Full travel at" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                        <controls:NumericUpDown Value="{Binding InputMaxPercent, Mode=TwoWay}"
+                                                                                Minimum="0" Maximum="100" Interval="0.1"
+                                                                                StringFormat="0.###" Width="90" InterceptMouseWheel="False" />
+                                                        <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding RangeError}" Margin="90,0,0,4"
+                                                               Foreground="OrangeRed" TextWrapping="Wrap" />
+
                                                     <StackPanel Orientation="Horizontal" Margin="90,0,0,0">
-                                                        <TextBlock Text="Live" VerticalAlignment="Center" Opacity="0.7" />
+                                                        <TextBlock Text="Input" VerticalAlignment="Center" Opacity="0.7" />
                                                         <TextBlock Text="{Binding RawText}" VerticalAlignment="Center"
-                                                                   Margin="8,0,0,0" Opacity="0.7" MinWidth="120" />
+                                                                   Margin="8,0,0,0" Opacity="0.7" MinWidth="80" />
+                                                        <TextBlock Text="Output" VerticalAlignment="Center" Opacity="0.7" Margin="8,0,0,0" />
                                                         <TextBlock Text="{Binding ScaledText}" VerticalAlignment="Center"
                                                                    Margin="8,0,0,0" FontWeight="Bold" MinWidth="60" />
                                                         <ProgressBar Value="{Binding ScaledPercent, Mode=OneWay}" Maximum="100"

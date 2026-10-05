@@ -87,9 +87,12 @@ namespace Fanadapter.SimHub.Tests
         }
 
         [Theory]
-        [InlineData(6, "stream_axes")]
-        [InlineData(5, "set_outputs")]
-        public void PedalCommandsUseIndependentlySelectedNativeSources(int protocolVersion, string commandName)
+        [InlineData(6, "stream_axes", 100, 49151)]
+        [InlineData(5, "set_outputs", 100, 49151)]
+        [InlineData(6, "stream_axes", 68.7, 65535)]
+        [InlineData(5, "set_outputs", 68.7, 65535)]
+        public void PedalCommandsAndPreviewUseEachNativeSourceAndRange(
+            int protocolVersion, string commandName, double fullTravelPercent, int expectedBrake)
         {
             OnSta(() =>
             {
@@ -103,6 +106,12 @@ namespace Fanadapter.SimHub.Tests
                         Brake = new AxisSource { AxisName = "ControlMapperPlugin.Brake" },
                     };
                     AxisSourceReader.Initialize(settings);
+                    var editor = new AxisSourceViewModel("brake", "Brake", settings.Brake, () => { });
+                    editor.InputMaxPercent = fullTravelPercent;
+                    editor.UpdateReadout(editor.ReadValue(host.Manager));
+                    Assert.Null(editor.RangeError);
+                    Assert.Equal(Math.Round(expectedBrake * 100.0 / 65535.0, 1), editor.ScaledPercent);
+                    Assert.Equal(75.0.ToString("0.0") + " %", editor.RawText);
                     var pipe = new ReplyTransport();
                     using (var client = new SerialClient(pipe))
                     {
@@ -116,7 +125,7 @@ namespace Fanadapter.SimHub.Tests
                             tick.GetAwaiter().GetResult();
                             Assert.Equal(commandName, (string)pipe.LastCommand["cmd"]);
                             Assert.Equal(16384, (int)pipe.LastCommand["throttle"]);
-                            Assert.Equal(49151, (int)pipe.LastCommand["brake"]);
+                            Assert.Equal(expectedBrake, (int)pipe.LastCommand["brake"]);
                             Assert.Null(pipe.LastCommand["clutch"]);
                             Assert.Null(pipe.LastCommand["handbrake"]);
                         }

@@ -17,6 +17,42 @@ namespace Fanadapter.Core.Tests
             Assert.Equal(expected, new AxisSource().Scale(raw));
         }
 
+        [Theory]
+        [InlineData(0, 0)]
+        [InlineData(0.3435, 32768)]
+        [InlineData(0.687, 65535)]
+        [InlineData(0.9, 65535)]
+        public void LowerFullTravelRequiresLessInputForFullOutput(double raw, int expected)
+        {
+            Assert.Equal(expected, new AxisSource { InputMaxPercent = 68.7 }.Scale(raw));
+        }
+
+        [Theory]
+        [InlineData(0, 0)]
+        [InlineData(0.05, 0)]
+        [InlineData(0.25, 32768)]
+        [InlineData(0.45, 65535)]
+        [InlineData(1, 65535)]
+        public void ReleasedEndpointRemovesIdleTravel(double raw, int expected)
+        {
+            var source = new AxisSource { InputMinPercent = 5, InputMaxPercent = 45 };
+            Assert.Equal(expected, source.Scale(raw));
+        }
+
+        [Theory]
+        [InlineData(0, 0)]
+        [InlineData(70, 68.7)]
+        [InlineData(-1, 100)]
+        [InlineData(0, 101)]
+        [InlineData(double.NaN, 100)]
+        [InlineData(0, double.PositiveInfinity)]
+        public void InvalidRangesSendNoValue(double min, double max)
+        {
+            var source = new AxisSource { InputMinPercent = min, InputMaxPercent = max };
+            Assert.False(source.HasValidRange());
+            Assert.Null(source.Scale(0.5));
+        }
+
         [Fact]
         public void BooleanSourcesGiveFullOrNoTravel()
         {
@@ -82,13 +118,21 @@ namespace Fanadapter.Core.Tests
             var drive = new DriveSettings
             {
                 Throttle = new AxisSource { AxisName = "JoystickPlugin.Throttle" },
-                Brake = new AxisSource { AxisName = "ControlMapperPlugin.Brake", AxisMovement = "MaxToMin" },
+                Brake = new AxisSource
+                {
+                    AxisName = "ControlMapperPlugin.Brake", AxisMovement = "MaxToMin",
+                    InputMinPercent = 5, InputMaxPercent = 68.7,
+                },
             };
             var restored = JsonConvert.DeserializeObject<DriveSettings>(JsonConvert.SerializeObject(drive));
             Assert.Equal("JoystickPlugin.Throttle", restored.Throttle.AxisName);
             Assert.Equal("MinToMax", restored.Throttle.AxisMovement);
             Assert.Equal("ControlMapperPlugin.Brake", restored.Brake.AxisName);
             Assert.Equal("MaxToMin", restored.Brake.AxisMovement);
+            Assert.Equal(5, restored.Brake.InputMinPercent);
+            Assert.Equal(68.7, restored.Brake.InputMaxPercent);
+            Assert.Equal(0, restored.Throttle.InputMinPercent);
+            Assert.Equal(100, restored.Throttle.InputMaxPercent);
             Assert.False(restored.Clutch.IsConfigured);
         }
 

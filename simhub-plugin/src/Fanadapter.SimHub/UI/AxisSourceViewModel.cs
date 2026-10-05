@@ -64,6 +64,34 @@ namespace Fanadapter.SimHub.UI
 
         public bool IsConfigured => _model.IsConfigured;
 
+        public double InputMinPercent
+        {
+            get => _model.InputMinPercent;
+            set
+            {
+                if (_model.InputMinPercent.Equals(value)) return;
+                _model.InputMinPercent = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RangeError));
+                _onChanged();
+            }
+        }
+
+        public double InputMaxPercent
+        {
+            get => _model.InputMaxPercent;
+            set
+            {
+                if (_model.InputMaxPercent.Equals(value)) return;
+                _model.InputMaxPercent = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RangeError));
+                _onChanged();
+            }
+        }
+
+        public string RangeError => _model.HasValidRange() ? null : "Use 0–100%, with full travel above released.";
+
         // ---------- Live readout ----------
 
         // The readout ticks ~30 times a second, and a pedal at rest reports the
@@ -127,17 +155,16 @@ namespace Fanadapter.SimHub.UI
                 return;
             }
 
-            RawText = Convert.ToString(rawValue);
-
             var scaled = _model.Scale(rawValue);
             if (scaled == null)
             {
-                RawText = RawText + " (not a number)";
+                RawText = _model.HasValidRange() ? "invalid axis value" : "invalid input range";
                 ScaledText = "—";
                 ScaledPercent = 0;
                 return;
             }
 
+            RawText = (Convert.ToDouble(rawValue) * 100.0).ToString("0.0") + " %";
             ScaledPercent = Math.Round(scaled.Value * 100.0 / 65535.0, 1);
             ScaledText = ScaledPercent.ToString("0.0") + " %";
         }

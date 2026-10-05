@@ -72,17 +72,34 @@ namespace Fanadapter.Core
         /// <summary>Named SimHub AxisMovement value, avoiding a numeric enum mirror.</summary>
         public string AxisMovement { get; set; } = "MinToMax";
 
+        /// <summary>
+        /// Endpoints of the processed SimHub input, expressed as percentages.
+        /// Lowering the upper endpoint makes full output require less pedal travel/force.
+        /// </summary>
+        public double InputMinPercent { get; set; }
+        public double InputMaxPercent { get; set; } = 100;
+
         public bool IsConfigured => !string.IsNullOrWhiteSpace(AxisName);
 
+        public bool HasValidRange() => ValidRange(InputMinPercent, InputMaxPercent);
+
+        private static bool ValidRange(double min, double max) => min >= 0 && max <= 100 && max > min;
+
         /// <summary>
-        /// Maps the picker's processed 0..1 value onto the firmware's 0..65535 range.
-        /// Returns null when the value can't be read as a number, so the caller
+        /// Maps the picker's processed 0..1 value through the selected percentage
+        /// range onto the firmware's 0..65535 range. SimHub has already applied
+        /// direction and any Control Mapper calibration before this local adjustment.
+        /// Returns null for an invalid range or an unreadable value, so the caller
         /// can leave the channel alone instead of slamming a pedal to zero
         /// because the source is unavailable.
         /// </summary>
         public int? Scale(object rawValue)
         {
             if (rawValue == null) return null;
+
+            var min = InputMinPercent;
+            var max = InputMaxPercent;
+            if (!ValidRange(min, max)) return null;
 
             double value;
             var flag = rawValue as bool?;
@@ -107,6 +124,7 @@ namespace Fanadapter.Core
 
             if (double.IsNaN(value) || double.IsInfinity(value)) return null;
 
+            value = (value * 100.0 - min) / (max - min);
             if (value < 0) value = 0;
             else if (value > 1) value = 1;
 
