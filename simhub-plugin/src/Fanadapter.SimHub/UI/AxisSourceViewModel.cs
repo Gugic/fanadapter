@@ -2,14 +2,13 @@ using System;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Fanadapter.Core;
+using SimHub.Plugins;
+using SimHub.Plugins.UI.Axis;
 
 namespace Fanadapter.SimHub.UI
 {
     /// <summary>
-    /// Editor for one pedal channel: which SimHub property feeds it, how that
-    /// property's range maps onto the firmware's 0..65535, and what the result
-    /// currently is. The live readout is the point — "which property is my brake
-    /// on and is it the right way round" is otherwise pure guesswork.
+    /// Native SimHub axis assignment and live preview for one pedal channel.
     /// </summary>
     public class AxisSourceViewModel : INotifyPropertyChanged
     {
@@ -22,106 +21,122 @@ namespace Fanadapter.SimHub.UI
             Label = label;
             _model = model;
             _onChanged = onChanged;
+            _axis = AxisSourceReader.GetAssignment(model);
+            // The stream shares this assignment beyond the pane's lifetime;
+            // subscribing weakly keeps it from retaining a discarded pane.
+            PropertyChangedEventManager.AddHandler(_axis, OnAxisAssignmentChanged, string.Empty);
         }
 
         public string Channel { get; }
         public string Label { get; }
 
-        public string PropertyName
+        private AxisAssignment _axis;
+        public AxisAssignment Axis
         {
-            get => _model.PropertyName;
+            get => _axis;
             set
             {
-                _model.PropertyName = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+                if (ReferenceEquals(_axis, value)) return;
+                PropertyChangedEventManager.RemoveHandler(_axis, OnAxisAssignmentChanged, string.Empty);
+                _axis = value ?? new AxisAssignment();
+                AxisSourceReader.SetAssignment(_model, _axis);
+                PropertyChangedEventManager.AddHandler(_axis, OnAxisAssignmentChanged, string.Empty);
                 OnPropertyChanged();
-                OnPropertyChanged(nameof(IsConfigured));
-                _onChanged();
+                SaveAxisAssignment();
             }
         }
 
-        public double InputMin
+        private void OnAxisAssignmentChanged(object sender, PropertyChangedEventArgs e)
         {
-            get => _model.InputMin;
-            set { _model.InputMin = value; OnPropertyChanged(); _onChanged(); }
+            if (e.PropertyName == nameof(AxisAssignment.AxisName) ||
+                e.PropertyName == nameof(AxisAssignment.AxisMovement)) SaveAxisAssignment();
         }
 
-        public double InputMax
+        private void SaveAxisAssignment()
         {
-            get => _model.InputMax;
-            set { _model.InputMax = value; OnPropertyChanged(); _onChanged(); }
-        }
-
-        public bool Invert
-        {
-            get => _model.Invert;
-            set { _model.Invert = value; OnPropertyChanged(); _onChanged(); }
-        }
-
-        public bool IsConfigured => _model.IsConfigured;
-
-        // ---------- Auto-detect ----------
-
-        private bool _isDetecting;
-        public bool IsDetecting
-        {
-            get => _isDetecting;
-            set
-            {
-                _isDetecting = value;
-                OnPropertyChanged();
-                OnPropertyChanged(nameof(DetectButtonText));
-                if (!value) DetectStatus = null;
-            }
-        }
-
-        public string DetectButtonText => _isDetecting ? "Cancel" : "Detect";
-
-        private string _detectStatus;
-        public string DetectStatus
-        {
-            get => _detectStatus;
-            set { _detectStatus = value; OnPropertyChanged(); }
-        }
-
-        /// <summary>Fills every field from a completed detection in one go.</summary>
-        public void ApplyDetection(AxisDetection d)
-        {
-            _model.PropertyName = d.PropertyName;
-            _model.InputMin = Math.Round(d.InputMin, 3);
-            _model.InputMax = Math.Round(d.InputMax, 3);
-            _model.Invert = d.Invert;
-            OnPropertyChanged(nameof(PropertyName));
-            OnPropertyChanged(nameof(InputMin));
-            OnPropertyChanged(nameof(InputMax));
-            OnPropertyChanged(nameof(Invert));
+            _model.AxisName = _axis.AxisName;
+            _model.AxisMovement = _axis.AxisMovement.ToString();
             OnPropertyChanged(nameof(IsConfigured));
             _onChanged();
         }
 
+        public object ReadValue(PluginManager manager) => AxisSourceReader.Read(manager, _model);
+
+        public bool IsConfigured => _model.IsConfigured;
+
+        public double InputMinPercent
+        {
+            get => _model.InputMinPercent;
+            set
+            {
+                if (_model.InputMinPercent.Equals(value)) return;
+                _model.InputMinPercent = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RangeError));
+                _onChanged();
+            }
+        }
+
+        public double InputMaxPercent
+        {
+            get => _model.InputMaxPercent;
+            set
+            {
+                if (_model.InputMaxPercent.Equals(value)) return;
+                _model.InputMaxPercent = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RangeError));
+                _onChanged();
+            }
+        }
+
+        public string RangeError => _model.HasValidRange() ? null : "Use 0–100%, with full travel above released.";
+
         // ---------- Live readout ----------
+
+        // The readout ticks ~30 times a second, and a pedal at rest reports the
+        // same value every time. Suppressing unchanged notifications is what
+        // keeps that rate cheaper than the 5 Hz one it replaced.
 
         private string _rawText = "—";
         public string RawText
         {
             get => _rawText;
-            private set { _rawText = value; OnPropertyChanged(); }
+            private set
+            {
+                if (_rawText == value) return;
+                _rawText = value;
+                OnPropertyChanged();
+            }
         }
 
         private double _scaledPercent;
         public double ScaledPercent
         {
             get => _scaledPercent;
-            private set { _scaledPercent = value; OnPropertyChanged(); }
+            private set
+            {
+                // Exact comparison on purpose: this is assigned from a rounded
+                // value, so equal readings really are bit-identical.
+                if (_scaledPercent.Equals(value)) return;
+                _scaledPercent = value;
+                OnPropertyChanged();
+            }
         }
 
         private string _scaledText = "—";
         public string ScaledText
         {
             get => _scaledText;
-            private set { _scaledText = value; OnPropertyChanged(); }
+            private set
+            {
+                if (_scaledText == value) return;
+                _scaledText = value;
+                OnPropertyChanged();
+            }
         }
 
-        /// <summary>Called on a UI timer with the property's current value.</summary>
+        /// <summary>Called on a UI timer with the native assignment's current value.</summary>
         public void UpdateReadout(object rawValue)
         {
             if (!_model.IsConfigured)
@@ -134,25 +149,22 @@ namespace Fanadapter.SimHub.UI
 
             if (rawValue == null)
             {
-                // Distinguish "no such property" from "property reads zero" —
-                // a typo'd name is the most likely setup mistake here.
-                RawText = "no such property";
+                RawText = "axis unavailable — move the pedal";
                 ScaledText = "—";
                 ScaledPercent = 0;
                 return;
             }
-
-            RawText = Convert.ToString(rawValue);
 
             var scaled = _model.Scale(rawValue);
             if (scaled == null)
             {
-                RawText = RawText + " (not a number)";
+                RawText = _model.HasValidRange() ? "invalid axis value" : "invalid input range";
                 ScaledText = "—";
                 ScaledPercent = 0;
                 return;
             }
 
+            RawText = (Convert.ToDouble(rawValue) * 100.0).ToString("0.0") + " %";
             ScaledPercent = Math.Round(scaled.Value * 100.0 / 65535.0, 1);
             ScaledText = ScaledPercent.ToString("0.0") + " %";
         }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -33,7 +32,16 @@ namespace Fanadapter.SimHub.UI
         {
             _plugin = plugin;
             _session = plugin.Session;
-            _dispatcher = Dispatcher.CurrentDispatcher;
+
+            // The application's dispatcher, not whichever thread happened to
+            // construct this object. Dispatcher.CurrentDispatcher *creates* a
+            // dispatcher for the calling thread if it has none — and a thread
+            // that never pumps messages runs nothing queued against it, so both
+            // timers and every marshalled notification would sit in a queue
+            // forever. The pane would still take button presses (WPF invokes
+            // commands directly) while showing nothing live: indistinguishable,
+            // from the outside, from a detached view model.
+            _dispatcher = System.Windows.Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher;
 
             ConnectCommand = new RelayCommand(() => _ = ConnectAsync(), () => !IsBusy && !IsConnected);
             DisconnectCommand = new RelayCommand(Disconnect, () => !IsBusy && IsConnected);
@@ -42,11 +50,6 @@ namespace Fanadapter.SimHub.UI
             ResetCommand = new RelayCommand(() => _ = ResetAsync(), () => !IsBusy && IsConnected);
             RebootCommand = new RelayCommand(() => _ = RebootAsync(), () => !IsBusy && IsConnected);
             ClearLogCommand = new RelayCommand(() => LogLines.Clear());
-
-            _session.StateChanged += OnSessionStateChanged;
-            _session.LogLine += OnLogLine;
-            _session.DevicesChanged += OnDevicesChanged;
-            _session.LiveInput += OnLiveInput;
 
             BuildChannels();
             StartCaptureCommand = new ParameterCommand(StartCapture, () => IsConnected);
@@ -59,13 +62,10 @@ namespace Fanadapter.SimHub.UI
             RearmPedalsCommand = new RelayCommand(RearmPedals, () => IsConnected);
             UsbStatusCommand = new RelayCommand(UsbStatus, () => IsConnected);
             UsbKickCommand = new RelayCommand(UsbKick, () => IsConnected);
-            _session.Outputs += OnOutputs;
 
             BuildAxisEditors();
-            ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => CanStream);
-            RefreshPropertyListCommand = new RelayCommand(RefreshPropertyList);
+            ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => IsStreaming || CanStream);
             ReleaseOutputsCommand = new RelayCommand(ReleaseOutputs, () => IsConnected);
-            DetectAxisCommand = new ParameterCommand(ToggleAxisDetect);
 
             // Reconnect after the flash goes through ConnectAsync so the port gets remembered and
             // telemetry re-enabled exactly like a manual connect.
@@ -80,28 +80,30 @@ namespace Fanadapter.SimHub.UI
             // SimHub that starves for long enough to be plainly visible as lag
             // when pressing a button. The per-tick work here is a handful of
             // property notifications, so Normal cannot crowd out rendering.
-            _liveTimer = new DispatcherTimer(DispatcherPriority.Normal)
+            // Both timers are bound to _dispatcher explicitly for the same
+            // reason it is resolved from the application: a DispatcherTimer
+            // built with the default constructor attaches to the current
+            // thread's dispatcher, which is not necessarily the one that runs.
+            _liveTimer = new DispatcherTimer(DispatcherPriority.Normal, _dispatcher)
             {
                 Interval = TimeSpan.FromMilliseconds(16),
             };
             _liveTimer.Tick += (s, e) => OnLiveTick();
-            _liveTimer.Start();
 
-            // Everything that costs more than a notification — reading SimHub
-            // properties, polling the pedal link — is kept off the fast path.
-            _slowTimer = new DispatcherTimer(DispatcherPriority.Background)
+            // Serial polling stays on the slow timer; moving pedal readouts
+            // use the live timer so Background priority cannot starve them.
+            _slowTimer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher)
             {
                 Interval = TimeSpan.FromMilliseconds(200),
             };
             _slowTimer.Tick += (s, e) => OnSlowTick();
-            _slowTimer.Start();
 
             RefreshPorts();
             SelectedPort = Ports.FirstOrDefault(p => p.PortName == plugin.Settings.PortName)
                            ?? Ports.FirstOrDefault(p => p.IsLikelyAdapter)
                            ?? Ports.FirstOrDefault();
 
-            SyncFromSession();
+            Attach();
         }
 
         // ---------- Connection ----------
@@ -212,16 +214,25 @@ namespace Fanadapter.SimHub.UI
 
                 try
                 {
-                    // Telemetry is opt-in per connection; the adapter doesn't
-                    // remember it across a reconnect. Input frames only arrive
-                    // when something actually moves, so leaving them on costs
-                    // nothing while the rig is idle.
+                    // Output telemetry stays on for the exposed dash properties.
+                    // SyncInputTelemetry owns the input stream for this pane.
                     await _session.Protocol.SetLiveOutputsAsync(true);
-                    await _session.Protocol.SetLiveInputsAsync(true);
                 }
                 catch (Exception ex)
                 {
                     AppendLog("connected, but telemetry could not be enabled: " + ex.Message);
+                }
+
+                try
+                {
+                    // Picks the pedal stream back up if it was on when the plugin
+                    // last stopped. No-op when it wasn't, or when it already
+                    // resumed on the plugin's own auto-connect.
+                    _plugin.Drive?.ResumeIfEnabled();
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("connected, but pedal streaming could not resume: " + ex.Message);
                 }
             }
             finally
@@ -233,6 +244,12 @@ namespace Fanadapter.SimHub.UI
 
         public void Disconnect()
         {
+            // Overrides are sticky and the firmware has no timeout, so closing the
+            // port mid-stream would leave the wheelbase latched on the last pedal
+            // values with nothing able to tell it otherwise. Hand them back first.
+            // The persisted "driving pedals" choice is untouched — reconnecting
+            // resumes it.
+            _plugin.Drive?.ReleaseAll();
             _session.Disconnect();
             SyncFromSession();
         }
@@ -617,140 +634,8 @@ namespace Fanadapter.SimHub.UI
         public ObservableCollection<AxisSourceViewModel> AxisSources { get; } =
             new ObservableCollection<AxisSourceViewModel>();
 
-        /// <summary>
-        /// Every property SimHub currently publishes, for the source pickers.
-        /// Fetched on demand rather than continuously — the list runs to
-        /// thousands of entries and only changes when plugins or games do.
-        /// </summary>
-        public ObservableCollection<string> AvailableProperties { get; } = new ObservableCollection<string>();
-
-        private string _propertyFilter = string.Empty;
-        public string PropertyFilter
-        {
-            get => _propertyFilter;
-            set { _propertyFilter = value ?? string.Empty; OnPropertyChanged(); RefreshPropertyList(); }
-        }
-
         public RelayCommand ToggleStreamingCommand { get; }
-        public RelayCommand RefreshPropertyListCommand { get; }
         public RelayCommand ReleaseOutputsCommand { get; }
-        public ParameterCommand DetectAxisCommand { get; }
-
-        // ---------- Pedal auto-detect ----------
-        // Listen-style capture for the PC side: sample every SimHub property,
-        // find the one the user presses, commit name + range + direction. Runs
-        // entirely against SimHub — no adapter connection required.
-
-        private AxisSourceViewModel _detectAxis;
-        private PropertyAxisDetector _detector;
-        private DateTime _detectStart;
-        private List<string> _detectNames;
-        private DetectPhase _detectShownPhase;
-
-        private void ToggleAxisDetect(object parameter)
-        {
-            var axis = parameter as AxisSourceViewModel;
-            if (axis == null) return;
-
-            if (_detectAxis == axis)
-            {
-                CancelAxisDetect("detect cancelled.");
-                return;
-            }
-            if (_detectAxis != null) CancelAxisDetect(null); // switch channels silently
-
-            var pm = _plugin.PluginManager;
-            if (pm == null) return;
-
-            List<string> names;
-            try { names = pm.GetAllPropertiesNames().ToList(); }
-            catch (Exception ex)
-            {
-                AppendLog("could not read SimHub's property list: " + ex.Message);
-                return;
-            }
-
-            _detectAxis = axis;
-            _detector = new PropertyAxisDetector();
-            _detectStart = DateTime.UtcNow;
-            _detectNames = names;
-            _detectShownPhase = DetectPhase.Baseline;
-            axis.IsDetecting = true;
-            axis.DetectStatus = "hold everything still…";
-        }
-
-        private void CancelAxisDetect(string message)
-        {
-            var axis = _detectAxis;
-            _detectAxis = null;
-            _detector = null;
-            _detectNames = null;
-            if (axis != null) axis.IsDetecting = false;
-            if (message != null) AppendLog(message);
-        }
-
-        private void PumpAxisDetect()
-        {
-            var detector = _detector;
-            var axis = _detectAxis;
-            if (detector == null || axis == null) return;
-
-            var pm = _plugin.PluginManager;
-            if (pm == null) { CancelAxisDetect(null); return; }
-
-            var sample = new List<KeyValuePair<string, double>>(_detectNames.Count);
-            foreach (var name in _detectNames)
-            {
-                object raw;
-                try { raw = pm.GetPropertyValue(name); }
-                catch { continue; }
-
-                double value;
-                if (raw is bool flag) value = flag ? 1 : 0;
-                else
-                {
-                    try { value = Convert.ToDouble(raw); }
-                    catch { continue; }
-                }
-                if (double.IsNaN(value) || double.IsInfinity(value)) continue;
-                sample.Add(new KeyValuePair<string, double>(name, value));
-            }
-
-            detector.Feed((DateTime.UtcNow - _detectStart).TotalSeconds, sample);
-
-            if (detector.Phase != _detectShownPhase)
-            {
-                _detectShownPhase = detector.Phase;
-                switch (detector.Phase)
-                {
-                    case DetectPhase.Listening:
-                        // Sampling the whole property list is the expensive part;
-                        // after the baseline most names are pruned (non-numeric or
-                        // already moving) and during tracking only one is left.
-                        _detectNames = detector.SurvivingCandidates().ToList();
-                        axis.DetectStatus = "press the " + axis.Label.ToLowerInvariant() + " fully, then release…";
-                        break;
-                    case DetectPhase.Tracking:
-                        _detectNames = detector.SurvivingCandidates().ToList();
-                        axis.DetectStatus = "got " + detector.LatchedProperty + " — release…";
-                        break;
-                }
-            }
-
-            if (detector.Phase == DetectPhase.Done)
-            {
-                var d = detector.Result;
-                axis.ApplyDetection(d);
-                AppendLog(string.Format("{0} detected: {1}  range {2:0.###}..{3:0.###}{4}",
-                    axis.Label, d.PropertyName, d.InputMin, d.InputMax, d.Invert ? "  (inverted)" : ""));
-                CancelAxisDetect(null);
-            }
-            else if (detector.Phase == DetectPhase.Failed)
-            {
-                AppendLog(axis.Label + " detect failed: " + detector.FailureReason);
-                CancelAxisDetect(null);
-            }
-        }
 
         /// <summary>
         /// Streaming needs a connection, a firmware that implements the
@@ -767,9 +652,16 @@ namespace Fanadapter.SimHub.UI
         {
             get
             {
-                if (!IsConnected) return "Connect to the adapter first.";
+                var armed = _plugin.Settings.Drive.AxisStreamingEnabled;
+
+                if (!IsConnected)
+                {
+                    return armed
+                        ? "Connect to the adapter — driving pedals resumes automatically."
+                        : "Connect to the adapter first.";
+                }
                 if (!_session.SupportsDirectOutput) return "This firmware cannot be driven from the PC.";
-                if (!AxisSources.Any(a => a.IsConfigured)) return "Set a source property on at least one pedal.";
+                if (!AxisSources.Any(a => a.IsConfigured)) return "Set a source on at least one pedal.";
                 if (!IsStreaming) return "Idle — the adapter's own USB mapping is in control.";
 
                 var error = _plugin.Drive?.LastError;
@@ -799,34 +691,6 @@ namespace Fanadapter.SimHub.UI
             AxisSources.Add(new AxisSourceViewModel("handbrake", "Handbrake", drive.Handbrake, OnEdited));
         }
 
-        public void RefreshPropertyList()
-        {
-            AvailableProperties.Clear();
-
-            var pm = _plugin.PluginManager;
-            if (pm == null) return;
-
-            IEnumerable<string> names;
-            try { names = pm.GetAllPropertiesNames(); }
-            catch (Exception ex)
-            {
-                AppendLog("could not read SimHub's property list: " + ex.Message);
-                return;
-            }
-
-            if (!string.IsNullOrWhiteSpace(_propertyFilter))
-            {
-                names = names.Where(n => n.IndexOf(_propertyFilter, StringComparison.OrdinalIgnoreCase) >= 0);
-            }
-
-            // Capped because the unfiltered list is long enough to make the
-            // combo box unusable; the filter box is how you get to the rest.
-            foreach (var name in names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Take(500))
-            {
-                AvailableProperties.Add(name);
-            }
-        }
-
         private void ToggleStreaming()
         {
             var drive = _plugin.Drive;
@@ -834,54 +698,164 @@ namespace Fanadapter.SimHub.UI
 
             if (drive.IsStreaming)
             {
-                drive.StopStreaming();
-                // Streaming stopped, but the last values it sent are still
-                // latched in the firmware — release so the adapter's own mapping
-                // takes the pedals back.
-                drive.ReleaseAll();
-                _plugin.Settings.Drive.AxisStreamingEnabled = false;
+                // Identical to pressing Release outputs: stop, hand the channels
+                // back (the last streamed values stay latched otherwise), and
+                // revoke the persisted choice so it doesn't resume by itself.
+                _plugin.ReleaseOutputsByUser();
             }
             else
             {
-                drive.StartStreaming();
+                // Saved before starting, so a SimHub that dies mid-session still
+                // comes back driving.
                 _plugin.Settings.Drive.AxisStreamingEnabled = true;
+                _plugin.SaveSettings();
+                drive.StartStreaming();
             }
-
-            _plugin.SaveSettings();
-            OnPropertyChanged(nameof(IsStreaming));
-            OnPropertyChanged(nameof(StreamingButtonText));
-            OnPropertyChanged(nameof(StreamingStatus));
         }
 
         private void ReleaseOutputs()
         {
-            _plugin.Drive?.ReleaseAll();
-            OnPropertyChanged(nameof(IsStreaming));
-            OnPropertyChanged(nameof(StreamingButtonText));
-            OnPropertyChanged(nameof(StreamingStatus));
+            // Revokes the persisted choice too — pressing this is "stop driving",
+            // and it would be a nasty surprise for the stream to reappear on the
+            // next game change.
+            _plugin.ReleaseOutputsByUser();
             AppendLog("outputs released — the adapter's own mapping is back in control.");
         }
 
+        private void OnDriveStreamingChanged() => RunOnUi(() =>
+        {
+            OnPropertyChanged(nameof(IsStreaming));
+            OnPropertyChanged(nameof(StreamingButtonText));
+            OnPropertyChanged(nameof(StreamingStatus));
+            ToggleStreamingCommand.RaiseCanExecuteChanged();
+        });
+
+        // ---------- Drive feedback (did that shift actually happen?) ----------
+
+        /// <summary>
+        /// How long a shift lamp stays lit. Long enough to catch the eye on a
+        /// paddle pull, short enough that two quick shifts read as two.
+        /// </summary>
+        private const int ShiftLampMs = 220;
+
+        private long _lastDriveSequence;
+        private DateTime _shiftUpLampUntil = DateTime.MinValue;
+        private DateTime _shiftDownLampUntil = DateTime.MinValue;
+
+        /// <summary>Gear the adapter says it is holding, or "—" when nothing is connected.</summary>
+        public string DriveGear => IsConnected ? OutputGear : "—";
+
+        private bool _shiftUpLamp;
+        public bool ShiftUpLamp
+        {
+            get => _shiftUpLamp;
+            private set { if (_shiftUpLamp == value) return; _shiftUpLamp = value; OnPropertyChanged(); }
+        }
+
+        private bool _shiftDownLamp;
+        public bool ShiftDownLamp
+        {
+            get => _shiftDownLamp;
+            private set { if (_shiftDownLamp == value) return; _shiftDownLamp = value; OnPropertyChanged(); }
+        }
+
+        private string _lastDriveAction = "Nothing sent yet.";
+        public string LastDriveAction
+        {
+            get => _lastDriveAction;
+            private set { if (_lastDriveAction == value) return; _lastDriveAction = value; OnPropertyChanged(); }
+        }
+
+        private bool _lastDriveActionOk = true;
+        public bool LastDriveActionFailed
+        {
+            get => !_lastDriveActionOk;
+            private set { if (_lastDriveActionOk == !value) return; _lastDriveActionOk = !value; OnPropertyChanged(); }
+        }
+
+        /// <summary>
+        /// Turns "I pressed the paddle" into visible evidence, from the two
+        /// independent confirmations available:
+        ///
+        /// * the adapter <em>acknowledging</em> the command we sent — proof it
+        ///   arrived and was understood, but only that;
+        /// * the outputs stream showing the pin actually driven — proof the
+        ///   firmware acted, but sampled at ~30 Hz, so a 50 ms pulse can fall
+        ///   between two frames.
+        ///
+        /// Either lights the lamp, because neither alone is reliable enough to
+        /// be the only evidence. Nothing here can confirm the *wheelbase*
+        /// registered the shift — that link reports nothing back.
+        /// </summary>
+        private void PumpDriveFeedback()
+        {
+            var now = DateTime.UtcNow;
+
+            var activity = _plugin.Drive?.LastActivity;
+            if (activity != null && activity.Sequence != _lastDriveSequence)
+            {
+                _lastDriveSequence = activity.Sequence;
+                LastDriveAction = Describe(activity);
+                LastDriveActionFailed = !activity.Acknowledged;
+
+                if (activity.Acknowledged)
+                {
+                    if (activity.Channel == "shift_up") _shiftUpLampUntil = now.AddMilliseconds(ShiftLampMs);
+                    else if (activity.Channel == "shift_down") _shiftDownLampUntil = now.AddMilliseconds(ShiftLampMs);
+                }
+            }
+
+            var outputs = _lastOutputs;
+            if (IsConnected && outputs.ShiftUp) _shiftUpLampUntil = now.AddMilliseconds(ShiftLampMs);
+            if (IsConnected && outputs.ShiftDown) _shiftDownLampUntil = now.AddMilliseconds(ShiftLampMs);
+
+            ShiftUpLamp = now < _shiftUpLampUntil;
+            ShiftDownLamp = now < _shiftDownLampUntil;
+        }
+
+        private static string Describe(DriveActivity activity)
+        {
+            var when = activity.At.ToString("HH:mm:ss.fff", System.Globalization.CultureInfo.InvariantCulture);
+            return activity.Acknowledged
+                ? activity.Action + " · acknowledged " + when
+                : activity.Action + " · FAILED " + when + " — " + activity.Error;
+        }
+
         private int _slowTickCount;
+        private int _liveTickCount;
 
         private void OnLiveTick()
         {
             ApplyPendingLive();
             PumpCapture();
-            PumpAxisDetect();
             RaiseOutputProperties();
+            PumpDriveFeedback();
+
+            // Every other tick — ~30 Hz, which is where a moving pedal bar stops
+            // looking like it is stepping. This used to ride the 200 ms slow
+            // timer, and worse, that timer runs at Background priority: inside an
+            // app as busy as SimHub it gets starved well below its own 5 Hz, which
+            // is what made the readout look like 2-3 fps.
+            if ((_liveTickCount++ & 1) == 0) UpdateAxisReadouts();
         }
 
         private void OnSlowTick()
         {
-            UpdateReadouts();
+            // Cheap, but it builds a string and nothing on it changes fast.
+            OnPropertyChanged(nameof(StreamingStatus));
 
             // The pedal link state changes rarely and costs a serial round-trip,
             // so it is polled every couple of seconds rather than every tick.
             if (++_slowTickCount % 10 == 0) _ = RefreshPedalStateAsync();
         }
 
-        private void UpdateReadouts()
+        /// <summary>
+        /// Pulls each configured pedal source and pushes it at the editors.
+        /// The same source values the drive stream itself reads at 100 Hz —
+        /// so the cost is in the notifications,
+        /// which is why the view model suppresses unchanged ones.
+        /// </summary>
+        private void UpdateAxisReadouts()
         {
             var pm = _plugin.PluginManager;
             foreach (var axis in AxisSources)
@@ -891,13 +865,11 @@ namespace Fanadapter.SimHub.UI
                 {
                     // A property name that no longer exists throws rather than
                     // returning null in some SimHub builds.
-                    try { value = pm.GetPropertyValue(axis.PropertyName); }
+                    try { value = axis.ReadValue(pm); }
                     catch { value = null; }
                 }
                 axis.UpdateReadout(value);
             }
-
-            OnPropertyChanged(nameof(StreamingStatus));
         }
 
         // ---------- Outputs (what the wheelbase is being told) ----------
@@ -955,6 +927,7 @@ namespace Fanadapter.SimHub.UI
             _outputsDirty = false;
 
             OnPropertyChanged(nameof(OutputGear));
+            OnPropertyChanged(nameof(DriveGear));
             OnPropertyChanged(nameof(OutputShiftUp));
             OnPropertyChanged(nameof(OutputShiftDown));
             OnPropertyChanged(nameof(OutputThrottle));
@@ -1134,6 +1107,8 @@ namespace Fanadapter.SimHub.UI
 
         private void OnSessionStateChanged() => SyncFromSession();
 
+        private Config _editorConfig;
+
         /// <summary>
         /// Marshalled as a whole, not just its notifications: it rebuilds the
         /// mapping and output editors, and WPF rejects changes to a bound
@@ -1142,11 +1117,18 @@ namespace Fanadapter.SimHub.UI
         /// </summary>
         private void SyncFromSession() => RunOnUi(() =>
         {
-            // The config arrives with the connection, so the editors are rebuilt
-            // whenever session state changes rather than on a separate signal
-            // that could arrive first.
-            LoadChannelsFromConfig();
-            LoadOutputsFromConfig();
+            // A connect or explicit reload supplies a new config snapshot.
+            // Rebuild for that snapshot, preserving live edits otherwise.
+            var config = _session.Config;
+            if (!ReferenceEquals(config, _editorConfig))
+            {
+                LoadChannelsFromConfig();
+                LoadOutputsFromConfig();
+                _editorConfig = config;
+            }
+            // Reopening the same connection keeps the existing editors. Capture,
+            // Clear and pulse-width edits go straight to the board but are not
+            // all mirrored into this connection's get_config snapshot.
 
             // Devices likewise, and for a sharper reason: the plugin auto-connects in Init(),
             // long before SimHub builds the settings UI, so the DevicesChanged raised during
@@ -1168,8 +1150,13 @@ namespace Fanadapter.SimHub.UI
             OnPropertyChanged(nameof(IsStreaming));
             OnPropertyChanged(nameof(StreamingButtonText));
             OnPropertyChanged(nameof(StreamingStatus));
+            OnPropertyChanged(nameof(DriveGear));
             RaiseCommandStates();
             Firmware?.OnSessionChanged();
+
+            // Covers the connection arriving while the pane is already open —
+            // the adapter forgets telemetry across a reconnect.
+            SyncInputTelemetry();
         });
 
         private void RaiseCommandStates() => RunOnUi(() =>
@@ -1209,8 +1196,50 @@ namespace Fanadapter.SimHub.UI
             else _dispatcher.BeginInvoke(action);
         }
 
+        private bool _attached;
+        private DriveController _attachedDrive;
+
+        /// <summary>
+        /// Starts the timers and subscribes to the session. Idempotent, and it
+        /// must be, because it is called from both the constructor and the
+        /// control's Loaded event.
+        ///
+        /// The pairing with <see cref="Detach"/> is the point. WPF raises
+        /// Unloaded whenever it pulls the control out of the visual tree —
+        /// navigating to another SimHub page does exactly that — and the control
+        /// that comes back is the *same instance*, already detached. Detaching
+        /// without a matching re-attach produced a pane that looked alive and
+        /// took button presses (commands bind straight to this object) while
+        /// every live readout sat frozen, because the timers were stopped and
+        /// the session events had nobody listening.
+        /// </summary>
+        public void Attach()
+        {
+            if (_attached) return;
+            _attached = true;
+
+            _session.StateChanged += OnSessionStateChanged;
+            _session.LogLine += OnLogLine;
+            _session.DevicesChanged += OnDevicesChanged;
+            _session.LiveInput += OnLiveInput;
+            _session.Outputs += OnOutputs;
+            _attachedDrive = _plugin.Drive;
+            if (_attachedDrive != null) _attachedDrive.StreamingChanged += OnDriveStreamingChanged;
+
+            _liveTimer.Start();
+            _slowTimer.Start();
+
+            // Whatever happened while detached — a connect, a reboot, devices
+            // arriving — never reached this view model, so rebuild from session
+            // state rather than waiting for the next event to notice.
+            SyncFromSession();
+        }
+
         public void Detach()
         {
+            if (!_attached) return;
+            _attached = false;
+
             _liveTimer.Stop();
             _slowTimer.Stop();
             _session.StateChanged -= OnSessionStateChanged;
@@ -1218,6 +1247,61 @@ namespace Fanadapter.SimHub.UI
             _session.DevicesChanged -= OnDevicesChanged;
             _session.LiveInput -= OnLiveInput;
             _session.Outputs -= OnOutputs;
+            if (_attachedDrive != null) _attachedDrive.StreamingChanged -= OnDriveStreamingChanged;
+            _attachedDrive = null;
+
+            SyncInputTelemetry();
+        }
+
+        private bool _inputTelemetryOn;
+        private Protocol _inputTelemetryProtocol;
+
+        /// <summary>
+        /// Input telemetry follows this pane, because this pane is its only
+        /// consumer: the Devices tab and Listen capture. Two reasons it isn't
+        /// simply switched on with the connection — the plugin's own
+        /// auto-connect doesn't enable it (so after a SimHub restart the Devices
+        /// tab would sit empty forever), and a moving pedal streams events at up
+        /// to 50 Hz, which is traffic worth not putting on the link while nobody
+        /// is looking. Output telemetry is the opposite case and stays on for
+        /// the whole connection: the exposed dash properties feed on it.
+        /// </summary>
+        private void SyncInputTelemetry()
+        {
+            var proto = IsConnected ? _session.Protocol : null;
+            if (proto == null)
+            {
+                _inputTelemetryOn = false;
+                _inputTelemetryProtocol = null;
+                return;
+            }
+
+            bool wanted = _attached;
+            if (proto == _inputTelemetryProtocol && wanted == _inputTelemetryOn) return;
+            _inputTelemetryProtocol = proto;
+            _inputTelemetryOn = wanted;
+
+            // Send queues the small command synchronously, then yields for its
+            // reply. Task.Run here would let a quick close/reopen send "off"
+            // after "on", freezing the reopened pane until the next reconnect.
+            _ = SetInputTelemetryAsync(proto, wanted);
+        }
+
+        private async Task SetInputTelemetryAsync(Protocol proto, bool wanted)
+        {
+            try { await proto.SetLiveInputsAsync(wanted).ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                RunOnUi(() =>
+                {
+                    // Only invalidate this request's state; a failed command on
+                    // an old connection must not undo a newer connection's state.
+                    if (_inputTelemetryProtocol == proto && _inputTelemetryOn == wanted)
+                        _inputTelemetryProtocol = null;
+                    AppendLog("live input telemetry could not be " +
+                              (wanted ? "enabled" : "disabled") + ": " + ex.Message);
+                });
+            }
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

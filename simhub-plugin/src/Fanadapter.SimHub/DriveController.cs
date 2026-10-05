@@ -8,6 +8,48 @@ using SimHub.Plugins;
 namespace Fanadapter.SimHub
 {
     /// <summary>
+    /// One gear or shift command and what became of it. Immutable: the pump
+    /// thread publishes a new instance rather than mutating the live one, so a
+    /// UI thread reading it never sees a half-written record.
+    ///
+    /// "Acknowledged" means the adapter answered the command, which is the only
+    /// confirmation available on this side of the link — the wheelbase itself
+    /// never reports back.
+    /// </summary>
+    public sealed class DriveActivity
+    {
+        public DriveActivity(long sequence, string channel, bool acknowledged, string error, DateTime at)
+        {
+            Sequence = sequence;
+            Channel = channel;
+            Acknowledged = acknowledged;
+            Error = error;
+            At = at;
+        }
+
+        /// <summary>Increments per command, so a repeat of the same action is still a new event.</summary>
+        public long Sequence { get; }
+
+        /// <summary>
+        /// Firmware channel key the command targeted — "shift_up", "gear_3" — or
+        /// "pedals" for the handshake re-arm. A key rather than a label so
+        /// consumers can match on it without string-matching prose.
+        /// </summary>
+        public string Channel { get; }
+
+        /// <summary>Human-readable form of <see cref="Channel"/>.</summary>
+        public string Action =>
+            Channel == DriveController.PedalsChannel ? "Re-arm pedals" : HidNames.Channel(Channel);
+
+        public bool Acknowledged { get; }
+
+        /// <summary>Null when acknowledged.</summary>
+        public string Error { get; }
+
+        public DateTime At { get; }
+    }
+
+    /// <summary>
     /// Turns SimHub input into wheelbase output.
     ///
     /// SimHub owns the input half entirely — it enumerates the PC's controllers,
@@ -86,12 +128,32 @@ namespace Fanadapter.SimHub
 
         public bool IsStreaming => _streamTask != null && !_streamTask.IsCompleted;
 
+        /// <summary>Raised on the caller's thread when streaming starts or stops.</summary>
+        public event Action StreamingChanged;
+
+        /// <summary>
+        /// The last gear/shift command and what became of it, or null if none has
+        /// been issued. Volatile because the pump thread writes it and the UI
+        /// timer reads it without a lock.
+        /// </summary>
+        public DriveActivity LastActivity
+        {
+            get { return _lastActivity; }
+            private set { _lastActivity = value; }
+        }
+
+        private volatile DriveActivity _lastActivity;
+        private long _activitySequence;
+
         /// <summary>Latest values pushed to the adapter, for the settings UI readout.</summary>
         public int?[] LastSent => _lastSent;
 
         public string LastError { get; private set; }
 
         // ---------- Gear / sequential ----------
+
+        /// <summary>Pseudo-channel for the pedal handshake re-arm, which targets no output channel.</summary>
+        public const string PedalsChannel = "pedals";
 
         /// <summary>
         /// Held-gear semantics for an H-pattern shifter on the PC: the gear is
@@ -102,41 +164,56 @@ namespace Fanadapter.SimHub
         /// </summary>
         public void GearPressed(string gearChannel)
         {
-            Enqueue(async proto =>
+            Enqueue(gearChannel, async proto =>
             {
                 _heldGear = gearChannel;
                 await proto.SetGearAsync(gearChannel).ConfigureAwait(false);
+                return true;
             });
         }
 
         public void GearReleased(string gearChannel)
         {
-            Enqueue(async proto =>
+            Enqueue("gear_N", async proto =>
             {
-                if (_heldGear != gearChannel) return;
+                // Nothing sent, so nothing to report — a release that lost the
+                // race to another gear must not show up as a shift to neutral
+                // that never happened.
+                if (_heldGear != gearChannel) return false;
                 _heldGear = "gear_N";
                 await proto.SetGearAsync("gear_N").ConfigureAwait(false);
+                return true;
             });
         }
 
         /// <summary>Latching select — used for gears bound as plain actions.</summary>
         public void SelectGear(string gearChannel)
         {
-            Enqueue(async proto =>
+            Enqueue(gearChannel, async proto =>
             {
                 _heldGear = gearChannel;
                 await proto.SetGearAsync(gearChannel).ConfigureAwait(false);
+                return true;
             });
         }
 
         public void Shift(ShiftDirection direction)
         {
-            Enqueue(proto => proto.PulseShiftAsync(direction));
+            Enqueue(direction == ShiftDirection.Up ? "shift_up" : "shift_down",
+                async proto =>
+                {
+                    await proto.PulseShiftAsync(direction).ConfigureAwait(false);
+                    return true;
+                });
         }
 
         public void RearmPedals()
         {
-            Enqueue(proto => proto.ResetPedalsAsync());
+            Enqueue(PedalsChannel, async proto =>
+            {
+                await proto.ResetPedalsAsync().ConfigureAwait(false);
+                return true;
+            });
         }
 
         // ---------- Axis streaming ----------
@@ -149,7 +226,40 @@ namespace Fanadapter.SimHub
             var token = _streamCancel.Token;
             ResetSentState();
             _streamTask = Task.Run(() => StreamAsync(token), token);
+            StreamingChanged?.Invoke();
             _log("pedal streaming started");
+        }
+
+        /// <summary>
+        /// Re-applies the persisted "driving pedals" choice. Called after every
+        /// successful connect, which is far more often than once per SimHub
+        /// start: SimHub tears its plugins down and rebuilds them on each game
+        /// change, and that is precisely why the choice has to be re-applied
+        /// rather than clicked again.
+        ///
+        /// When the flag is set but can't be honoured yet, it is left set and
+        /// the reason logged. Every reason is transient — the wrong board is
+        /// plugged in, the pedal sources aren't filled in — and clearing it
+        /// would silently forget a choice the user never revoked.
+        /// </summary>
+        public void ResumeIfEnabled()
+        {
+            var settings = _settings();
+            if (settings == null || !settings.AxisStreamingEnabled || IsStreaming) return;
+
+            if (!_session.SupportsDirectOutput)
+            {
+                _log("pedal streaming is enabled, but this firmware cannot be driven from the PC");
+                return;
+            }
+
+            if (!settings.HasConfiguredAxis())
+            {
+                _log("pedal streaming is enabled, but no pedal has a source");
+                return;
+            }
+
+            StartStreaming();
         }
 
         /// <summary>
@@ -172,6 +282,7 @@ namespace Fanadapter.SimHub
             cancel.Dispose();
 
             ResetSentState();
+            StreamingChanged?.Invoke();
             _log("pedal streaming stopped");
         }
 
@@ -259,7 +370,7 @@ namespace Fanadapter.SimHub
         {
             if (source == null || !source.IsConfigured) return null;
 
-            var scaled = source.Scale(pm.GetPropertyValue(source.PropertyName));
+            var scaled = source.Scale(AxisSourceReader.Read(pm, source));
             if (scaled == null) return null;
 
             _lastSent[index] = scaled; // keeps the settings-UI readout live
@@ -275,7 +386,7 @@ namespace Fanadapter.SimHub
         {
             if (source == null || !source.IsConfigured) return null;
 
-            var scaled = source.Scale(pm.GetPropertyValue(source.PropertyName));
+            var scaled = source.Scale(AxisSourceReader.Read(pm, source));
             if (scaled == null) return null;
 
             var previous = _lastSent[index];
@@ -318,7 +429,12 @@ namespace Fanadapter.SimHub
 
         // ---------- Command pump ----------
 
-        private void Enqueue(Func<Protocol, Task> work)
+        /// <summary>
+        /// Queues one command and reports what became of it. <paramref name="work"/>
+        /// returns false when it decided not to send anything, which keeps
+        /// no-ops out of the activity readout.
+        /// </summary>
+        private void Enqueue(string channel, Func<Protocol, Task<bool>> work)
         {
             if (_commands.IsAddingCompleted) return;
 
@@ -327,14 +443,43 @@ namespace Fanadapter.SimHub
                 _commands.Add(async () =>
                 {
                     var proto = _session.Protocol;
-                    if (proto == null) return;
-                    await work(proto).ConfigureAwait(false);
+                    if (proto == null)
+                    {
+                        // Bound to a wheel button, so this is reachable simply by
+                        // pulling a paddle while disconnected. Silence there looks
+                        // identical to a broken adapter.
+                        Record(channel, false, "not connected");
+                        return;
+                    }
+
+                    try
+                    {
+                        if (await work(proto).ConfigureAwait(false)) Record(channel, true, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Record(channel, false, ex.Message);
+                        throw; // the pump logs it and holds it in LastError
+                    }
                 });
             }
             catch (InvalidOperationException)
             {
                 // Raced with disposal.
             }
+        }
+
+        /// <summary>
+        /// Publishes the outcome of one command. Written from the pump thread and
+        /// read by the UI timer, so it is swapped as a whole immutable object —
+        /// the reader can never see a half-updated one. The sequence number is
+        /// what lets the reader tell "shifted up again" from "nothing happened".
+        /// </summary>
+        private void Record(string channel, bool acknowledged, string error)
+        {
+            LastActivity = new DriveActivity(
+                Interlocked.Increment(ref _activitySequence),
+                channel, acknowledged, error, DateTime.Now);
         }
 
         private async Task PumpAsync()

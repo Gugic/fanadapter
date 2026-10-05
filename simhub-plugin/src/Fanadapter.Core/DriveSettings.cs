@@ -12,13 +12,40 @@ namespace Fanadapter.Core
     /// </summary>
     public class DriveSettings
     {
-        /// <summary>Master switch for streaming pedal axes to the adapter.</summary>
+        /// <summary>
+        /// Whether the user wants pedals driven from this PC. A *desired* state,
+        /// not a live one: it is persisted, and every successful connect
+        /// re-applies it (see DriveController.ResumeIfEnabled). SimHub rebuilds
+        /// its plugins on every game change, so without that the choice would
+        /// quietly lapse each time the user switched games.
+        /// </summary>
         public bool AxisStreamingEnabled { get; set; }
 
         public AxisSource Throttle { get; set; } = new AxisSource();
         public AxisSource Brake { get; set; } = new AxisSource();
         public AxisSource Clutch { get; set; } = new AxisSource();
         public AxisSource Handbrake { get; set; } = new AxisSource();
+
+        /// <summary>
+        /// Every pedal channel, in the order the firmware's axis commands take
+        /// them. Null-tolerant on purpose: these come back from a deserialised
+        /// settings blob, which can carry an explicit null for a channel.
+        /// </summary>
+        public AxisSource[] AllAxes() => new[] { Throttle, Brake, Clutch, Handbrake };
+
+        /// <summary>
+        /// At least one pedal has a source. Streaming without one sends
+        /// nothing at all, so resuming into that state would show "driving" over
+        /// a link carrying no pedal data.
+        /// </summary>
+        public bool HasConfiguredAxis()
+        {
+            foreach (var axis in AllAxes())
+            {
+                if (axis != null && axis.IsConfigured) return true;
+            }
+            return false;
+        }
 
         public AxisSource For(string channel)
         {
@@ -34,36 +61,45 @@ namespace Fanadapter.Core
     }
 
     /// <summary>
-    /// One pedal axis, sourced from a host-application property. Any property
-    /// works — a controller axis published by SimHub's input plugins, or an
-    /// expression the user built — which is why this stores a name rather than
-    /// a device and axis index.
+    /// One pedal axis, selected with SimHub's native axis picker (including
+    /// Control Mapper roles). The picker assignment is stored
+    /// as plain names so Core keeps no dependency on SimHub's assemblies.
     /// </summary>
     public class AxisSource
     {
-        public string PropertyName { get; set; }
+        public string AxisName { get; set; }
+
+        /// <summary>Named SimHub AxisMovement value, avoiding a numeric enum mirror.</summary>
+        public string AxisMovement { get; set; } = "MinToMax";
 
         /// <summary>
-        /// Raw range of the source property. Defaults to 0..100 because that is
-        /// what SimHub's own axis properties use; a 0..1 or 0..65535 source just
-        /// needs these changed.
+        /// Endpoints of the processed SimHub input, expressed as percentages.
+        /// Lowering the upper endpoint makes full output require less pedal travel/force.
         /// </summary>
-        public double InputMin { get; set; }
-        public double InputMax { get; set; } = 100;
+        public double InputMinPercent { get; set; }
+        public double InputMaxPercent { get; set; } = 100;
 
-        public bool Invert { get; set; }
+        public bool IsConfigured => !string.IsNullOrWhiteSpace(AxisName);
 
-        public bool IsConfigured => !string.IsNullOrWhiteSpace(PropertyName);
+        public bool HasValidRange() => ValidRange(InputMinPercent, InputMaxPercent);
+
+        private static bool ValidRange(double min, double max) => min >= 0 && max <= 100 && max > min;
 
         /// <summary>
-        /// Maps a raw property value onto the firmware's 0..65535 axis range.
-        /// Returns null when the value can't be read as a number, so the caller
+        /// Maps the picker's processed 0..1 value through the selected percentage
+        /// range onto the firmware's 0..65535 range. SimHub has already applied
+        /// direction and any Control Mapper calibration before this local adjustment.
+        /// Returns null for an invalid range or an unreadable value, so the caller
         /// can leave the channel alone instead of slamming a pedal to zero
-        /// because a property name was mistyped.
+        /// because the source is unavailable.
         /// </summary>
         public int? Scale(object rawValue)
         {
             if (rawValue == null) return null;
+
+            var min = InputMinPercent;
+            var max = InputMaxPercent;
+            if (!ValidRange(min, max)) return null;
 
             double value;
             var flag = rawValue as bool?;
@@ -72,7 +108,7 @@ namespace Fanadapter.Core
                 // A button bound to a pedal channel is legitimate — full travel
                 // or nothing, matching how the firmware treats a button driving
                 // an axis channel.
-                value = flag.Value ? InputMax : InputMin;
+                value = flag.Value ? 1 : 0;
             }
             else
             {
@@ -88,15 +124,11 @@ namespace Fanadapter.Core
 
             if (double.IsNaN(value) || double.IsInfinity(value)) return null;
 
-            double span = InputMax - InputMin;
-            double t = Math.Abs(span) < double.Epsilon ? 0 : (value - InputMin) / span;
+            value = (value * 100.0 - min) / (max - min);
+            if (value < 0) value = 0;
+            else if (value > 1) value = 1;
 
-            if (t < 0) t = 0;
-            else if (t > 1) t = 1;
-
-            if (Invert) t = 1 - t;
-
-            return (int)Math.Round(t * 65535.0);
+            return (int)Math.Round(value * 65535.0);
         }
     }
 }

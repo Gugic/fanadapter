@@ -5,6 +5,7 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:styles="clr-namespace:SimHub.Plugins.Styles;assembly=SimHub.Plugins"
              xmlns:ui="clr-namespace:SimHub.Plugins.UI;assembly=SimHub.Plugins"
+             xmlns:axis="clr-namespace:SimHub.Plugins.UI.Axis;assembly=SimHub.Plugins"
              mc:Ignorable="d">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -77,7 +78,69 @@
                         <styles:SHSubSection Title="Shifter and buttons">
                             <StackPanel>
                                 <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
-                                           Text="Hold bindings engage a gear while the control is held and return to neutral on release — real H-pattern behaviour. Select bindings latch instead, for a button that should stay in gear." />
+                                           Text="Hold bindings engage a gear while the control is held and return to neutral on release — real H-pattern behaviour. Select bindings latch instead, for a button that should stay in gear. These SimHub editors also accept Control Mapper roles." />
+
+                                <!-- Did that shift actually happen? The lamps flash on the adapter's
+                                     acknowledgement and on seeing the output pin driven; the line
+                                     beside them is the last command either way, failures included. -->
+                                <Border Padding="10" Margin="0,0,0,10" CornerRadius="3"
+                                        Background="#14FFFFFF" BorderThickness="1" BorderBrush="#22FFFFFF">
+                                    <DockPanel>
+                                        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                                            <Border Width="30" Height="30" CornerRadius="15"
+                                                    BorderThickness="1" BorderBrush="#33FFFFFF">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#18FFFFFF" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding ShiftUpLamp}" Value="True">
+                                                                <Setter Property="Background" Value="#FF35C46A" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="▲" FontSize="13" HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                            </Border>
+
+                                            <Border Width="30" Height="30" CornerRadius="15" Margin="6,0,0,0"
+                                                    BorderThickness="1" BorderBrush="#33FFFFFF">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#18FFFFFF" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding ShiftDownLamp}" Value="True">
+                                                                <Setter Property="Background" Value="#FF35C46A" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="▼" FontSize="13" HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+                                            </Border>
+
+                                            <TextBlock Text="Gear" VerticalAlignment="Center" Opacity="0.7"
+                                                       Margin="18,0,6,0" />
+                                            <TextBlock Text="{Binding DriveGear}" VerticalAlignment="Center"
+                                                       FontSize="16" FontWeight="Bold" MinWidth="70" />
+                                        </StackPanel>
+
+                                        <TextBlock Text="{Binding LastDriveAction}" VerticalAlignment="Center"
+                                                   Margin="16,0,0,0" TextWrapping="Wrap">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Opacity" Value="0.85" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding LastDriveActionFailed}" Value="True">
+                                                            <Setter Property="Foreground" Value="#FFE05252" />
+                                                            <Setter Property="Opacity" Value="1" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DockPanel>
+                                </Border>
 
                                 <ui:ControlsEditor ActionName="FanadapterPlugin.ShiftUp" FriendlyName="Shift up" />
                                 <ui:ControlsEditor ActionName="FanadapterPlugin.ShiftDown" FriendlyName="Shift down" />
@@ -106,15 +169,7 @@
                         <styles:SHSubSection Title="Pedals">
                             <StackPanel>
                                 <TextBlock TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,8"
-                                           Text="Pick the SimHub property carrying each pedal — any controller axis SimHub publishes, or your own NCalc expression. Set the range to match the property (0–100 for SimHub's own axis properties) and watch the live column to check direction." />
-
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="Find property" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                    <TextBox Text="{Binding PropertyFilter, UpdateSourceTrigger=PropertyChanged, Delay=300}"
-                                             MinWidth="240" VerticalAlignment="Center" />
-                                    <styles:SHButtonSecondary Command="{Binding RefreshPropertyListCommand}"
-                                                              Margin="8,0,0,0">Reload list</styles:SHButtonSecondary>
-                                </StackPanel>
+                                           Text="Choose an axis for each pedal with SimHub's standard capture dialog. Configure Control Mapper roles first to use their calibration and filters; the picker prefers mapped roles when available." />
 
                                 <ItemsControl ItemsSource="{Binding AxisSources}">
                                     <ItemsControl.ItemTemplate>
@@ -125,30 +180,32 @@
                                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                                         <TextBlock Text="{Binding Label}" FontWeight="Bold"
                                                                    Width="90" VerticalAlignment="Center" />
-                                                        <ComboBox IsEditable="True" MinWidth="300"
-                                                                  ItemsSource="{Binding DataContext.AvailableProperties,
-                                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                                  Text="{Binding PropertyName, UpdateSourceTrigger=LostFocus}"
-                                                                  VerticalAlignment="Center" />
-                                                        <styles:SHButtonSecondary Command="{Binding DataContext.DetectAxisCommand,
-                                                                                      RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                                                  CommandParameter="{Binding}"
-                                                                                  Content="{Binding DetectButtonText}"
-                                                                                  ToolTip="Press this, then press the pedal fully and release — the property, range and direction are filled in automatically."
-                                                                                  Margin="8,0,0,0" VerticalAlignment="Center" />
-                                                        <TextBlock Text="{Binding DetectStatus}" VerticalAlignment="Center"
-                                                                   Margin="12,0,0,0" FontStyle="Italic" Opacity="0.85" />
+                                                        <axis:AxisPickerControl Axis="{Binding Axis, Mode=TwoWay}"
+                                                                                HorizontalAlignment="Left" MinWidth="300" />
                                                     </StackPanel>
 
+                                                    <ui:TitledRangeSlider Title="Input range (%)"
+                                                                          LowerValue="{Binding InputMinPercent, Mode=TwoWay}"
+                                                                          UpperValue="{Binding InputMaxPercent, Mode=TwoWay}"
+                                                                          Minimum="0" Maximum="100" MinRange="0.1"
+                                                                          ShowCheckbox="False" Margin="90,0,0,4"
+                                                                          TitleTooltip="Drag the left handle to set released and the right handle to set full travel. Lower full travel to require less pedal travel or force. Applies after Control Mapper calibration." />
+                                                    <StackPanel Orientation="Horizontal" Margin="90,0,0,4" Opacity="0.7">
+                                                        <TextBlock>
+                                                            <Run Text="Released at: " /><Run Text="{Binding InputMinPercent, Mode=OneWay, StringFormat={}{0:0.0}%}" />
+                                                        </TextBlock>
+                                                        <TextBlock Margin="16,0,0,0">
+                                                            <Run Text="Full travel at: " /><Run Text="{Binding InputMaxPercent, Mode=OneWay, StringFormat={}{0:0.0}%}" />
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding RangeError}" Margin="90,0,0,4"
+                                                               Foreground="OrangeRed" TextWrapping="Wrap" />
+
                                                     <StackPanel Orientation="Horizontal" Margin="90,0,0,0">
-                                                        <TextBlock Text="Range" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                                        <TextBox Text="{Binding InputMin}" Width="70" VerticalAlignment="Center" />
-                                                        <TextBlock Text="to" VerticalAlignment="Center" Margin="6,0" />
-                                                        <TextBox Text="{Binding InputMax}" Width="70" VerticalAlignment="Center" />
-                                                        <styles:SHToggleCheckbox IsChecked="{Binding Invert}"
-                                                                                 VerticalAlignment="Center" Margin="16,0,0,0">Invert</styles:SHToggleCheckbox>
+                                                        <TextBlock Text="Input" VerticalAlignment="Center" Opacity="0.7" />
                                                         <TextBlock Text="{Binding RawText}" VerticalAlignment="Center"
-                                                                   Margin="24,0,0,0" Opacity="0.7" MinWidth="120" />
+                                                                   Margin="8,0,0,0" Opacity="0.7" MinWidth="80" />
+                                                        <TextBlock Text="Output" VerticalAlignment="Center" Opacity="0.7" Margin="8,0,0,0" />
                                                         <TextBlock Text="{Binding ScaledText}" VerticalAlignment="Center"
                                                                    Margin="8,0,0,0" FontWeight="Bold" MinWidth="60" />
                                                         <ProgressBar Value="{Binding ScaledPercent, Mode=OneWay}" Maximum="100"

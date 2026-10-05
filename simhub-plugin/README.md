@@ -65,7 +65,9 @@ in a browser tab is the usual culprit, and it holds the port exclusively.
 ### SimHub drive — for controllers on the PC
 
 Bind gears, shifts and the release/re-arm actions with the Controls editors on
-that tab. Gears appear twice:
+that tab. These standard SimHub controls already accept **Control Mapper
+roles**, so mapped buttons can drive the adapter without binding each physical
+controller again. Gears appear twice:
 
 - **Hold** bindings engage a gear while the control is held and return to
   neutral on release. This is real H-pattern behaviour and what you want for an
@@ -73,19 +75,41 @@ that tab. Gears appear twice:
 - **Select** bindings latch — the gear stays until another one is chosen. Use
   these for a button that should select a gear and stay there.
 
-Pedals are configured per channel, and the easy path is **Detect**: click it,
-keep everything still for half a second, then press that pedal fully and
-release. The plugin samples every property SimHub publishes, finds the one you
-moved, and fills in the property name, raw range and direction automatically —
-properties that were already moving on their own (live game telemetry, clocks)
-are excluded, and when telemetry reacts to the pedal in a running session the
-controller-input property still wins. Detect needs no adapter connection.
+Above the editors is a strip answering "did that actually happen": two lamps
+that flash on each shift, the gear the adapter reports holding, and the last
+command with its timestamp — in red, with the error, when one fails. The lamps
+light on either of the two confirmations available: the adapter acknowledging
+the command, and the outputs stream showing the pin driven. Neither is
+sufficient alone (a 50 ms pulse can fall between two ~30 Hz telemetry frames),
+and neither can prove the *wheelbase* registered the shift — nothing on that
+link reports back.
 
-Manual setup remains for the cases Detect can't guess: pick the **SimHub
-property** yourself (any property works — a controller axis published by
-SimHub's input plugins, or your own NCalc expression), set the range to match
-it (SimHub's own axis properties are 0–100), and watch the live readout to
-check the direction before pressing Start.
+Each pedal uses SimHub's standard axis picker. Move the pedal and confirm the
+assignment. When Control Mapper has a role assigned to that axis, the native
+picker prefers the role (for example `ControlMapperPlugin.Brake`) over the
+underlying controller. Configure roles in SimHub's [Control Mapper](https://github.com/SHWotever/SimHub/wiki/Control-Mapper-plugin)
+first. Throttle, brake, clutch and handbrake each have their own assignment.
+
+The picker supplies a processed 0–1 value using its selected direction;
+Control Mapper's calibration and filters are already applied to mapped roles.
+Each pedal also has SimHub's two-handle percentage range slider: the left
+handle sets **Released at**, mapping to 0% output, and the right handle sets
+**Full travel at**, mapping to 100%, with values outside that range
+clamped. Defaults are 0–100%. To get full braking at roughly the old 45,000
+out of 65,535 input, drag the brake's right handle to **68.7%**. This
+adjustment applies to the processed SimHub input, so leave it at 0–100% if
+Control Mapper already supplies the range you want. Direction stays in the
+native picker. The live input and output readouts both show percentages.
+
+The plugin converts the adjusted value to the adapter's 0–65535 range.
+Assignments and ranges persist and work during automatic resume even if the settings pane has not
+been opened. An unavailable or uninitialized axis shows in the live readout
+and sends no new value; it never falls back to a physical controller.
+
+The old property picker and Detect flow have been removed. Previously saved
+property bindings need to be assigned once through the native picker; existing
+native assignments remain.
+Watch the live readout to check the direction before pressing Start.
 
 On current firmware (protocol 6+) the pedal stream is **fire-and-forget at a
 fixed 100 Hz**: each update is one-way with no acknowledgement round-trip in
@@ -93,11 +117,33 @@ the hot path and no change-suppression dead-band, so PC-attached pedals get
 the same cadence the wheelbase itself is fed at. On older firmware the plugin
 falls back to acknowledged commands (~8 ms per update, still ~100 Hz-class).
 
+**Start driving pedals sticks.** The choice is saved and re-applied on every
+connect, so it survives a SimHub restart — and, just as importantly, a game
+change, because SimHub tears its plugins down and rebuilds them each time you
+switch games. Two things end it, both deliberate: **Stop driving pedals** and
+**Release outputs**. A release that the plugin does on its own (shutdown, game
+change, disconnect) leaves the choice intact so the stream comes back. If the
+choice can't be honoured on a connect — a Teensy answered, or no pedal has a
+source — the plugin logs why and keeps it for next time rather than
+quietly forgetting it. Stop and Release take effect even if saving settings
+fails; that failure is logged, and the choice may need to be saved again before
+restarting SimHub.
+
+Live pedal readouts use the pane's Normal-priority timer, with unchanged values
+suppressed. Closing and reopening the pane reattaches its session listeners and
+re-enables input telemetry; output telemetry stays on for dashboard properties.
+Reopening preserves mapping and pulse-width edits on the current connection.
+Reconnects and explicit config reloads load the adapter's fresh settings instead.
+The Start/Stop button also follows automatic pedal-stream resume.
+
 > **Overrides are sticky.** The firmware has no timeout, so whatever was last
 > sent stays applied until it is released. The plugin releases automatically
 > when you stop streaming, when it disconnects, and when SimHub shuts it down —
-> but if something ever ends up stuck, **Release outputs** (a button, and also a
-> bindable action) hands every channel back to the adapter's own mapping.
+> but if SimHub is killed outright, nothing runs to release, and the wheelbase
+> keeps the last pedal values until something does. **Release outputs** (a
+> button, and also a bindable action) hands every channel back to the adapter's
+> own mapping; reconnecting with streaming enabled also takes the pedals back
+> over, which clears a stuck state by overwriting it.
 
 ### Devices, Mappings, Outputs — for the adapter's own hardware
 
@@ -160,8 +206,20 @@ dotnet build simhub-plugin/FanadapterSimHub.sln -c Release
 dotnet test  simhub-plugin/FanadapterSimHub.sln -c Release
 ```
 
-Tests cover `Fanadapter.Core`, which has no SimHub references — they run on a
-machine with no SimHub installed.
+The solution includes Core tests and SimHub/WPF lifecycle tests. The latter
+require the configured SimHub installation and use an in-memory adapter without
+opening a COM port. They cover stopping when settings persistence fails,
+preserving edits across pane navigation, loading new config snapshots, and
+refreshing WPF bindings after automatic stream resume.
+Native axis tests also cover picker replacement/clear, saved and late-registered
+Control Mapper assignments, current samples versus UI copies, and pedal command
+payloads for both protocol paths.
+
+Core has no SimHub references. To run its tests without SimHub installed:
+
+```sh
+dotnet test simhub-plugin/tests/Fanadapter.Core.Tests/Fanadapter.Core.Tests.csproj -c Release
+```
 
 If SimHub is not at `C:\Program Files (x86)\SimHub\`, create an untracked
 `simhub-plugin/Directory.Build.props.user`:
@@ -181,6 +239,7 @@ If SimHub is not at `C:\Program Files (x86)\SimHub\`, create an untracked
 | `src/Fanadapter.Core/` | Transport, protocol, schema, `scaleAxis`, the capture engine. **No SimHub references** — the unit-testable half, and where the C# mirrors of the firmware contracts live. |
 | `src/Fanadapter.SimHub/` | The plugin: SimHub interfaces, actions, properties, the drive controller and the WPF settings UI. |
 | `tests/Fanadapter.Core.Tests/` | xunit tests for Core. |
+| `tests/Fanadapter.SimHub.Tests/` | WPF and drive lifecycle regression tests against SimHub's assemblies, with an in-memory adapter. |
 | `.simhub-version` | The SimHub release CI builds against. |
 
 Changing anything that mirrors a firmware contract — the config schema, the

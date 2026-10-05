@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <IsPackable>false</IsPackable>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fanadapter.SimHub\Fanadapter.SimHub.csproj" />
+    <Reference Include="SimHub.Plugins">
+      <HintPath>$(SimHubDir)SimHub.Plugins.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+  <!-- The production plugin uses SimHub's runtime assemblies. Resolve those
+       from the configured installation when running outside the SimHub host. -->
+  <Target Name="WriteSimHubTestRuntimePath" AfterTargets="Build">
+    <WriteLinesToFile File="$(TargetDir)SimHubDir.txt" Lines="$(SimHubDir)" Overwrite="true" />
+  </Target>
+</Project>
