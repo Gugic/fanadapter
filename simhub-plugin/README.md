@@ -65,7 +65,9 @@ in a browser tab is the usual culprit, and it holds the port exclusively.
 ### SimHub drive — for controllers on the PC
 
 Bind gears, shifts and the release/re-arm actions with the Controls editors on
-that tab. Gears appear twice:
+that tab. These standard SimHub controls already accept **Control Mapper
+roles**, so mapped buttons can drive the adapter without binding each physical
+controller again. Gears appear twice:
 
 - **Hold** bindings engage a gear while the control is held and return to
   neutral on release. This is real H-pattern behaviour and what you want for an
@@ -82,19 +84,32 @@ sufficient alone (a 50 ms pulse can fall between two ~30 Hz telemetry frames),
 and neither can prove the *wheelbase* registered the shift — nothing on that
 link reports back.
 
-Pedals are configured per channel, and the easy path is **Detect**: click it,
-keep everything still for half a second, then press that pedal fully and
-release. The plugin samples every property SimHub publishes, finds the one you
-moved, and fills in the property name, raw range and direction automatically —
-properties that were already moving on their own (live game telemetry, clocks)
-are excluded, and when telemetry reacts to the pedal in a running session the
-controller-input property still wins. Detect needs no adapter connection.
+Each pedal uses SimHub's standard axis picker. Move the pedal and confirm the
+assignment. When Control Mapper has a role assigned to that axis, the native
+picker prefers the role (for example `ControlMapperPlugin.Brake`) over the
+underlying controller. Configure roles in SimHub's [Control Mapper](https://github.com/SHWotever/SimHub/wiki/Control-Mapper-plugin)
+first. Throttle, brake, clutch and handbrake each have their own assignment.
 
-Manual setup remains for the cases Detect can't guess: pick the **SimHub
-property** yourself (any property works — a controller axis published by
-SimHub's input plugins, or your own NCalc expression), set the range to match
-it (SimHub's own axis properties are 0–100), and watch the live readout to
-check the direction before pressing Start.
+The picker supplies a processed 0–1 value using its selected direction;
+Control Mapper's calibration and filters are already applied to mapped roles.
+Each pedal also has SimHub's two-handle percentage range slider: the left
+handle sets **Released at**, mapping to 0% output, and the right handle sets
+**Full travel at**, mapping to 100%, with values outside that range
+clamped. Defaults are 0–100%. To get full braking at roughly the old 45,000
+out of 65,535 input, drag the brake's right handle to **68.7%**. This
+adjustment applies to the processed SimHub input, so leave it at 0–100% if
+Control Mapper already supplies the range you want. Direction stays in the
+native picker. The live input and output readouts both show percentages.
+
+The plugin converts the adjusted value to the adapter's 0–65535 range.
+Assignments and ranges persist and work during automatic resume even if the settings pane has not
+been opened. An unavailable or uninitialized axis shows in the live readout
+and sends no new value; it never falls back to a physical controller.
+
+The old property picker and Detect flow have been removed. Previously saved
+property bindings need to be assigned once through the native picker; existing
+native assignments remain.
+Watch the live readout to check the direction before pressing Start.
 
 On current firmware (protocol 6+) the pedal stream is **fire-and-forget at a
 fixed 100 Hz**: each update is one-way with no acknowledgement round-trip in
@@ -109,7 +124,7 @@ switch games. Two things end it, both deliberate: **Stop driving pedals** and
 **Release outputs**. A release that the plugin does on its own (shutdown, game
 change, disconnect) leaves the choice intact so the stream comes back. If the
 choice can't be honoured on a connect — a Teensy answered, or no pedal has a
-source property — the plugin logs why and keeps it for next time rather than
+source — the plugin logs why and keeps it for next time rather than
 quietly forgetting it. Stop and Release take effect even if saving settings
 fails; that failure is logged, and the choice may need to be saved again before
 restarting SimHub.
@@ -196,6 +211,9 @@ require the configured SimHub installation and use an in-memory adapter without
 opening a COM port. They cover stopping when settings persistence fails,
 preserving edits across pane navigation, loading new config snapshots, and
 refreshing WPF bindings after automatic stream resume.
+Native axis tests also cover picker replacement/clear, saved and late-registered
+Control Mapper assignments, current samples versus UI copies, and pedal command
+payloads for both protocol paths.
 
 Core has no SimHub references. To run its tests without SimHub installed:
 

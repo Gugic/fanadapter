@@ -53,6 +53,7 @@ namespace Fanadapter.SimHub
             global::SimHub.Logging.Current.Info("[Fanadapter] starting");
 
             Settings = this.ReadCommonSettings(SettingsKey, () => new PluginSettings());
+            AxisSourceReader.Initialize(Settings.Drive);
 
             Session.Outputs += o => _outputs = o;
             Session.LogLine += line => global::SimHub.Logging.Current.Debug("[Fanadapter] " + line);

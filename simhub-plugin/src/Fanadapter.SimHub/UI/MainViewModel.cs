@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -65,10 +64,8 @@ namespace Fanadapter.SimHub.UI
             UsbKickCommand = new RelayCommand(UsbKick, () => IsConnected);
 
             BuildAxisEditors();
-            ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => CanStream);
-            RefreshPropertyListCommand = new RelayCommand(RefreshPropertyList);
+            ToggleStreamingCommand = new RelayCommand(ToggleStreaming, () => IsStreaming || CanStream);
             ReleaseOutputsCommand = new RelayCommand(ReleaseOutputs, () => IsConnected);
-            DetectAxisCommand = new ParameterCommand(ToggleAxisDetect);
 
             // Reconnect after the flash goes through ConnectAsync so the port gets remembered and
             // telemetry re-enabled exactly like a manual connect.
@@ -637,140 +634,8 @@ namespace Fanadapter.SimHub.UI
         public ObservableCollection<AxisSourceViewModel> AxisSources { get; } =
             new ObservableCollection<AxisSourceViewModel>();
 
-        /// <summary>
-        /// Every property SimHub currently publishes, for the source pickers.
-        /// Fetched on demand rather than continuously — the list runs to
-        /// thousands of entries and only changes when plugins or games do.
-        /// </summary>
-        public ObservableCollection<string> AvailableProperties { get; } = new ObservableCollection<string>();
-
-        private string _propertyFilter = string.Empty;
-        public string PropertyFilter
-        {
-            get => _propertyFilter;
-            set { _propertyFilter = value ?? string.Empty; OnPropertyChanged(); RefreshPropertyList(); }
-        }
-
         public RelayCommand ToggleStreamingCommand { get; }
-        public RelayCommand RefreshPropertyListCommand { get; }
         public RelayCommand ReleaseOutputsCommand { get; }
-        public ParameterCommand DetectAxisCommand { get; }
-
-        // ---------- Pedal auto-detect ----------
-        // Listen-style capture for the PC side: sample every SimHub property,
-        // find the one the user presses, commit name + range + direction. Runs
-        // entirely against SimHub — no adapter connection required.
-
-        private AxisSourceViewModel _detectAxis;
-        private PropertyAxisDetector _detector;
-        private DateTime _detectStart;
-        private List<string> _detectNames;
-        private DetectPhase _detectShownPhase;
-
-        private void ToggleAxisDetect(object parameter)
-        {
-            var axis = parameter as AxisSourceViewModel;
-            if (axis == null) return;
-
-            if (_detectAxis == axis)
-            {
-                CancelAxisDetect("detect cancelled.");
-                return;
-            }
-            if (_detectAxis != null) CancelAxisDetect(null); // switch channels silently
-
-            var pm = _plugin.PluginManager;
-            if (pm == null) return;
-
-            List<string> names;
-            try { names = pm.GetAllPropertiesNames().ToList(); }
-            catch (Exception ex)
-            {
-                AppendLog("could not read SimHub's property list: " + ex.Message);
-                return;
-            }
-
-            _detectAxis = axis;
-            _detector = new PropertyAxisDetector();
-            _detectStart = DateTime.UtcNow;
-            _detectNames = names;
-            _detectShownPhase = DetectPhase.Baseline;
-            axis.IsDetecting = true;
-            axis.DetectStatus = "hold everything still…";
-        }
-
-        private void CancelAxisDetect(string message)
-        {
-            var axis = _detectAxis;
-            _detectAxis = null;
-            _detector = null;
-            _detectNames = null;
-            if (axis != null) axis.IsDetecting = false;
-            if (message != null) AppendLog(message);
-        }
-
-        private void PumpAxisDetect()
-        {
-            var detector = _detector;
-            var axis = _detectAxis;
-            if (detector == null || axis == null) return;
-
-            var pm = _plugin.PluginManager;
-            if (pm == null) { CancelAxisDetect(null); return; }
-
-            var sample = new List<KeyValuePair<string, double>>(_detectNames.Count);
-            foreach (var name in _detectNames)
-            {
-                object raw;
-                try { raw = pm.GetPropertyValue(name); }
-                catch { continue; }
-
-                double value;
-                if (raw is bool flag) value = flag ? 1 : 0;
-                else
-                {
-                    try { value = Convert.ToDouble(raw); }
-                    catch { continue; }
-                }
-                if (double.IsNaN(value) || double.IsInfinity(value)) continue;
-                sample.Add(new KeyValuePair<string, double>(name, value));
-            }
-
-            detector.Feed((DateTime.UtcNow - _detectStart).TotalSeconds, sample);
-
-            if (detector.Phase != _detectShownPhase)
-            {
-                _detectShownPhase = detector.Phase;
-                switch (detector.Phase)
-                {
-                    case DetectPhase.Listening:
-                        // Sampling the whole property list is the expensive part;
-                        // after the baseline most names are pruned (non-numeric or
-                        // already moving) and during tracking only one is left.
-                        _detectNames = detector.SurvivingCandidates().ToList();
-                        axis.DetectStatus = "press the " + axis.Label.ToLowerInvariant() + " fully, then release…";
-                        break;
-                    case DetectPhase.Tracking:
-                        _detectNames = detector.SurvivingCandidates().ToList();
-                        axis.DetectStatus = "got " + detector.LatchedProperty + " — release…";
-                        break;
-                }
-            }
-
-            if (detector.Phase == DetectPhase.Done)
-            {
-                var d = detector.Result;
-                axis.ApplyDetection(d);
-                AppendLog(string.Format("{0} detected: {1}  range {2:0.###}..{3:0.###}{4}",
-                    axis.Label, d.PropertyName, d.InputMin, d.InputMax, d.Invert ? "  (inverted)" : ""));
-                CancelAxisDetect(null);
-            }
-            else if (detector.Phase == DetectPhase.Failed)
-            {
-                AppendLog(axis.Label + " detect failed: " + detector.FailureReason);
-                CancelAxisDetect(null);
-            }
-        }
 
         /// <summary>
         /// Streaming needs a connection, a firmware that implements the
@@ -796,7 +661,7 @@ namespace Fanadapter.SimHub.UI
                         : "Connect to the adapter first.";
                 }
                 if (!_session.SupportsDirectOutput) return "This firmware cannot be driven from the PC.";
-                if (!AxisSources.Any(a => a.IsConfigured)) return "Set a source property on at least one pedal.";
+                if (!AxisSources.Any(a => a.IsConfigured)) return "Set a source on at least one pedal.";
                 if (!IsStreaming) return "Idle — the adapter's own USB mapping is in control.";
 
                 var error = _plugin.Drive?.LastError;
@@ -824,34 +689,6 @@ namespace Fanadapter.SimHub.UI
             AxisSources.Add(new AxisSourceViewModel("brake", "Brake", drive.Brake, OnEdited));
             AxisSources.Add(new AxisSourceViewModel("clutch", "Clutch", drive.Clutch, OnEdited));
             AxisSources.Add(new AxisSourceViewModel("handbrake", "Handbrake", drive.Handbrake, OnEdited));
-        }
-
-        public void RefreshPropertyList()
-        {
-            AvailableProperties.Clear();
-
-            var pm = _plugin.PluginManager;
-            if (pm == null) return;
-
-            IEnumerable<string> names;
-            try { names = pm.GetAllPropertiesNames(); }
-            catch (Exception ex)
-            {
-                AppendLog("could not read SimHub's property list: " + ex.Message);
-                return;
-            }
-
-            if (!string.IsNullOrWhiteSpace(_propertyFilter))
-            {
-                names = names.Where(n => n.IndexOf(_propertyFilter, StringComparison.OrdinalIgnoreCase) >= 0);
-            }
-
-            // Capped because the unfiltered list is long enough to make the
-            // combo box unusable; the filter box is how you get to the rest.
-            foreach (var name in names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Take(500))
-            {
-                AvailableProperties.Add(name);
-            }
         }
 
         private void ToggleStreaming()
@@ -890,6 +727,7 @@ namespace Fanadapter.SimHub.UI
             OnPropertyChanged(nameof(IsStreaming));
             OnPropertyChanged(nameof(StreamingButtonText));
             OnPropertyChanged(nameof(StreamingStatus));
+            ToggleStreamingCommand.RaiseCanExecuteChanged();
         });
 
         // ---------- Drive feedback (did that shift actually happen?) ----------
@@ -990,7 +828,6 @@ namespace Fanadapter.SimHub.UI
         {
             ApplyPendingLive();
             PumpCapture();
-            PumpAxisDetect();
             RaiseOutputProperties();
             PumpDriveFeedback();
 
@@ -1013,9 +850,9 @@ namespace Fanadapter.SimHub.UI
         }
 
         /// <summary>
-        /// Pulls each configured pedal property and pushes it at the editors.
-        /// Four dictionary lookups per pass — the same properties the drive
-        /// stream itself reads at 100 Hz — so the cost is in the notifications,
+        /// Pulls each configured pedal source and pushes it at the editors.
+        /// The same source values the drive stream itself reads at 100 Hz —
+        /// so the cost is in the notifications,
         /// which is why the view model suppresses unchanged ones.
         /// </summary>
         private void UpdateAxisReadouts()
@@ -1028,7 +865,7 @@ namespace Fanadapter.SimHub.UI
                 {
                     // A property name that no longer exists throws rather than
                     // returning null in some SimHub builds.
-                    try { value = pm.GetPropertyValue(axis.PropertyName); }
+                    try { value = axis.ReadValue(pm); }
                     catch { value = null; }
                 }
                 axis.UpdateReadout(value);

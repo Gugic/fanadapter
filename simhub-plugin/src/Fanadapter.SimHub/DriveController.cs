@@ -255,7 +255,7 @@ namespace Fanadapter.SimHub
 
             if (!settings.HasConfiguredAxis())
             {
-                _log("pedal streaming is enabled, but no pedal has a source property");
+                _log("pedal streaming is enabled, but no pedal has a source");
                 return;
             }
 
@@ -370,7 +370,7 @@ namespace Fanadapter.SimHub
         {
             if (source == null || !source.IsConfigured) return null;
 
-            var scaled = source.Scale(pm.GetPropertyValue(source.PropertyName));
+            var scaled = source.Scale(AxisSourceReader.Read(pm, source));
             if (scaled == null) return null;
 
             _lastSent[index] = scaled; // keeps the settings-UI readout live
@@ -386,7 +386,7 @@ namespace Fanadapter.SimHub
         {
             if (source == null || !source.IsConfigured) return null;
 
-            var scaled = source.Scale(pm.GetPropertyValue(source.PropertyName));
+            var scaled = source.Scale(AxisSourceReader.Read(pm, source));
             if (scaled == null) return null;
 
             var previous = _lastSent[index];

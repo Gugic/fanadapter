@@ -1,12 +1,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
-using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.ExceptionServices;
 using System.Runtime.Serialization;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -15,6 +12,7 @@ using Fanadapter.Core;
 using Fanadapter.SimHub.UI;
 using Newtonsoft.Json.Linq;
 using Xunit;
+using static Fanadapter.SimHub.Tests.SimHubTestEnvironment;
 
 namespace Fanadapter.SimHub.Tests
 {
@@ -128,7 +126,7 @@ namespace Fanadapter.SimHub.Tests
                         notifications++;
                     };
                     rig.Plugin.Settings.Drive.AxisStreamingEnabled = true;
-                    rig.Plugin.Settings.Drive.Throttle.PropertyName = "TestThrottle";
+                    rig.Plugin.Settings.Drive.Throttle.AxisName = "TestThrottle";
                     rig.Pane.Attach(); // Must not subscribe twice.
 
                     PumpUntil(Task.Run(() => rig.Drive.ResumeIfEnabled()));
@@ -149,39 +147,6 @@ namespace Fanadapter.SimHub.Tests
             });
         }
 
-        private static void PumpUntil(Task work)
-        {
-            var dispatcher = Dispatcher.CurrentDispatcher;
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            do
-            {
-                var frame = new DispatcherFrame();
-                dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() => frame.Continue = false));
-                Dispatcher.PushFrame(frame);
-                if (DateTime.UtcNow > deadline) throw new TimeoutException("WPF test did not complete");
-                Thread.Yield();
-            } while (!work.IsCompleted);
-            work.GetAwaiter().GetResult();
-            var drain = new DispatcherFrame();
-            dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() => drain.Continue = false));
-            Dispatcher.PushFrame(drain);
-        }
-
-        private static void OnSta(Action action)
-        {
-            Exception failure = null;
-            var thread = new Thread(() =>
-            {
-                try { action(); }
-                catch (Exception ex) { failure = ex; }
-                finally { Dispatcher.CurrentDispatcher.InvokeShutdown(); }
-            }) { IsBackground = true };
-            thread.SetApartmentState(ApartmentState.STA);
-            thread.Start();
-            Assert.True(thread.Join(TimeSpan.FromSeconds(20)), "STA test timed out");
-            if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
-        }
-
         private sealed class Rig : IDisposable
         {
             private const BindingFlags PrivateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -190,16 +155,6 @@ namespace Fanadapter.SimHub.Tests
             public readonly MainViewModel Pane;
             public readonly ReplyTransport Pipe = new ReplyTransport();
             private readonly SerialClient _client;
-
-            static Rig()
-            {
-                var simHubDir = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "SimHubDir.txt")).Trim();
-                AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
-                {
-                    var path = Path.Combine(simHubDir, new AssemblyName(args.Name).Name + ".dll");
-                    return File.Exists(path) ? Assembly.LoadFrom(path) : null;
-                };
-            }
 
             public Rig()
             {
