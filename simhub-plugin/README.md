@@ -213,7 +213,9 @@ only after the component's build/tests pass, using immutable tags and assets:
 - Firmware: bump `FW_VER` in `firmware-stm32/src/firmware_info.h` when changing firmware.
 - Plugin: bump `VersionPrefix` in `simhub-plugin/Directory.Build.props` when changing the plugin.
 
-Existing version tags are never overwritten. A plugin-only change triggers no
+Existing version tags are never overwritten; CI rejects changed production code
+without its component version bump. Documentation/test changes can keep the version.
+A plugin-only change triggers no
 firmware build; app changes only rebuild Pages and reuse the released binary.
 Release packages contain the two DLLs plus README/license, with standalone DLLs
 and `SHA256SUMS` also available. SimHub dependencies come from its installation.

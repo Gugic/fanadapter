@@ -43,6 +43,25 @@ jobs:
           if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw "Invalid plugin version: $version" }
           "version=$version" >> $env:GITHUB_OUTPUT
 
+      - name: Require a new version for changed plugin code
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $tag = "simhub-v$env:PLUGIN_VERSION"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            git fetch --no-tags --depth=1 origin "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw "Could not fetch $tag" }
+            # git pathspecs are relative to this step's simhub-plugin directory.
+            git diff --quiet FETCH_HEAD HEAD -- src Directory.Build.props .simhub-version
+            if ($LASTEXITCODE -ne 0) { throw "Plugin code changed since $tag. Bump VersionPrefix in Directory.Build.props." }
+          }
+          # Missing release is expected for a new version.
+          exit 0
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'

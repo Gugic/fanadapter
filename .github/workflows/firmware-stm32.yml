@@ -47,6 +47,22 @@ jobs:
           [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Require a new version for changed firmware
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="firmware-v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            git fetch --no-tags --depth=1 origin "refs/tags/$TAG"
+            if ! git diff --quiet FETCH_HEAD HEAD -- firmware-stm32/src firmware-stm32/include \
+                firmware-stm32/platformio.ini firmware-stm32/apply_tinyusb_patches.py; then
+              echo "Firmware changed since $TAG. Bump FW_VER in firmware_info.h." >&2
+              exit 1
+            fi
+          fi
+
       # The platform + ARM toolchain download is ~1 GB; cache it keyed on the
       # build config so only a platformio.ini change re-downloads.
       - name: Cache PlatformIO packages
