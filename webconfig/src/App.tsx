@@ -38,6 +38,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { SerialClient, type ProtocolEvent } from '@/lib/serial'
+import { completeFirmwareUpdate } from '@/lib/firmwareUpdate'
 import {
   DfuseFlasher,
   fetchFirmwareImage,
@@ -311,14 +312,15 @@ export default function App() {
     return v
   }, [client])
 
-  const handleConnect = useCallback(async () => {
+  // Invoked directly from a Connect button so requestPort retains the user gesture.
+  // Let the caller report errors: the flash dialog must preserve a completed flash.
+  const handleConnectPicked = useCallback(async (): Promise<VersionInfo> => {
     try {
       setError(null)
       setStatus('Opening port…')
       await client.connect()
-      await initSession()
+      return await initSession()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
       setStatus('')
       try {
         await client.disconnect()
@@ -326,15 +328,24 @@ export default function App() {
         /* ignore */
       }
       setConnected(false)
+      throw e
     }
   }, [client, initSession])
+
+  const handleConnect = useCallback(async () => {
+    try {
+      await handleConnectPicked()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [handleConnectPicked])
 
   // Picker-free reconnect over a persisted port grant — the firmware-update flow's way back after
   // the flash reboot. Null = no granted port attached yet (the caller polls); throws only on a
   // real session failure after the port opened.
   const handleConnectGranted = useCallback(async (): Promise<VersionInfo | null> => {
-    if (!(await client.connectGranted())) return null
     try {
+      if (!(await client.connectGranted())) return null
       return await initSession()
     } catch (e) {
       try {
@@ -996,6 +1007,7 @@ export default function App() {
         version={version}
         onEnterBootloader={handleEnterBootloader}
         onReconnect={handleConnectGranted}
+        onConnect={handleConnectPicked}
       />
 
       <main className="container mx-auto max-w-5xl px-4 py-6">
@@ -1229,10 +1241,9 @@ function Header({
 
 // One-click update: fetch the deployed image → reboot the adapter into its ROM bootloader over
 // serial → find the DFU device via the persisted WebUSB grant → erase/write/leave → reconnect
-// over the persisted WebSerial grant → confirm the version. The only manual step that can exist
-// is Chromium's one-time-per-machine device picker (a security floor: requestDevice() needs a
-// fresh user gesture, and by the time we know the grant is missing the original click's
-// activation is spent) — it gets its own button, and every later update runs picker-free.
+// over the persisted WebSerial grant → confirm the version. Initial installation starts in ROM
+// DFU via BOOT0/RST and needs separate WebUSB and WebSerial grants. Each picker has its own
+// button for a fresh user gesture; a completed flash remains successful while serial setup waits.
 function FirmwareDialog({
   open,
   onClose,
@@ -1240,6 +1251,7 @@ function FirmwareDialog({
   version,
   onEnterBootloader,
   onReconnect,
+  onConnect,
 }: {
   open: boolean
   onClose: () => void
@@ -1247,17 +1259,21 @@ function FirmwareDialog({
   version: VersionInfo | null
   onEnterBootloader: () => Promise<void>
   onReconnect: () => Promise<VersionInfo | null>
+  onConnect: () => Promise<VersionInfo>
 }) {
-  type Stage = 'idle' | 'working' | 'needs-grant' | 'done' | 'error'
+  type Stage = 'idle' | 'working' | 'needs-grant' | 'needs-serial' | 'done' | 'error'
   const [stage, setStage] = useState<Stage>('idle')
   const [phase, setPhase] = useState('')
   const [progress, setProgress] = useState<FlashProgress | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
+  const [flashed, setFlashed] = useState(false)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
   const [newVersion, setNewVersion] = useState<string | null>(null)
   const [manifest, setManifest] = useState<FirmwareManifest | null>(null)
   const [localImage, setLocalImage] = useState<{ name: string; data: Uint8Array } | null>(null)
   // Stashed across the needs-grant pause so "pick device" can resume the same update.
   const pendingImageRef = useRef<Uint8Array | null>(null)
+  const connectedBeforeFlashRef = useRef(false)
 
   const isStm32 = version?.fw === 'fanadapter-stm32'
   const webusb = isWebUsbSupported()
@@ -1274,6 +1290,8 @@ function FirmwareDialog({
     if (open) {
       setStage('idle')
       setFailure(null)
+      setFlashed(false)
+      setConnectionError(null)
       setProgress(null)
       setNewVersion(null)
     }
@@ -1305,7 +1323,10 @@ function FirmwareDialog({
   }
 
   async function runUpdate() {
+    connectedBeforeFlashRef.current = connected
     setFailure(null)
+    setFlashed(false)
+    setConnectionError(null)
     setProgress(null)
     setStage('working')
     try {
@@ -1369,35 +1390,53 @@ function FirmwareDialog({
         await new Promise((r) => setTimeout(r, 1000))
       }
     }
-    try {
-      await flasher.flash(image, setProgress)
-    } finally {
-      await flasher.close()
-    }
-
-    // 4 · Back over serial, silently, on the persisted port grant.
-    setPhase('Waiting for the adapter…')
-    setProgress(null)
-    const deadline = Date.now() + 15000
-    for (;;) {
-      try {
-        const v = await onReconnect()
-        if (v) {
-          setNewVersion(v.ver)
-          setStage('done')
-          return
+    const result = await completeFirmwareUpdate({
+      flash: async () => {
+        try {
+          await flasher.flash(image, setProgress)
+        } finally {
+          await flasher.close()
         }
-      } catch {
-        /* port present but session bring-up failed — retry until deadline */
-      }
-      if (Date.now() >= deadline) {
-        fail(
-          'Flashed, but the adapter did not come back on its serial port within 15 s. ' +
-            'Check the connection and hit Connect manually.',
-        )
-        return
-      }
-      await new Promise((r) => setTimeout(r, 1000))
+      },
+      onFlashed: () => {
+        setFlashed(true)
+        pendingImageRef.current = null
+        setPhase('Firmware installed. Waiting for the adapter…')
+        setProgress(null)
+      },
+      reconnect: onReconnect,
+      // Existing connections have a known serial grant. A first install offers
+      // the picker after a brief enumeration window instead of a long futile wait.
+      timeoutMs: connectedBeforeFlashRef.current ? 15000 : 3000,
+    })
+    if (result.connected) {
+      setNewVersion(result.version.ver)
+      setStage('done')
+    } else {
+      setConnectionError(result.error)
+      setStage('needs-serial')
+    }
+  }
+
+  // WebSerial has a separate permission from the bootloader. This button only connects;
+  // cancellation/failure leaves the successful flash intact and never downloads or writes again.
+  async function connectAfterFlash() {
+    setConnectionError(null)
+    setPhase('Connecting to Fanadapter…')
+    setStage('working')
+    try {
+      const v = await onConnect()
+      setNewVersion(v.ver)
+      setStage('done')
+    } catch (e) {
+      setConnectionError(
+        e instanceof DOMException && e.name === 'NotFoundError'
+          ? 'No port selected. You can connect now or later.'
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      )
+      setStage('needs-serial')
     }
   }
 
@@ -1421,9 +1460,11 @@ function FirmwareDialog({
   const updateLabel = localImage
     ? `Flash ${localImage.name}`
     : manifest
-      ? connected && version && manifest.version !== version.ver
-        ? `Update to ${manifest.version}`
-        : `Reinstall ${manifest.version}`
+      ? !connected || !version
+        ? `Install ${manifest.version}`
+        : manifest.version !== version.ver
+          ? `Update to ${manifest.version}`
+          : `Reinstall ${manifest.version}`
       : 'Update'
   const canUpdate = webusb && (localImage !== null || manifest !== null) && (!connected || isStm32)
 
@@ -1472,18 +1513,41 @@ function FirmwareDialog({
                     : 'unavailable (dev build?)'}
                 </span>
               </div>
-              {!connected && (
+              {!connected && !flashed && stage === 'idle' && (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Not connected — updating anyway works if the board is already in bootloader mode.
+                  Fresh board? Connect its USB-C to the PC, hold BOOT0, tap RST, then release BOOT0.
+                  Choose Install below, then pick “STM32 BOOTLOADER” when prompted. On Windows, the
+                  bootloader needs the WinUSB driver. You can also use this to recover an
+                  interrupted update.
                 </p>
               )}
             </div>
 
-            {stage === 'needs-grant' ? (
+            {flashed && stage !== 'done' ? (
+              <div className="space-y-2">
+                <Alert>
+                  <CheckCircle2 className="h-4 w-4" />
+                  <AlertDescription>
+                    Firmware installed. Connect to Fanadapter to finish setup and confirm its
+                    version. The serial port uses a separate browser permission. If it isn't listed,
+                    check the USB-C connection and try again.
+                  </AlertDescription>
+                </Alert>
+                {connectionError && <p className="text-sm">Connection: {connectionError}</p>}
+                <Button size="sm" disabled={busy} onClick={() => void connectAfterFlash()}>
+                  {busy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plug className="h-4 w-4" />
+                  )}
+                  {busy ? phase : 'Connect to Fanadapter'}
+                </Button>
+              </div>
+            ) : stage === 'needs-grant' ? (
               <div className="space-y-2">
                 <p className="text-sm">
-                  First update on this machine: Chrome needs you to pick the bootloader device once.
-                  It's remembered — every later update runs hands-free.
+                  Chrome needs you to pick the bootloader device once. It remembers this bootloader
+                  permission for later flashes.
                 </p>
                 <Button size="sm" onClick={() => void grantAndContinue()}>
                   <HardDriveDownload className="h-4 w-4" />

@@ -135,9 +135,14 @@ Pages mirrors that release as `firmware/fanadapter-stm32.{json,bin}` beside the 
 cycle — `{"cmd":"dfu"}` reboots the adapter into its ROM bootloader, the DFU device (0483:df11) is
 found through the **persisted WebUSB grant**, `src/lib/dfu.ts` erases/writes/boots it over the
 DfuSe protocol, and the app reconnects through the **persisted WebSerial grant** and confirms the
-new version. The only manual step that can exist is Chromium's device picker on the very first
-update per machine (`requestDevice()` needs a fresh user gesture, so it lives on its own button);
-every later update is hands-free. Saved mappings live in a different flash bank than the code and
+new version. For a fresh board, connect USB-C, hold BOOT0, tap RST, then release BOOT0.
+Open **Flash** without connecting over serial, choose **Install**, and use **Pick STM32 BOOTLOADER**
+when prompted. After programming, the dialog reports **Firmware installed** and offers
+**Connect to Fanadapter** to grant the separate serial permission and confirm the version.
+Cancelling or retrying this connection never reflashes the board or turns a successful write
+into a failed update. Each picker has its own button because Chromium requires a fresh user
+gesture. Subsequent updates reuse both grants and reconnect automatically. Saved mappings live
+in a different flash bank than the code and
 survive. An expandable
 "local .bin" path covers dev builds (drop one in `webconfig/public/firmware/` to test the deployed
 flow locally — that dir is gitignored). On Windows the DFU device must have the WinUSB driver

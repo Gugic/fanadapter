@@ -160,6 +160,12 @@ python -m platformio run -d firmware-stm32 -e weact_h743 -t upload
 **First flash — the button dance.** Hold **BOOT0**, tap **RST**, release **BOOT0**. The board
 enumerates as `STM32 BOOTLOADER` (VID `0483` PID `df11`).
 
+This is ST's factory ROM bootloader; it works before fanadapter is installed, regardless of
+the board's demo firmware. In Chrome/Edge, open [webconfig](https://gugic.github.io/fanadapter/)
+and choose **Flash → Install**, without using Connect first. Pick **STM32 BOOTLOADER** when
+prompted. Once programming finishes, **Connect to Fanadapter** grants the new serial port
+permission and confirms the version. A cancelled connection leaves the firmware installed.
+
 **Every flash after that — hands-free.** Once fanadapter firmware is on the board, type `dfu` at
 the console (or send the JSON command `{"cmd":"dfu"}` — it's what webconfig's **Flash** button
 uses) and the board reboots into the ROM bootloader on the same USB-C port. No buttons, no cable
@@ -168,8 +174,8 @@ swapping. `reboot` restarts the app the same way.
 **No toolchain? Update from the browser.** webconfig's header has a **Flash** button opening a
 one-click updater: the deployed site carries the latest firmware build, and one press reboots the
 adapter into the bootloader, flashes over **WebUSB**, boots the result and reconnects — no
-PlatformIO, no dfu-util, no buttons. Chromium's device picker appears exactly once per machine
-(the WebUSB grant persists). CI also publishes the image as the `fanadapter-stm32-firmware`
+PlatformIO, no dfu-util, no buttons after the initial installation. Chromium remembers the
+separate bootloader and serial permissions per browser/origin. CI also publishes the image as the `fanadapter-stm32-firmware`
 artifact on the *Verify STM32 firmware* workflow for manual flashing. Windows caveat: WebUSB needs
 the WinUSB driver bound to `STM32 BOOTLOADER` — installing STM32CubeProgrammer (or a one-time
 Zadig run) sets that up; machines that have used dfu-util already have it.
