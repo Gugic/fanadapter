@@ -164,7 +164,7 @@ Two traps found while building it, both worth not repeating:
 
 1. **Bound these waits by wall-clock, never by iteration count.** The first version spun 20 000
    times, described in the comment as "~2 ms" — but 20 000 spins take ~3 ms while draining a
-   2 KB ring at 115200 takes ~175 ms. The guard expired with the ring still full, chunks were
+   2 KB ring at 115200 8E1 takes ~195 ms. The guard expired with the ring still full, chunks were
    dropped, `get_config` truncated, and every client timed out on connect. Same defect on the CDC
    leg from the other side: a "consecutive no-progress pumps" counter elapses in microseconds,
    while the host only polls the endpoint once per 1 ms frame. Now 50 ms (UART) and 20 ms (CDC).

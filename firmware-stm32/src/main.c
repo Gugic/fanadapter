@@ -312,7 +312,7 @@ static int console_emit(const char *buf, uint32_t len, bool lossy) {
   } else {
     // USB is not enumerated — USART1 IS the console (bring-up, CH340 bridge), so responses must arrive
     // intact: wait for room. Bounded by WALL-CLOCK, not iterations. An iteration count is
-    // meaningless here: 20k spins take ~3 ms while draining this ring at 115200 takes ~175 ms, so
+    // meaningless here: 20k spins take ~3 ms while draining this ring at 115200 8E1 takes ~195 ms, so
     // a count-based guard expired with the ring still full and silently dropped chunks — which
     // truncated get_config (~8 KB, streamed) and made every client time out on connect. One
     // chunk's worth of room appears in ~9 ms, so 50 ms is generous while still bounding a wedged
