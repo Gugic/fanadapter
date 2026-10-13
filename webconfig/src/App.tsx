@@ -1468,7 +1468,7 @@ function FirmwareDialog({
                 <span className="text-muted-foreground">Latest</span>
                 <span>
                   {manifest
-                    ? `${manifest.version} · ${manifest.commit}`
+                    ? `${manifest.version} · ${manifest.commit?.slice(0, 7) ?? ''}`
                     : 'unavailable (dev build?)'}
                 </span>
               </div>
