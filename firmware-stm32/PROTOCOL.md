@@ -66,7 +66,7 @@ Send single-line JSON objects over USB CDC or the USART1 console. Responses and 
 
 | Request Shape | Response / Effect |
 |---|---|
-| `{"cmd":"version"}` | `{"fw":"fanadapter-stm32","ver":"0.6.0","protocol":6,"max_bindings_per_channel":4}` |
+| `{"cmd":"version"}` | `{"fw":"fanadapter-stm32","ver":"0.6.1","protocol":6,"max_bindings_per_channel":4}` |
 | `{"cmd":"list_devices"}` | Returns a list of active USB host devices, showing VID, PID, the `manufacturer` / `product` USB string descriptors (empty string when the device reports none), and button/axis counts and `has_hat` / `has_keyboard` capabilities parsed from the HID report descriptor. |
 | `{"cmd":"get_config"}` | Returns the full `Config` JSON object (bindings, deadzones, gear DAC configurations, and `gearMode` = `"hold"` or `"latch"`). Each binding's `type` is one of `"none"`, `"button"`, `"axis"`, `"hat"`, `"key"`. For `"hat"`, `index` is the strict direction (`0`=N, `1`=NE, `2`=E, `3`=SE, `4`=S, `5`=SW, `6`=W, `7`=NW); for `"key"`, `index` is the HID Keyboard/Keypad scancode. |
 | `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Sets a specific binding slot. Channel keys: `gear_R`, `gear_1`..`gear_7`, `gear_N`, `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, `clutch`. Binding matches the `InputBinding` shape, including the `"hat"` and `"key"` types. |

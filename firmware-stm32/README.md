@@ -6,6 +6,15 @@ The board has a two-channel DAC for the H-pattern outputs, 2 MB of flash for fir
 
 See the [main README](../README.md), [RJ12 hardware reference](../schematics/README.md), and [protocol and calibration reference](PROTOCOL.md).
 
+Prebuilt images and their SHA-256 manifests are published as **firmware-vX.Y.Z**
+[GitHub Releases](https://github.com/Gugic/fanadapter/releases), independently of
+the SimHub plugin. Firmware source/build changes trigger its own CI; webconfig
+and plugin changes never rebuild it. Bump `FW_VER` in `src/firmware_info.h` for
+each firmware release. That one value also supplies the JSON version, boot banner,
+USB product and CDC interface labels (**Fanadapter vX.Y.Z**). USB identity stays
+`1209:FA00`, preserving existing COM numbers and browser grants. Clients filter
+connections by that identity, so the name is for display rather than matching.
+
 ---
 
 ## 1. What you need

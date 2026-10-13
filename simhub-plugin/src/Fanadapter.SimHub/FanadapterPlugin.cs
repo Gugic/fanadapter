@@ -1,9 +1,11 @@
 using System;
 using System.Linq;
+using System.Reflection;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Fanadapter.Core;
+using Fanadapter.Core.Updates;
 using GameReaderCommon;
 using SimHub.Plugins;
 
@@ -26,6 +28,14 @@ namespace Fanadapter.SimHub
     public class FanadapterPlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
         private const string SettingsKey = "GeneralSettings";
+        private static readonly object UpdateSync = new object();
+        private static PluginUpdateService s_updates;
+
+        public static string PluginVersion => typeof(FanadapterPlugin).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>().InformationalVersion;
+
+        /// <summary>Shared across End/Init at game change; disposed only when the process exits.</summary>
+        public PluginUpdateService Updates { get; private set; }
 
         public PluginManager PluginManager { get; set; }
 
@@ -53,6 +63,17 @@ namespace Fanadapter.SimHub
             global::SimHub.Logging.Current.Info("[Fanadapter] starting");
 
             Settings = this.ReadCommonSettings(SettingsKey, () => new PluginSettings());
+            lock (UpdateSync)
+            {
+                if (s_updates == null)
+                {
+                    s_updates = new PluginUpdateService(typeof(FanadapterPlugin).Assembly.Location, PluginVersion,
+                        line => global::SimHub.Logging.Current.Info("[Fanadapter] " + line));
+                    AppDomain.CurrentDomain.ProcessExit += (_, __) => s_updates.Dispose();
+                }
+                Updates = s_updates;
+            }
+            Updates.Configure(Settings.CheckPluginUpdatesAutomatically);
             AxisSourceReader.Initialize(Settings.Drive);
 
             Session.Outputs += o => _outputs = o;
@@ -152,6 +173,12 @@ namespace Fanadapter.SimHub
             {
                 try
                 {
+                    if (!PortLocator.IsAdapterPort(port))
+                    {
+                        global::SimHub.Logging.Current.Info(
+                            "[Fanadapter] saved port " + port + " is not an attached Fanadapter; auto-connect skipped.");
+                        return;
+                    }
                     await Session.ConnectAsync(port);
                     global::SimHub.Logging.Current.Info("[Fanadapter] connected on " + port);
                 }

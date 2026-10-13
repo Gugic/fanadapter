@@ -11,6 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="System.Net.Http" />
     <ProjectReference Include="..\..\src\Fanadapter.Core\Fanadapter.Core.csproj" />
   </ItemGroup>
 

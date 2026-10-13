@@ -6,6 +6,7 @@
     <DebugType>embedded</DebugType>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="System.Net.Http" />
     <ProjectReference Include="..\..\src\Fanadapter.SimHub\Fanadapter.SimHub.csproj" />
     <Reference Include="SimHub.Plugins">
       <HintPath>$(SimHubDir)SimHub.Plugins.dll</HintPath>

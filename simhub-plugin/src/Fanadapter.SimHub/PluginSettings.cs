@@ -14,10 +14,13 @@ namespace Fanadapter.SimHub
         /// <summary>Connect on plugin start without waiting for the user.</summary>
         public bool AutoConnect { get; set; } = true;
 
+        /// <summary>Check stable plugin releases at startup and every six hours; installation is user initiated.</summary>
+        public bool CheckPluginUpdatesAutomatically { get; set; } = true;
+
         /// <summary>
         /// Where the firmware updater looks for the published build. Null/empty = the canonical
-        /// GitHub Pages deploy (<see cref="FirmwareChannel.DefaultBaseUrl"/>); forks running
-        /// their own Pages set this to theirs.
+        /// GitHub Releases channel (<see cref="FirmwareChannel.DefaultBaseUrl"/>); forks
+        /// hosting a manifest/binary mirror can set this to their site base URL.
         /// </summary>
         public string FirmwareUrl { get; set; }
 

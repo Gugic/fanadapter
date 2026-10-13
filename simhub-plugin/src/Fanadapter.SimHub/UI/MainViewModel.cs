@@ -70,7 +70,8 @@ namespace Fanadapter.SimHub.UI
             // Reconnect after the flash goes through ConnectAsync so the port gets remembered and
             // telemetry re-enabled exactly like a manual connect.
             Firmware = new FirmwareUpdateViewModel(
-                _session, plugin.Settings.FirmwareUrl, AppendLog, RunOnUi, ConnectAsync);
+                _session, plugin.Settings.FirmwareUrl, AppendLog, RunOnUi, ReconnectFirmwareAsync);
+            PluginUpdates = new PluginUpdateViewModel(plugin.Updates, plugin.Settings, plugin.SaveSettings, AppendLog, RunOnUi);
             _ = Firmware.RefreshManifestAsync();
 
             // Live input runs at ~60 Hz on Normal priority. Coalescing frames to
@@ -156,6 +157,7 @@ namespace Fanadapter.SimHub.UI
         public bool SupportsDirectOutput => _session.SupportsDirectOutput;
 
         public FirmwareUpdateViewModel Firmware { get; }
+        public PluginUpdateViewModel PluginUpdates { get; }
 
         public RelayCommand ConnectCommand { get; }
         public RelayCommand DisconnectCommand { get; }
@@ -175,12 +177,19 @@ namespace Fanadapter.SimHub.UI
                            ?? Ports.FirstOrDefault();
         }
 
+        private Task ReconnectFirmwareAsync(string portName) => _dispatcher.InvokeAsync(() =>
+        {
+            RefreshPorts();
+            SelectedPort = Ports.FirstOrDefault(p => p.PortName == portName);
+            return ConnectAsync();
+        }).Task.Unwrap();
+
         public async Task ConnectAsync()
         {
             var port = SelectedPort;
             if (port == null)
             {
-                AppendLog("No serial ports found.");
+                AppendLog("No Fanadapter found. Connect its USB-C port and refresh the list.");
                 return;
             }
 
@@ -1217,6 +1226,7 @@ namespace Fanadapter.SimHub.UI
         {
             if (_attached) return;
             _attached = true;
+            PluginUpdates.Attach();
 
             _session.StateChanged += OnSessionStateChanged;
             _session.LogLine += OnLogLine;
@@ -1239,6 +1249,7 @@ namespace Fanadapter.SimHub.UI
         {
             if (!_attached) return;
             _attached = false;
+            PluginUpdates.Detach();
 
             _liveTimer.Stop();
             _slowTimer.Stop();

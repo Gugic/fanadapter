@@ -6,11 +6,15 @@ on:
     paths:
       - 'simhub-plugin/**'
       - '.github/workflows/simhub-plugin.yml'
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
       - 'simhub-plugin/**'
       - '.github/workflows/simhub-plugin.yml'
+
+permissions:
+  contents: read
 
 concurrency:
   group: simhub-plugin-${{ github.ref }}
@@ -21,12 +25,23 @@ jobs:
     # The plugin targets .NET Framework 4.8 and compiles against SimHub's own
     # assemblies, so this job can't run on Linux.
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         working-directory: simhub-plugin
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Read the plugin version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content Directory.Build.props -Raw
+          $version = [string]$props.Project.PropertyGroup.VersionPrefix
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw "Invalid plugin version: $version" }
+          "version=$version" >> $env:GITHUB_OUTPUT
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -71,7 +86,7 @@ jobs:
           $setup = Get-ChildItem -Path $work -Filter 'SimHubSetup*.exe' -Recurse | Select-Object -First 1
           if (-not $setup) { throw "No SimHubSetup*.exe inside $zip" }
 
-          $p = Start-Process -FilePath $setup.FullName -Wait -PassThru -ArgumentList @(
+          $p = Start-Process -FilePath $setup.FullName -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
             '/VERYSILENT', '/SP-', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir")
           if ($p.ExitCode -ne 0) { throw "SimHub installer exited $($p.ExitCode)" }
 
@@ -97,10 +112,59 @@ jobs:
       - name: Test
         run: dotnet test FanadapterSimHub.sln -c Release --no-build
 
+      - name: Package the plugin
+        shell: pwsh
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $stage = 'artifacts/package'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          foreach ($name in @('Fanadapter.Core.dll', 'Fanadapter.SimHub.dll')) {
+            $source = "src/Fanadapter.SimHub/bin/Release/net48/$name"
+            $actual = (Get-Item -LiteralPath $source).VersionInfo.FileVersion
+            if ($actual -ne "${env:PLUGIN_VERSION}.0") { throw "Unexpected $name version: $actual" }
+            Copy-Item -LiteralPath $source -Destination $stage
+            Copy-Item -LiteralPath $source -Destination artifacts
+          }
+          Copy-Item -LiteralPath README.md -Destination $stage
+          Copy-Item -LiteralPath ../LICENSE.md -Destination $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "artifacts/fanadapter-simhub-$env:PLUGIN_VERSION.zip"
+          Get-ChildItem artifacts -File | ForEach-Object {
+            "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content -LiteralPath artifacts/SHA256SUMS -Encoding utf8
+
       - uses: actions/upload-artifact@v4
         with:
           name: fanadapter-simhub-plugin
           path: |
-            simhub-plugin/src/Fanadapter.SimHub/bin/Release/net48/Fanadapter.SimHub.dll
-            simhub-plugin/src/Fanadapter.SimHub/bin/Release/net48/Fanadapter.Core.dll
+            simhub-plugin/artifacts/*.dll
+            simhub-plugin/artifacts/*.zip
+            simhub-plugin/artifacts/SHA256SUMS
           if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fanadapter-simhub-plugin
+          path: release
+      - name: Publish an immutable plugin release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          TAG="simhub-v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG is already published; bump VersionPrefix for a new release." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release create "$TAG" release/*.dll release/*.zip release/SHA256SUMS \
+            --target "$COMMIT" --title "Fanadapter SimHub plugin $VERSION" --generate-notes --latest=false

@@ -27,6 +27,7 @@
 #include "tusb.h"
 
 #include "mapping.h"
+#include "firmware_info.h"
 #include "outputs.h"
 #include "pedals.h"
 #include "protocol.h"
@@ -421,7 +422,7 @@ int console_event_printf(const char *fmt, ...) {
 
 static void print_banner(void) {
   console_printf("\r\n========================================\r\n");
-  console_printf("  fanadapter STM32H743 USB host enumerator\r\n");
+  console_printf("  " USB_PRODUCT_NAME " (STM32H743)\r\n");
   console_printf("  host    = OTG_HS / rhport1 (PB14/PB15 header -> powered hub -> devices)\r\n");
   console_printf("  console = USB CDC on OTG_FS (on-board USB-C, also DFU)  +  USART1 PA9/PA10 8E1\r\n");
   console_printf("  CLI: 'dfu' -> ROM bootloader (hands-free flash) | 'reboot' | '?'\r\n");

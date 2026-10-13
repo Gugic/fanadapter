@@ -4,13 +4,23 @@ on:
   push:
     branches: [main]
     paths:
-      - 'firmware-stm32/**'
+      - 'firmware-stm32/src/**'
+      - 'firmware-stm32/include/**'
+      - 'firmware-stm32/platformio.ini'
+      - 'firmware-stm32/apply_tinyusb_patches.py'
       - '.github/workflows/firmware-stm32.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'firmware-stm32/**'
+      - 'firmware-stm32/src/**'
+      - 'firmware-stm32/include/**'
+      - 'firmware-stm32/platformio.ini'
+      - 'firmware-stm32/apply_tinyusb_patches.py'
       - '.github/workflows/firmware-stm32.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: firmware-stm32-${{ github.ref }}
@@ -25,8 +35,17 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Read the firmware version
+        id: version
+        run: |
+          VERSION=$(sed -n 's/^#define FW_VER *"\(.*\)"/\1/p' firmware-stm32/src/firmware_info.h)
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       # The platform + ARM toolchain download is ~1 GB; cache it keyed on the
       # build config so only a platformio.ini change re-downloads.
@@ -42,13 +61,59 @@ jobs:
       - name: Build (weact_h743)
         run: platformio run -d firmware-stm32 -e weact_h743
 
-      # The artifact is what webconfig's Flash dialog consumes: firmware.bin
-      # carries a 16-byte dfu-suffix (for dfu-util matching) which the web
-      # flasher strips before writing. Grab it from any run of this workflow —
-      # a release pipeline can be layered on later.
+      - name: Package the image and manifest
+        env:
+          FIRMWARE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python - <<'PY'
+          import datetime, hashlib, json, os, pathlib, shutil
+          build = pathlib.Path('firmware-stm32/.pio/build/weact_h743')
+          image = build / 'fanadapter-stm32.bin'
+          shutil.copyfile(build / 'firmware.bin', image)
+          data = image.read_bytes()
+          version = os.environ['FIRMWARE_VERSION']
+          base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}"
+          tag = 'firmware-v' + version
+          manifest = dict(version=version, commit=os.environ['GITHUB_SHA'],
+                          builtAt=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                          size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                          releaseUrl=base + '/releases/tag/' + tag,
+                          downloadUrl=base + '/releases/download/' + tag + '/fanadapter-stm32.bin')
+          (build / 'fanadapter-stm32.json').write_text(json.dumps(manifest) + '\n')
+          PY
+
       - name: Upload flashable image
         uses: actions/upload-artifact@v4
         with:
           name: fanadapter-stm32-firmware
-          path: firmware-stm32/.pio/build/weact_h743/firmware.bin
+          path: |
+            firmware-stm32/.pio/build/weact_h743/fanadapter-stm32.bin
+            firmware-stm32/.pio/build/weact_h743/fanadapter-stm32.json
           if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fanadapter-stm32-firmware
+          path: release
+      - name: Publish an immutable firmware release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          TAG="firmware-v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG is already published; bump FW_VER for a new release." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release create "$TAG" release/fanadapter-stm32.bin release/fanadapter-stm32.json \
+            --target "$COMMIT" --title "Fanadapter firmware $VERSION" --generate-notes --latest=false

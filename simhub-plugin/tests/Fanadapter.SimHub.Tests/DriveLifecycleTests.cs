@@ -174,6 +174,8 @@ namespace Fanadapter.SimHub.Tests
                 Set(Pane, "_session", Plugin.Session);
                 Set(Pane, "_dispatcher", Dispatcher.CurrentDispatcher);
                 Set(Pane, "_lastOutputs", new OutputsState { Gear = "gear_N" });
+                Set(Pane, "<PluginUpdates>k__BackingField", new PluginUpdateViewModel(null, Plugin.Settings,
+                    () => { }, _ => { }, action => action()));
                 foreach (var field in typeof(MainViewModel).GetFields(PrivateInstance))
                 {
                     if (field.FieldType.IsGenericType && field.FieldType.GetGenericTypeDefinition() == typeof(ObservableCollection<>))

@@ -9,7 +9,7 @@
     <SimHubDir Condition="'$(SimHubDir)' == ''">C:\Program Files (x86)\SimHub\</SimHubDir>
 
     <LangVersion>latest</LangVersion>
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>0.1.1</VersionPrefix>
     <Company>fanadapter</Company>
     <Product>Fanadapter for SimHub</Product>
 

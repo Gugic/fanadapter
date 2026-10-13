@@ -12,7 +12,11 @@ When this repository is pushed to `main`, a GitHub Actions workflow automaticall
 
 - **Canonical URL:** [gugic.github.io/fanadapter](https://gugic.github.io/fanadapter/)
 
-For a fork, enable Pages in **Settings → Pages → Build and deployment → Source: GitHub Actions**, then run `.github/workflows/pages.yml` or push app/firmware changes to `main`. The deploy also publishes the firmware manifest and binary used by both clients.
+For a fork, enable Pages in **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+Publish the firmware release first with `.github/workflows/firmware-stm32.yml`, then
+run `.github/workflows/pages.yml`. App changes deploy Pages; a successful firmware
+release also redeploys it. Pages copies the immutable release manifest and binary
+without compiling firmware. Plugin changes trigger neither Pages nor firmware builds.
 
 > [!NOTE]
 > **Browser Compatibility:** WebSerial is currently only supported in desktop Chromium-based browsers (Google Chrome, Microsoft Edge, Brave, Opera). It will not work on mobile browsers or on desktop Firefox/Safari.
@@ -56,6 +60,10 @@ under repository control. `npm audit` shows the full unfiltered report; other hi
 advisories still fail CI.
 
 When running `npm run dev`, Vite will serve the application at `http://localhost:5173/fanadapter/`. Open this URL in Chrome, Edge, or Brave, click **Connect**, and choose the adapter's USB serial (CDC) device from the browser permission pop-up.
+
+Connect and saved-grant reconnection accept only USB identity `1209:FA00`.
+Firmware 0.6.1+ advertises **Fanadapter v0.6.1** (using its actual version).
+Older native firmware works too; unrelated COM devices and USB-UART bridges are hidden.
 
 ### Custom Subfolder Deployment
 
@@ -119,8 +127,10 @@ Because multiple UI modules can request details from the adapter simultaneously,
 
 ### Firmware updates (STM32 adapters)
 
-The header's **Flash** button opens a one-click updater: the Pages deploy builds the STM32
-firmware and publishes `firmware/fanadapter-stm32.{json,bin}` beside the app, so the dialog shows
+The header's **Flash** button opens a one-click updater: firmware is published separately in
+**firmware-v** [GitHub Releases](https://github.com/Gugic/fanadapter/releases).
+Pages mirrors that release as `firmware/fanadapter-stm32.{json,bin}` beside the app
+(release download URLs don't support browser CORS). Size and SHA-256 are verified before flashing, so the dialog shows
 "Installed vs Latest" from a same-origin fetch and a single **Update** press then runs the whole
 cycle — `{"cmd":"dfu"}` reboots the adapter into its ROM bootloader, the DFU device (0483:df11) is
 found through the **persisted WebUSB grant**, `src/lib/dfu.ts` erases/writes/boots it over the

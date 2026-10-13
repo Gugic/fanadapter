@@ -5,10 +5,13 @@ on:
     branches: [main]
     paths:
       - 'webconfig/**'
-      # The deployed site carries the latest STM32 firmware image for the in-browser updater, so
-      # firmware changes must redeploy the site too or webconfig would offer a stale "latest".
-      - 'firmware-stm32/**'
       - '.github/workflows/pages.yml'
+  # GITHUB_TOKEN-created releases don't trigger release workflows. Wait for the
+  # independent firmware publisher, then mirror its immutable release assets.
+  workflow_run:
+    workflows: ['Verify STM32 firmware & publish flashable image']
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -22,12 +25,18 @@ concurrency:
 
 jobs:
   build:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: webconfig
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: main
 
       - uses: actions/setup-node@v5
         with:
@@ -40,32 +49,35 @@ jobs:
       - run: npm run lint
       - run: npm run build
 
-      # ---- STM32 firmware, published beside the app for the in-browser updater ----
-      # webconfig's Firmware-update dialog fetches firmware/fanadapter-stm32.{json,bin} same-origin
-      # and flashes over WebUSB, so the Pages deploy doubles as the firmware release channel.
-      - name: Cache PlatformIO packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.platformio
-          key: platformio-${{ runner.os }}-${{ hashFiles('firmware-stm32/platformio.ini') }}
-
-      - name: Build STM32 firmware
+      # GitHub release downloads don't allow browser CORS. This is a same-origin
+      # copy of a verified release, never a second firmware build.
+      - name: Mirror the published firmware release
         working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          pip install platformio==6.1.19
-          platformio run -d firmware-stm32 -e weact_h743
-
-      - name: Publish firmware image + manifest into the site
-        working-directory: ${{ github.workspace }}
-        run: |
-          mkdir -p webconfig/dist/firmware
-          cp firmware-stm32/.pio/build/weact_h743/firmware.bin webconfig/dist/firmware/fanadapter-stm32.bin
-          VERSION=$(sed -n 's/^#define FW_VER *"\(.*\)"/\1/p' firmware-stm32/src/protocol.c)
-          SIZE=$(stat -c%s webconfig/dist/firmware/fanadapter-stm32.bin)
-          printf '{"version":"%s","commit":"%s","builtAt":"%s","size":%s}\n' \
-            "$VERSION" "${GITHUB_SHA::7}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SIZE" \
-            > webconfig/dist/firmware/fanadapter-stm32.json
-          cat webconfig/dist/firmware/fanadapter-stm32.json
+          VERSION=$(sed -n 's/^#define FW_VER *"\(.*\)"/\1/p' firmware-stm32/src/firmware_info.h)
+          test -n "$VERSION"
+          TAG="firmware-v$VERSION"
+          # A push changing both app and firmware may start Pages before the
+          # first release finishes. Later app deploys reuse it immediately.
+          for attempt in $(seq 1 36); do
+            if gh release view "$TAG" >/dev/null 2>&1; then break; fi
+            if [ "$attempt" -eq 36 ]; then echo "Missing published release $TAG" >&2; exit 1; fi
+            sleep 10
+          done
+          gh release download "$TAG" --dir webconfig/dist/firmware \
+            --pattern fanadapter-stm32.json --pattern fanadapter-stm32.bin
+          FIRMWARE_VERSION="$VERSION" python - <<'PY'
+          import hashlib, json, os, pathlib
+          directory = pathlib.Path('webconfig/dist/firmware')
+          manifest = json.loads((directory / 'fanadapter-stm32.json').read_text())
+          data = (directory / 'fanadapter-stm32.bin').read_bytes()
+          assert manifest['version'] == os.environ['FIRMWARE_VERSION'], 'Wrong firmware version'
+          assert manifest['size'] == len(data), 'Wrong firmware size'
+          assert manifest['sha256'] == hashlib.sha256(data).hexdigest(), 'Wrong firmware checksum'
+          PY
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

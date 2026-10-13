@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "firmware_info.h"
 #include "input_source.h"
 #include "json_min.h"
 #include "mapping.h"
@@ -21,8 +22,6 @@ extern int console_event_printf(const char *fmt, ...);
 extern int console_event_write(const char *s);
 
 #define PROTO_VERSION    6 // 6: stream_axes (no-reply set_outputs variant for the PC pedal path)
-#define FW_NAME          "fanadapter-stm32"
-#define FW_VER           "0.6.0"
 #define LIVE_PERIOD_MS    33u // ~30 Hz; the console is the bottleneck (USART1 @115200 8E1)
 #define OUTPUTS_PERIOD_MS 33u
 #define MAX_GLOBAL_SLOTS  16u

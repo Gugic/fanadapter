@@ -6,11 +6,17 @@
 
 import type { Config, DeviceSlot, OutputsEvent, VersionInfo } from './types'
 
-// No port-picker VID filter. The firmware can arrive over STM32 native CDC
-// (pid.codes 0x1209), or an external USB-UART bridge (e.g. a WCH CH340 carrying USART1 — and bridge
-// chips vary by VID/PID/brand, e.g. CH340K is 0x1a86/0x7522). Rather than chase an allowlist that can
-// silently exclude a valid bridge, show ALL serial ports and let the user pick — the device label
-// (e.g. "USB-SERIAL CH340K (COM16)") makes the right one obvious.
+// Stable native CDC identity from firmware-stm32/src/firmware_info.h. Product/interface strings
+// show "Fanadapter v<version>"; WebSerial filters by USB IDs, so older adapter labels still work.
+const ADAPTER_FILTER = { usbVendorId: 0x1209, usbProductId: 0xfa00 }
+
+function isAdapterPort(port: SerialPort): boolean {
+  const info = port.getInfo()
+  return (
+    info.usbVendorId === ADAPTER_FILTER.usbVendorId &&
+    info.usbProductId === ADAPTER_FILTER.usbProductId
+  )
+}
 
 export type ProtocolEvent =
   | { type: 'log'; line: string }
@@ -97,25 +103,22 @@ export class SerialClient {
         'WebSerial is not supported in this browser. Use Chrome, Edge, or Brave on desktop.',
       )
     }
-    const port = await navigator.serial.requestPort()
+    const port = await navigator.serial.requestPort({ filters: [ADAPTER_FILTER] })
+    if (!isAdapterPort(port)) throw new Error('The selected port is not a Fanadapter.')
     await this.openPort(port)
   }
 
   /**
    * Reconnect without the port picker, using a previously-granted port — WebSerial grants persist
    * per origin+device, so after the first Connect this can reopen the adapter silently. Used by
-   * the firmware-update flow to come back up after the flash reboot. Prefers the STM32 native CDC
-   * (1209:FA00) when identifiable, else a sole granted port; returns false when nothing granted is
+   * the firmware-update flow to come back up after the flash reboot. Only uses native CDC
+   * (1209:FA00), including older firmware labels; returns false when no granted adapter is
    * currently attached (caller keeps polling — the board may still be re-enumerating).
    */
   async connectGranted(): Promise<boolean> {
     if (!this.isSupported()) return false
     const ports = await navigator.serial.getPorts()
-    const stm32 = ports.find((p) => {
-      const info = p.getInfo()
-      return info.usbVendorId === 0x1209 && info.usbProductId === 0xfa00
-    })
-    const port = stm32 ?? (ports.length === 1 ? ports[0] : undefined)
+    const port = ports.find(isAdapterPort)
     if (!port) return false
     await this.openPort(port)
     return true

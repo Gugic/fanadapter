@@ -32,6 +32,7 @@ driving.
 
 ## Install
 
+Download the ZIP from the latest **simhub-v** [GitHub release](https://github.com/Gugic/fanadapter/releases).
 Drop `Fanadapter.SimHub.dll` and `Fanadapter.Core.dll` into the SimHub folder
 and restart it. SimHub asks whether to enable the new plugin on first start; say
 yes, and **Fanadapter** appears in the left menu.
@@ -49,9 +50,10 @@ open, so installing over a running SimHub fails with a file lock.
 
 ### Connecting
 
-The port list ranks likely adapters first (the STM32's native CDC at
-`1209:FA00`, a CH340 bridge at `1A86`) but never hides
-anything, so an unrecognised USB-UART bridge is still selectable. Connect, and
+The port list shows only the adapter's native USB-C CDC device (`1209:FA00`).
+Firmware 0.6.1+ supplies the label **Fanadapter v0.6.1 (COMx)** (with its actual
+firmware version); older native firmware remains selectable by USB identity.
+Unrelated serial devices and USB-UART bridges are excluded. Connect, and
 the header shows which firmware answered. The chosen port is remembered and
 reconnected on the next start.
 
@@ -180,8 +182,8 @@ is what makes them survive a power cycle.
 ### Firmware updates
 
 **Update firmware** in the ADAPTER section runs the whole cycle on its own:
-downloads the latest published build (the same one webconfig serves, from the
-project's GitHub Pages deploy), reboots the adapter into its ROM bootloader,
+downloads the latest **firmware-v** GitHub release directly, verifies its size
+and SHA-256 (webconfig mirrors the identical release on Pages), reboots the adapter into its ROM bootloader,
 flashes it over WinUSB, waits for the serial port to come back and reconnects.
 No buttons on the board, no device picker, no toolchain — saved mappings live
 in a separate flash bank and survive. Also works with no connection when the
@@ -192,6 +194,29 @@ Windows needs the WinUSB driver bound to `STM32 BOOTLOADER` (installing
 STM32CubeProgrammer or one Zadig run does it; any machine where `dfu-util`
 works already has it). Forks hosting their own Pages deploy can point the
 updater elsewhere via the `FirmwareUrl` plugin setting. The update button requires firmware that supports ROM DFU entry.
+
+### Plugin updates
+
+The **PLUGIN UPDATES** section checks stable **simhub-v** releases on startup
+and every six hours. Automatic checks can be disabled. **Install update** downloads
+and validates both DLLs (GitHub asset SHA-256, assembly name and version) before
+replacing them, then asks you to restart SimHub. Checks and downloads run outside
+the pedal loop; game changes and pane navigation don't discard a pending update.
+Backups allow a failed second replacement to restore the first DLL. If the process
+stops midway, the next startup restores the previous pair and asks for another restart.
+An unwritable plugin folder requires a manual install or an elevated SimHub process.
+The first installation of this updater is manual, using the release ZIP above.
+
+Firmware and plugin versions are independent. Their workflows publish on `main`
+only after the component's build/tests pass, using immutable tags and assets:
+
+- Firmware: bump `FW_VER` in `firmware-stm32/src/firmware_info.h` when changing firmware.
+- Plugin: bump `VersionPrefix` in `simhub-plugin/Directory.Build.props` when changing the plugin.
+
+Existing version tags are never overwritten. A plugin-only change triggers no
+firmware build; app changes only rebuild Pages and reuse the released binary.
+Release packages contain the two DLLs plus README/license, with standalone DLLs
+and `SHA256SUMS` also available. SimHub dependencies come from its installation.
 
 ## Build
 

@@ -1,18 +1,10 @@
-// USB *device* descriptors for the CDC serial console exposed on the OTG_HS port
-// (PB14/PB15 = rhport 1). On a board where OTG_HS is broken out as a real USB connector,
-// plugging the host PC into it makes the firmware's device-enumeration log show up as a
-// COM port — the recommended, bridge-free console for the open-source build. (On the
-// FK743M3 bring-up board OTG_HS is unwired, so this never enumerates and the parallel
-// USART1 console in main.c carries the same output instead.)
-//
-// The wheel devices themselves are handled by the *host* stack on OTG_FS (rhport 0).
+// USB device descriptors for the CDC console on OTG_FS (on-board USB-C, rhport 0).
+// The powered hub uses the separate OTG_HS host on PB14/PB15 (rhport 1).
 
 #include <string.h>
 #include "tusb.h"
+#include "firmware_info.h"
 
-// Open-source VID/PID block (pid.codes). Fine for a dev console.
-#define USB_VID 0x1209
-#define USB_PID 0xFA00
 #define USB_BCD 0x0200
 
 //--------------------------------------------------------------------
@@ -75,12 +67,13 @@ enum { STRID_LANGID = 0, STRID_MANUFACTURER, STRID_PRODUCT, STRID_SERIAL, STRID_
 static char const *string_desc_arr[] = {
     [STRID_LANGID]       = (const char[]){0x09, 0x04}, // English (0x0409)
     [STRID_MANUFACTURER] = "fanadapter",
-    [STRID_PRODUCT]      = "Fanadapter STM32 enumerator",
+    [STRID_PRODUCT]      = USB_PRODUCT_NAME,
     [STRID_SERIAL]       = "0001",
-    [STRID_CDC_ITF]      = "fanadapter console",
+    [STRID_CDC_ITF]      = USB_PRODUCT_NAME,
 };
 
 static uint16_t _desc_str[32];
+_Static_assert(sizeof(USB_PRODUCT_NAME) <= 32, "USB product name must fit the string descriptor");
 
 uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
   (void)langid;

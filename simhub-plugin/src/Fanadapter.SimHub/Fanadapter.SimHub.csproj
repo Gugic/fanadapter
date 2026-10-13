@@ -55,6 +55,7 @@
   <ItemGroup>
     <Reference Include="System.Xaml" />
     <Reference Include="System.Management" />
+    <Reference Include="System.Net.Http" />
   </ItemGroup>
 
   <ItemGroup>

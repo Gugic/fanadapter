@@ -68,6 +68,31 @@
                 </StackPanel>
             </styles:SHSection>
 
+            <styles:SHSection Title="PLUGIN UPDATES" ShowSeparator="True">
+                <StackPanel>
+                    <TextBlock Text="{Binding PluginUpdates.InstalledText}" Margin="0,0,0,4" />
+                    <CheckBox Content="Check for plugin updates automatically"
+                              IsChecked="{Binding PluginUpdates.AutomaticChecks}" Margin="0,0,0,8" />
+                    <StackPanel Orientation="Horizontal">
+                        <styles:SHButtonSecondary Command="{Binding PluginUpdates.CheckCommand}">Check for updates</styles:SHButtonSecondary>
+                        <styles:SHButtonPrimary Command="{Binding PluginUpdates.InstallCommand}"
+                                              Margin="8,0,0,0">Install plugin update</styles:SHButtonPrimary>
+                        <styles:SHButtonSecondary Command="{Binding PluginUpdates.ReleaseNotesCommand}"
+                                                  Margin="8,0,0,0">Open release notes</styles:SHButtonSecondary>
+                    </StackPanel>
+                    <TextBlock Text="{Binding PluginUpdates.StatusText}" TextWrapping="Wrap" Margin="0,8,0,2" />
+                    <TextBlock Text="{Binding PluginUpdates.LastCheckedText}" Opacity="0.7" />
+                    <TextBlock Text="Restart SimHub to load the installed plugin update."
+                               FontWeight="Bold" Margin="0,6,0,0"
+                               Visibility="{Binding PluginUpdates.RestartRequired, Converter={StaticResource BoolToVisibility}}" />
+                    <Expander Header="Release notes" Margin="0,6,0,0">
+                        <ScrollViewer MaxHeight="180">
+                            <TextBlock Text="{Binding PluginUpdates.ReleaseNotes}" TextWrapping="Wrap" />
+                        </ScrollViewer>
+                    </Expander>
+                </StackPanel>
+            </styles:SHSection>
+
             <styles:SHTabControl>
                 <styles:SHTabItem Header="SimHub drive">
                     <StackPanel Margin="8">

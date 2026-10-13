@@ -164,12 +164,47 @@ namespace Fanadapter.Core.Tests
         [Theory]
         [InlineData(0x1209, 0xFA00, true)]  // STM32 native CDC
         [InlineData(0x16C0, 0x0483, false)] // Unrecognized USB identity
-        [InlineData(0x1A86, 0x7522, true)]  // CH340K bridge
+        [InlineData(0x1A86, 0x7522, false)] // Generic CH340K bridge
         [InlineData(0x1209, 0x0001, false)] // pid.codes, but not ours
-        [InlineData(0x0403, 0x6001, false)] // FTDI — selectable, just not ranked
+        [InlineData(0x0403, 0x6001, false)] // Generic FTDI bridge
+        [InlineData(0x0483, 0xDF11, false)] // ROM DFU is not the app's serial port
         public void RecognisesKnownAdapterIdentities(int vid, int pid, bool expected)
         {
             Assert.Equal(expected, PortLocator.IsKnown(vid, pid));
+        }
+
+        [Fact]
+        public void OnlyExactAdapterIdentitiesAreOfferedRegardlessOfTheName()
+        {
+            var genericLabel = new SerialPortInfo
+            {
+                PortName = "COM3", Description = "USB Serial Device (COM3)", Vid = 0x1209, Pid = 0xFA00
+            };
+            var olderLabel = new SerialPortInfo
+            {
+                PortName = "COM4", Description = "Fanadapter STM32 enumerator", Vid = 0x1209, Pid = 0xFA00
+            };
+            var unrelated = new SerialPortInfo
+            {
+                PortName = "COM5", Description = "Fanadapter v0.6.1 (COM5)", Vid = 0x1A86, Pid = 0x7522,
+                IsLikelyAdapter = true
+            };
+            var unidentified = new SerialPortInfo { PortName = "COM6", IsLikelyAdapter = true };
+
+            var offered = PortLocator.FilterAdapters(new[] { unrelated, unidentified, olderLabel, genericLabel });
+
+            Assert.Equal(new[] { genericLabel, olderLabel }, offered);
+        }
+
+        [Theory]
+        [InlineData("USB Serial Device (COM3)", "Fanadapter v0.6.1", "Fanadapter v0.6.1 (COM3)")]
+        [InlineData("USB Serial Device (COM3)", "Fanadapter STM32 enumerator", "Fanadapter STM32 enumerator (COM3)")]
+        [InlineData("Fanadapter v0.6.1 (COM3)", null, "Fanadapter v0.6.1 (COM3)")]
+        [InlineData("USB Serial Device (COM3)", null, "Fanadapter (COM3)")]
+        [InlineData("USB Serial Device (COM3)", "USB Serial Device", "Fanadapter (COM3)")]
+        public void ShowsTheUsbProductNameOrAVerifiedAdapterFallback(string friendly, string bus, string expected)
+        {
+            Assert.Equal(expected, PortLocator.AdapterDescription("COM3", friendly, bus));
         }
     }
 }

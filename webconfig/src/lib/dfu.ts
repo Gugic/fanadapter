@@ -123,16 +123,19 @@ export async function waitForDfuDevice(timeoutMs: number): Promise<USBDevice | n
 
 // ---------- deployed-firmware manifest ----------
 
-/** Written next to fanadapter-stm32.bin by the Pages deploy workflow. */
+/** Published in GitHub Releases, then mirrored unchanged by Pages. */
 export interface FirmwareManifest {
   version: string
   commit: string
   builtAt: string
   size: number
+  sha256: string
+  releaseUrl: string
+  downloadUrl: string
 }
 
 /**
- * The GitHub Pages deploy builds the STM32 firmware and publishes it beside the app, so "latest"
+ * The GitHub Pages deploy mirrors a released STM32 image beside the app, so "latest"
  * is a same-origin fetch away. Returns null when absent — a dev server or a stale deploy — in
  * which case the dialog offers only the local-file path. The Vite dev server SPA-fallbacks
  * unknown paths to index.html with a 200, hence parse-failure also means null.
@@ -144,7 +147,11 @@ export async function fetchFirmwareManifest(): Promise<FirmwareManifest | null> 
     })
     if (!r.ok) return null
     const m = (await r.json()) as Partial<FirmwareManifest>
-    return typeof m.version === 'string' && typeof m.size === 'number'
+    return typeof m.version === 'string' &&
+      typeof m.size === 'number' &&
+      m.size > 0 &&
+      typeof m.sha256 === 'string' &&
+      /^[0-9a-f]{64}$/.test(m.sha256)
       ? (m as FirmwareManifest)
       : null
   } catch {
@@ -152,12 +159,22 @@ export async function fetchFirmwareManifest(): Promise<FirmwareManifest | null> 
   }
 }
 
-export async function fetchFirmwareImage(): Promise<Uint8Array> {
+export async function fetchFirmwareImage(manifest: FirmwareManifest | null): Promise<Uint8Array> {
+  if (!manifest) throw new Error('Check firmware releases before downloading an image.')
   const r = await fetch(`${import.meta.env.BASE_URL}firmware/fanadapter-stm32.bin`, {
     cache: 'no-store',
   })
   if (!r.ok) throw new Error(`firmware download failed: HTTP ${r.status}`)
-  return new Uint8Array(await r.arrayBuffer())
+  const raw = await r.arrayBuffer()
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', raw)))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  if (raw.byteLength !== manifest.size || hash !== manifest.sha256) {
+    throw new Error(
+      'Firmware changed or the download is corrupt. Reopen Flash to check the release again.',
+    )
+  }
+  return new Uint8Array(raw)
 }
 
 /**

@@ -1,7 +1,6 @@
 using System;
 using System.ComponentModel;
 using System.IO;
-using System.IO.Ports;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -25,14 +24,14 @@ namespace Fanadapter.SimHub.UI
         private readonly FirmwareChannel _channel;
         private readonly Action<string> _log;
         private readonly Action<Action> _runOnUi;
-        private readonly Func<Task> _reconnect;
+        private readonly Func<string, Task> _reconnect;
 
         public FirmwareUpdateViewModel(
             AdapterSession session,
             string baseUrlOverride,
             Action<string> log,
             Action<Action> runOnUi,
-            Func<Task> reconnect)
+            Func<string, Task> reconnect)
         {
             _session = session;
             _channel = new FirmwareChannel(baseUrlOverride);
@@ -172,7 +171,7 @@ namespace Fanadapter.SimHub.UI
                 else
                 {
                     Status("Downloading firmware…");
-                    image = await _channel.GetImageAsync(CancellationToken.None);
+                    image = await _channel.GetImageAsync(CancellationToken.None, _manifest);
                 }
 
                 // Remember where to come back to before tearing the session down.
@@ -216,9 +215,16 @@ namespace Fanadapter.SimHub.UI
                 var deadline = Environment.TickCount + 15000;
                 for (;;)
                 {
-                    if (portName != null &&
-                        SerialPort.GetPortNames().Contains(portName, StringComparer.OrdinalIgnoreCase))
+                    var adapters = await Task.Run(() => PortLocator.List());
+                    if (portName != null && adapters.Any(p => p.PortName == portName))
                     {
+                        break;
+                    }
+                    // Recovery starts in DFU with no remembered COM port. Only
+                    // choose automatically when exactly one verified adapter returns.
+                    if (portName == null && adapters.Count == 1)
+                    {
+                        portName = adapters[0].PortName;
                         break;
                     }
                     if (Environment.TickCount >= deadline)
@@ -231,7 +237,7 @@ namespace Fanadapter.SimHub.UI
                 }
 
                 Status("Reconnecting…");
-                await _reconnect();
+                await _reconnect(portName);
                 var v = _session.Version;
                 if (_session.IsConnected && v != null)
                 {

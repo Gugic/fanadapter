@@ -11,13 +11,13 @@ namespace Fanadapter.Core
     {
         public string PortName { get; set; }
 
-        /// <summary>Friendly name as Windows reports it, e.g. "USB-SERIAL CH340K (COM16)".</summary>
+        /// <summary>Adapter product/interface name with its COM number when available.</summary>
         public string Description { get; set; }
 
         public int? Vid { get; set; }
         public int? Pid { get; set; }
 
-        /// <summary>True when the VID/PID matches something the firmware is known to arrive on.</summary>
+        /// <summary>True for the native Fanadapter USB VID/PID.</summary>
         public bool IsLikelyAdapter { get; set; }
 
         public override string ToString() =>
@@ -25,25 +25,15 @@ namespace Fanadapter.Core
     }
 
     /// <summary>
-    /// Finds candidate COM ports. Firmware appears as STM32 native CDC or a
-    /// USB-UART bridge carrying the USART1 console — and bridge chips vary by
-    /// brand, so this ranks rather than filters: every port stays selectable and
-    /// known IDs just float to the top. Confirming a port means asking it for
-    /// its version, which is what <see cref="Protocol.GetVersionAsync"/> is for.
+    /// Lists only native Fanadapter COM ports by exact USB VID/PID. Names are
+    /// display text, so older firmware and Windows' cached generic labels still
+    /// match. Generic UART bridges cannot identify their downstream firmware.
     /// </summary>
     public static class PortLocator
     {
-        private sealed class KnownId
-        {
-            public int Vid;
-            public int? Pid;
-        }
-
-        private static readonly KnownId[] KnownIds =
-        {
-            new KnownId { Vid = 0x1209, Pid = 0xFA00 }, // STM32 native CDC (pid.codes)
-            new KnownId { Vid = 0x1A86 },               // WCH CH340 family bridge
-        };
+        // Mirror firmware-stm32/src/firmware_info.h and webconfig's SerialClient filter.
+        public const int AdapterVendorId = 0x1209;
+        public const int AdapterProductId = 0xFA00;
 
         private static readonly Regex VidPidPattern =
             new Regex(@"VID_([0-9A-F]{4})&PID_([0-9A-F]{4})", RegexOptions.IgnoreCase);
@@ -52,9 +42,8 @@ namespace Fanadapter.Core
         {
             var byName = new Dictionary<string, SerialPortInfo>(StringComparer.OrdinalIgnoreCase);
 
-            // SerialPort.GetPortNames is the reliable list; WMI adds the friendly
-            // name and hardware IDs but can miss or lag devices, so it's the
-            // enrichment pass rather than the source.
+            // GetPortNames supplies the attached ports; WMI supplies USB identities.
+            // Without a verified identity a port is never offered as an adapter.
             foreach (var name in SerialPort.GetPortNames())
             {
                 byName[name] = new SerialPortInfo { PortName = name, Description = name };
@@ -75,11 +64,7 @@ namespace Fanadapter.Core
                         if (portName == null) continue;
 
                         SerialPortInfo info;
-                        if (!byName.TryGetValue(portName, out info))
-                        {
-                            info = new SerialPortInfo { PortName = portName };
-                            byName[portName] = info;
-                        }
+                        if (!byName.TryGetValue(portName, out info)) continue;
 
                         info.Description = name;
 
@@ -89,20 +74,58 @@ namespace Fanadapter.Core
                             info.Vid = Convert.ToInt32(match.Groups[1].Value, 16);
                             info.Pid = Convert.ToInt32(match.Groups[2].Value, 16);
                             info.IsLikelyAdapter = IsKnown(info.Vid.Value, info.Pid.Value);
+                            if (info.IsLikelyAdapter)
+                                info.Description = AdapterDescription(portName, name, BusReportedName(device));
                         }
                     }
                 }
             }
             catch (ManagementException)
             {
-                // WMI unavailable or query rejected — the port list from
-                // GetPortNames is still usable, just without friendly names.
+                // WMI unavailable: unidentified ports stay excluded.
             }
+            catch (UnauthorizedAccessException) { /* Unidentified ports stay excluded. */ }
 
-            return byName.Values
-                .OrderByDescending(p => p.IsLikelyAdapter)
-                .ThenBy(p => p.PortName, StringComparer.OrdinalIgnoreCase)
+            return FilterAdapters(byName.Values);
+        }
+
+        public static bool IsAdapterPort(string portName) =>
+            List().Any(p => string.Equals(p.PortName, portName, StringComparison.OrdinalIgnoreCase));
+
+        internal static List<SerialPortInfo> FilterAdapters(IEnumerable<SerialPortInfo> ports) =>
+            ports.Where(p => p.Vid.HasValue && p.Pid.HasValue && IsKnown(p.Vid.Value, p.Pid.Value))
+                .OrderBy(p => p.PortName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+        private static string BusReportedName(ManagementObject device)
+        {
+            // Windows may keep "USB Serial Device" as the driver friendly name.
+            // Ask for the bus-reported USB descriptor text without opening the COM port.
+            try
+            {
+                using (var input = device.GetMethodParameters("GetDeviceProperties"))
+                {
+                    input["devicePropertyKeys"] = new[] { "DEVPKEY_Device_BusReportedDeviceDesc" };
+                    using (var output = device.InvokeMethod("GetDeviceProperties", input, null))
+                    {
+                        var properties = output?["deviceProperties"] as ManagementBaseObject[];
+                        return properties?.FirstOrDefault()?["Data"] as string;
+                    }
+                }
+            }
+            catch (ManagementException) { return null; }
+            catch (UnauthorizedAccessException) { return null; }
+        }
+
+        internal static string AdapterDescription(string portName, string friendlyName, string busName)
+        {
+            if (!string.IsNullOrWhiteSpace(busName) &&
+                busName.StartsWith("Fanadapter", StringComparison.OrdinalIgnoreCase))
+                return busName.Trim() + " (" + portName + ")";
+            if (!string.IsNullOrWhiteSpace(friendlyName) &&
+                friendlyName.StartsWith("Fanadapter", StringComparison.OrdinalIgnoreCase))
+                return friendlyName;
+            return "Fanadapter (" + portName + ")";
         }
 
         internal static string ExtractPortName(string friendlyName)
@@ -115,6 +138,6 @@ namespace Fanadapter.Core
         }
 
         internal static bool IsKnown(int vid, int pid) =>
-            KnownIds.Any(k => k.Vid == vid && (!k.Pid.HasValue || k.Pid.Value == pid));
+            vid == AdapterVendorId && pid == AdapterProductId;
     }
 }

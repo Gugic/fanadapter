@@ -1311,7 +1311,9 @@ function FirmwareDialog({
     try {
       // 1 · The image: a picked local file wins, else the deployed build.
       setPhase('Fetching firmware…')
-      const image = localImage ? localImage.data : stripDfuSuffix(await fetchFirmwareImage())
+      const image = localImage
+        ? localImage.data
+        : stripDfuSuffix(await fetchFirmwareImage(manifest))
       if (!looksLikeFirmware(image)) {
         fail('The deployed firmware image looks corrupt — flash a local .bin instead.')
         return
