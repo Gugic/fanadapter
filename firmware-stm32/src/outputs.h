@@ -1,9 +1,9 @@
-// Physical output stage. M3 scope: the H-pattern X/Y gear voltages on DAC1 (PA4/PA5) plus the
-// non-blocking neutral-transit FSM. Sequential pulse pins and the handbrake PWM fallback land in M5.
+// Physical outputs: H-pattern X/Y on DAC1 (PA4/PA5), sequential pulses on PC6/PC7,
+// and handbrake PWM on PC8. Gear neutral transit and sequential timing are non-blocking.
 //
 // The STM32 has a real 2-channel DAC: stored per-gear 12-bit codes (gearOut[].x/.y, 0..4095) map
 // straight to the DAC channels with no RC filters. Handbrake uses a PWM+RC leg; both DAC channels are
-// taken by the H-pattern.
+// taken by the H-pattern. The pedal UART also carries handbrake; its mapping is refreshed in parallel.
 #pragma once
 #include "mapping.h" // ChannelId
 

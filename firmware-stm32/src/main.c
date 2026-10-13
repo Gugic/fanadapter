@@ -1,23 +1,11 @@
-// fanadapter — STM32H743 USB host enumerator (bring-up firmware)
+// fanadapter — STM32H743 HID-to-wheelbase adapter.
 //
-// Goal of this build: prove that all USB devices behind a powered hub enumerate on the
-// STM32H743's USB host (16 channels — the count that killed the ESP32 port), and print
-// them to a serial console so we can eyeball that every device is visible.
-//
-// Topology — USB host on one controller, the serial console exposed TWO ways at once:
-//   OTG_FS (USB2, PA11/PA12 = USB-C / A11-A12 header) -> USB HOST FS -> powered hub -> wheel devices
-//   OTG_HS (USB1, PB14/PB15)                          -> USB CDC device = serial console (recommended)
-//   USART1 (PA9=TX, PA10=RX, on the 8-pin header)     -> UART serial console (universal fallback)
-//
-// Why both consoles? The recommended open-source board has BOTH USB ports broken out: plug the
-// hub into the OTG_FS port and a second cable from the PC into the OTG_HS port, and the device
-// list shows up as a COM port — no extra hardware. But the FK743M3 board used for bring-up has
-// OTG_HS unwired (PB15 = OTG_HS D+ is an unsolderable 0.1 mm via), so its CDC console can never
-// enumerate; the parallel USART1 console (read via a USB-UART bridge) carries the same output
-// there. console_printf() writes to both sinks, so one firmware serves both kinds of board.
-// Host stays on OTG_FS because that's the only controller usable on the single-port boards.
-//
-// On STM32H7 TinyUSB's dwc2 driver maps rhport 0 = OTG_FS, rhport 1 = OTG_HS.
+// Current target: WeAct MiniSTM32H743VITX (H743VIT6, 2 MB flash).
+//   OTG_FS (rhport 0, PA11/PA12, on-board USB-C) -> CDC device, config, DFU and power
+//   OTG_HS (rhport 1, PB14/PB15 header)          -> FS USB host, powered hub and inputs
+//   USART1 (PA9 TX / PA10 RX, 115200 8E1)       -> fallback UART console
+// Mapping drives DAC gears, sequential pulses, handbrake PWM and the pedal UART.
+// See README.md for wiring and PORT-STATUS.md for bring-up history and polling constraints.
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -43,8 +31,8 @@
 #define HOST_RHPORT   OTGHS_RHPORT // PB14/PB15 breakout -> powered hub -> wheel devices
 
 // Heartbeat so we can CONFIRM the board is running our code at a glance, independent of the
-// console. The user-LED pin varies across these H743 clones and is still unidentified, so
-// toggle several candidates at ~0.5 Hz; whichever one is the LED blinks. None of these collide
+// console. PE3 is the WeAct LED. The bring-up implementation still toggles five additional
+// candidate pins at ~0.5 Hz; all six are reserved as outputs. None of these collide
 // with USB (PA11/PA12, PB14/PB15) or the USART1 console (PA9/PA10).
 typedef struct {
   GPIO_TypeDef *port;
@@ -62,8 +50,8 @@ static UART_HandleTypeDef huart1; // fallback console on USART1 (PA9/PA10)
 
 // USART1 RX ring — filled by USART1_IRQHandler (RXNE), drained in the main loop. This is the
 // inbound half of the console: typed/sent bytes (from the S3 bridge's PC->board direction, via
-// PA10) land here. M0 echoes them back to prove the bidirectional path; the protocol layer (M1)
-// will consume this ring as its line-JSON input (alongside tud_cdc_read() for the CDC console).
+// PA10) land here. console_cli_poll() feeds these bytes and tud_cdc_read() through the same
+// line assembler and CLI/JSON dispatcher.
 #define CONSOLE_RX_RING_SZ 256u // power of two -> mask instead of modulo
 static volatile uint8_t  s_rx_ring[CONSOLE_RX_RING_SZ];
 static volatile uint16_t s_rx_head; // advanced by the ISR
@@ -186,9 +174,8 @@ static void usb_hw_init(void) {
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  // OTG_FS host: PA11 = DM, PA12 = DP (AF10). VBUS sensing is off by default on H7
-  // (GCCFG.VBDEN resets to 0 -> session always valid), so the host won't gate on a VBUS pin
-  // and PA9 stays free for USART1.
+  // OTG_FS device: PA11 = DM, PA12 = DP (AF10), on the on-board USB-C.
+  // Hardware VBUS sensing is not enabled, leaving PA9 free for USART1.
   g.Pin       = GPIO_PIN_11 | GPIO_PIN_12;
   g.Mode      = GPIO_MODE_AF_PP;
   g.Pull      = GPIO_NOPULL;
@@ -196,8 +183,8 @@ static void usb_hw_init(void) {
   g.Alternate = GPIO_AF10_OTG2_FS;
   HAL_GPIO_Init(GPIOA, &g);
 
-  // OTG_HS device (CDC console): PB14 = DM, PB15 = DP (AF12, embedded FS PHY). Harmless on
-  // boards where these pins are unwired (FK743M3) — the device stack just never enumerates.
+  // OTG_HS host: PB14 = DM, PB15 = DP (AF12, embedded FS PHY).
+  // The powered hub connects here, including upstream VBUS and ground.
   g.Pin       = GPIO_PIN_14 | GPIO_PIN_15;
   g.Alternate = GPIO_AF12_OTG1_FS;
   HAL_GPIO_Init(GPIOB, &g);
@@ -223,7 +210,7 @@ static void usb_hw_init(void) {
 }
 
 //--------------------------------------------------------------------+
-// Fallback console: USART1 on PA9 (TX) / PA10 (RX), 115200 8N1
+// Fallback console: USART1 on PA9 (TX) / PA10 (RX), 115200 8E1
 //--------------------------------------------------------------------+
 static void console_init(void) {
   GPIO_InitTypeDef g = {0};
@@ -313,8 +300,8 @@ static int console_emit(const char *buf, uint32_t len, bool lossy) {
     if (used < CONSOLE_TX_RING_SZ / 2u && (uint32_t)(CONSOLE_TX_RING_SZ - 1u - used) >= len)
       console_tx_push(buf, len);
   } else if (tud_mounted()) {
-    // A client is enumerated on the USB CDC — THAT copy is authoritative, and this leg is only a
-    // debug mirror. NEVER apply backpressure here: this ring drains at ~11.5 KB/s, so waiting for
+    // USB is enumerated (even if no serial application is reading). CDC is authoritative; this
+    // leg is only a debug mirror. NEVER apply backpressure: 115200 8E1 drains at ~10.5 KB/s; waiting for
     // room while streaming an 8 KB get_config held the main loop ~720 ms — pedals_update() missed
     // ~70 consecutive frames, the wheelbase's link watchdog declared the stream dead and re-initiated
     // its handshake at 250000 baud, and the resulting framing-error burst got logged as
@@ -323,7 +310,7 @@ static int console_emit(const char *buf, uint32_t len, bool lossy) {
     // acceptable cost.
     console_tx_push(buf, len);
   } else {
-    // No CDC client — USART1 IS the console (bring-up, CH340 bridge), so responses must arrive
+    // USB is not enumerated — USART1 IS the console (bring-up, CH340 bridge), so responses must arrive
     // intact: wait for room. Bounded by WALL-CLOCK, not iterations. An iteration count is
     // meaningless here: 20k spins take ~3 ms while draining this ring at 115200 takes ~175 ms, so
     // a count-based guard expired with the ring still full and silently dropped chunks — which
@@ -540,7 +527,7 @@ void tuh_hid_report_received_cb(uint8_t daddr, uint8_t instance, uint8_t const *
 }
 
 //--------------------------------------------------------------------+
-// Jump to the STM32H7 ROM system bootloader (USART1 8E1 + USB DFU) — AN2606 Table 135
+// Enter the STM32H743 ROM bootloader; the tested software-entry transport is USB DFU.
 //--------------------------------------------------------------------+
 // Hands-free re-flash: token in DTCM + NVIC_SystemReset + branch at the TOP of main(), before any
 // clock/peripheral init. The ROM then starts on a chip at reset defaults — the state it actually
@@ -581,10 +568,9 @@ void request_bootloader_reboot(void) {
 }
 
 //--------------------------------------------------------------------+
-// Bring-up CLI — line-based, drained from the USART1 RX ring (later also the CDC console)
+// Line-based CLI and JSON protocol, drained from both USART1 and USB CDC
 //--------------------------------------------------------------------+
-// M1 folds JSON line-commands ('{...}') into this same path; for now it serves the few bring-up
-// verbs we need — most importantly 'dfu' to enter the ROM bootloader for a hands-free re-flash.
+// JSON lines go to protocol_handle_line(); plain-text dfu/bootloader, reboot and ? are CLI verbs.
 static char     s_line[256]; // room for the largest JSON command (set_binding etc.)
 static uint16_t s_line_len;
 static bool     s_line_json; // first char was '{' -> protocol line: do NOT echo (would corrupt the wire)

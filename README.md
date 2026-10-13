@@ -2,7 +2,7 @@
 
 USB HID → Fanatec wheelbase adapter — on an STM32H743 — combined with a browser-based WebSerial configuration UI and a SimHub plugin.
 
-An open-source adapter that lets arbitrary USB HID sim racing peripherals (H-pattern shifters, sequential shifters, handbrakes, and USB pedals — plus gamepads, D-pad/Hat controllers, and keyboards) connect to a Fanatec wheelbase as if they were native Fanatec gear. This is particularly valuable on game consoles (PS4/PS5/Xbox Series X|S) where third-party USB peripherals cannot be plugged directly into the console.
+An open-source adapter that maps supported USB HID sim racing peripherals (H-pattern shifters, sequential shifters, handbrakes, and USB pedals — plus gamepads, D-pad/Hat controllers, and keyboards) to a Fanatec wheelbase's accessory ports. Devices must expose standard HID reports the firmware can decode; proprietary protocols are not automatically supported. On a console, compatibility still depends on the wheelbase and wheel being supported by that console.
 
 From the perspective of the wheelbase, the adapter looks like genuine Fanatec hardware (supporting a digital UART pedal stream and analog/digital shifter and handbrake signals).
 
@@ -23,17 +23,16 @@ Configure the adapter with the [live web configurator](https://gugic.github.io/f
 
 ## Compatibility
 
-### Wheelbase Bases
+### Wheelbases
 * **Verified:** Fanatec ClubSport DD+ (15 Nm)
-* **Expected to work** (same RJ12 protocols across generations, but untested here):
-  * CSL Elite 1.1 / V2
+* **Untested candidates** (verify the accessory-port pinouts and protocol for the specific base):
+  * CSL Elite
   * Podium DD1 / DD2
   * ClubSport DD
   * CSL DD
   * CSW V2.5
-* **Likely Incompatible:**
-  * CSR Elite and older bases predating the current Shifter 1/2 RJ12 layout.
-  * Bases without dedicated handbrake ports (Pre-DD generation may share the handbrake with the pedal port).
+
+Older bases with different accessory pinouts or no compatible digital pedal protocol are not validated. A dedicated handbrake port is unnecessary when the base accepts the handbrake field in the emulated pedal UART stream.
 
 ### USB Hubs (Important)
 A **powered USB 2.0 hub** connects multiple peripherals to the STM32's USB host on **PB14/PB15**. Feed the hub's upstream VBUS from the board's 5 V rail so it detects the host. The on-board USB-C connects to the PC for power, configuration and firmware updates; it cannot host a hub.
@@ -60,16 +59,17 @@ The project is structured into four main directories:
 
 ---
 
-## Project Roadmap
+## Implemented features and possible extensions
 
-The following features and improvements are planned for future updates:
+SimHub integration, native USB configuration, browser/SimHub firmware flashing, independent firmware/plugin releases, and plugin update checks are implemented. Download the appropriate **firmware-v** or **simhub-v** assets from [GitHub Releases](https://github.com/Gugic/fanadapter/releases); the two components have separate versions. See the [plugin installation guide](simhub-plugin/README.md#install) and [first-flash guide](firmware-stm32/README.md#entering-dfu).
+
+The following are **unimplemented ideas**, not scheduled work or promises of support:
 
 * **Analog Pedal Fallback** — Supporting older bases predating CSL Elite V2 by implementing a 4-channel analog DAC output stage (MCP4728) on the pedal RJ12.
 * **Software-Controlled Handbrake Detect** — Controlling Shifter 1 / Handbrake port detection via an STM32 GPIO rather than hardwired ground, allowing the adapter to show or hide ports dynamically.
 * **Custom PCB Design** — A small, custom-routed KiCad PCB to replace the breadboard.
 * **3D-Printed Enclosure** — A robust case with panel-mounted RJ12 jacks and a secure powered USB hub integration.
 * **OLED Display & Buttons** — On-board configuration interface for status reports, calibration, and profile-switching without a computer.
-* ~~**SimHub Integration**~~ — **Done:** the [`simhub-plugin/`](simhub-plugin/README.md) drives the same JSON protocol from SimHub, so a shifter or pedal set attached to the PC can command the wheelbase through the adapter, and the adapter's own mapping can be configured without leaving SimHub.
 * **0-5V Handbrake Scaler** — Incorporating an op-amp scaling stage (MCP6001 with ~1.52 gain) for native 0-5V analog voltage swing.
 * **Mode Switching on Shifter 1** — Software toggle between H-pattern and sequential modes on a single physical RJ12 port.
 * **Built-in USB Hub** — Designing a USB hub circuit directly onto the project's custom PCB to ensure maximum stability and compatibility.
@@ -91,15 +91,15 @@ This project relies on the incredible reverse-engineering efforts of the sim rac
 
 ## License
 
-`fanadapter` is **dual-licensed**, and both licenses are deliberately permissive: the software (firmware + webconfig) under **Apache 2.0**, the hardware design under **CERN-OHL-P v2**. They were chosen to make building on, modifying, and *commercializing* this project as frictionless as possible — attribution is the only obligation and no copyleft applies. Full terms, SPDX identifiers, and the build-from-scratch provenance note are in **[LICENSE.md](LICENSE.md)**.
+The project's software (firmware, webconfig, SimHub plugin and tools) uses **Apache 2.0**; its hardware documentation/design uses **CERN-OHL-P v2**. Both are permissive and allow commercial reuse subject to their terms, including applicable license, notice and modification requirements. These are licenses for different parts of the project, not a choice of license for every file. Full terms and SPDX identifiers are in **[LICENSE.md](LICENSE.md)**; third-party dependencies retain their own licenses.
 
 ### Manufacturing and commercial reuse — explicitly welcome
 
 If you have the capacity to turn this into a polished product — a small enclosed unit with an integrated powered USB hub, panel-mount RJ12 jacks, a clean PCB instead of the breadboard build, proper EMI considerations, and decent QC — **please do**. The permissive licenses are chosen precisely to make this easy.
 
-The sim racing community has a real gap for affordable, well-built USB-HID-to-Fanatec adapters. The few existing commercial products are either expensive, awkward to use, or limited to specific peripheral brands. A polished version of this design — even at a reasonable markup for the work involved — would be a genuinely useful product.
+A polished version of this prototype could make the adapter easier to assemble and use. Commercial manufacturing and improvements to the design are welcome.
 
-If you take this to market, attribution to this repository and the prior reverse-engineering work cited in [References and Acknowledgments](#references-and-acknowledgments) is the only ask. Pull requests improving the design upstream are appreciated but not required.
+If you take this to market, follow the applicable [license terms](LICENSE.md) and preserve the required notices. Credit to the prior reverse-engineering work cited in [References and Acknowledgments](#references-and-acknowledgments) is appreciated. Pull requests improving the design upstream are welcome but not required.
 
 ---
 

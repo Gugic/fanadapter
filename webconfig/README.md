@@ -8,7 +8,7 @@ The webapp communicates with the STM32 adapter over WebSerial using a line-based
 
 ## Live Deployment
 
-When this repository is pushed to `main`, a GitHub Actions workflow automatically builds and publishes the production build to GitHub Pages:
+Pushes to `main` affecting `webconfig/**` or `.github/workflows/pages.yml` build and publish GitHub Pages. A successful firmware workflow on `main` also triggers deployment; the workflow can be dispatched manually:
 
 - **Canonical URL:** [gugic.github.io/fanadapter](https://gugic.github.io/fanadapter/)
 
@@ -27,7 +27,7 @@ without compiling firmware. Plugin changes trigger neither Pages nor firmware bu
 
 ### Prerequisites
 
-- **Node.js:** version 20 or higher (LTS recommended)
+- **Node.js:** 20.19+, 22.13+, or 24+ (the installed ESLint toolchain's supported ranges; CI uses Node 20)
 - **Package Manager:** `npm` (comes bundled with Node)
 
 ### Workflow Commands
@@ -36,18 +36,22 @@ Execute all commands from the `webconfig/` subdirectory:
 
 ```sh
 # 1. Install dependencies
-npm install
+npm ci
 
 # 2. Start the local Vite development server
 npm run dev
 
-# 3. Create a optimized static production build
+# 3. Create an optimized static production build (includes TypeScript checking)
 npm run build
 
 # 4. Run ESLint rules check
 npm run lint
 
-# 5. Run the CI dependency audit
+# 5. Run regression tests and formatting checks
+npm test
+npm run format:check
+
+# 6. Run the CI dependency audit
 npm run audit
 ```
 
@@ -62,7 +66,7 @@ advisories still fail CI.
 When running `npm run dev`, Vite will serve the application at `http://localhost:5173/fanadapter/`. Open this URL in Chrome, Edge, or Brave, click **Connect**, and choose the adapter's USB serial (CDC) device from the browser permission pop-up.
 
 Connect and saved-grant reconnection accept only USB identity `1209:FA00`.
-Firmware 0.6.1+ advertises **Fanadapter v0.6.1** (using its actual version).
+Firmware 0.6.1+ advertises **Fanadapter vX.Y.Z**, using its actual version.
 Older native firmware works too; unrelated COM devices and USB-UART bridges are hidden.
 
 ### Custom Subfolder Deployment
@@ -87,7 +91,8 @@ webconfig/
       types.ts            # TypeScript mirror of the firmware's Config schema
       scaleAxis.ts        # Client-side replica of the firmware's scaleAxis() math
       crc32.ts            # Client-side CRC-32/ISO-HDLC encoder (matches firmware)
-      dfu.ts              # WebUSB DfuSe flasher for the STM32 ROM bootloader (the Flash dialog)
+      dfu.ts              # Release-image verification + WebUSB DfuSe flasher
+      firmwareUpdate.ts   # Flash success and bounded serial reconnection outcomes
       utils.ts            # Tailwind CSS class merging helper
   tailwind.config.js      # Styling design tokens and theme settings
   vite.config.ts          # Vite build config
@@ -97,7 +102,7 @@ webconfig/
 
 ## Technical Design & Internal Invariants
 
-To keep the web configurator aligned with the microcontroller's operation, three critical design architectures are enforced:
+The following contracts and connection rules keep the configurator aligned with the firmware:
 
 ### 1. In-App Capture Flow State Machine
 
@@ -105,7 +110,7 @@ To keep the web configurator aligned with the microcontroller's operation, three
 
 1. **`baseline` (Duration: ~400 ms):**  
    Samples active button bits and axis ranges to establish the sensor noise floor.  
-   _Implementation detail:_ To avoid trigger-heavy React component re-renders on 50 Hz serial updates, this baseline data accumulates in a React `useRef` rather than state. A device that stays completely silent through this window (a keyboard, or a jitter-free gamepad) is lazily seeded with an at-rest baseline, so the very first Listen recognises it instead of ignoring it until timeout.
+   _Implementation detail:_ To avoid trigger-heavy React component re-renders on input events arriving up to ~30 Hz, this baseline data accumulates in a React `useRef` rather than state. A device that stays completely silent through this window (a keyboard, or a jitter-free gamepad) is lazily seeded with an at-rest baseline, so the very first Listen recognises it instead of ignoring it until timeout.
 2. **`active`:**  
    Waits for input activity that crosses the noise floor.
    - Buttons, hats, and keys: Commit immediately when a new button bit, hat direction, or pressed key appears.
@@ -119,7 +124,9 @@ To keep the web configurator aligned with the microcontroller's operation, three
 
 Because multiple UI modules can request details from the adapter simultaneously, `SerialClient` (`webconfig/src/lib/serial.ts`) implements a FIFO queue over WebSerial:
 
-- Commands (non-event JSON strings) are pushed to the queue and executed sequentially. When a JSON reply is returned, it is matched with the oldest pending promise.
+- Writes enter the serial stream in order; multiple requests can be outstanding at once. Each non-event JSON reply is matched with the oldest pending promise.
+- `streamAxes` is the no-reply exception: it writes without adding a pending request. Replies from acknowledged commands must never be ignored.
+- **Known limitation:** a browser request timeout removes its pending entry. A late reply can then be assigned to the next request; disconnect/reconnect resets the session. The C# client's abandoned-reply absorption and resync probe are not implemented in this client.
 - Event packages (`{"event":"..."}`) are intercepted, bypassed, and fanned out to active UI subscribers.
 - Non-JSON text lines are transformed into virtual log events (`{type: "log"}`) and rendered inside the configurator's **Logs** console.
 
@@ -141,16 +148,15 @@ when prompted. After programming, the dialog reports **Firmware installed** and 
 **Connect to Fanadapter** to grant the separate serial permission and confirm the version.
 Cancelling or retrying this connection never reflashes the board or turns a successful write
 into a failed update. Each picker has its own button because Chromium requires a fresh user
-gesture. Subsequent updates reuse both grants and reconnect automatically. Saved mappings live
-in a different flash bank than the code and
-survive. An expandable
-"local .bin" path covers dev builds (drop one in `webconfig/public/firmware/` to test the deployed
-flow locally — that dir is gitignored). On Windows the DFU device must have the WinUSB driver
-bound (STM32CubeProgrammer's installer or one Zadig run does it).
+gesture. Later updates can reuse grants for the same browser profile, origin and device; cleared or revoked permissions require the relevant picker again. Saved mappings live in flash bank 2 and survive the bank-1 write, unless the new firmware rejects an older configuration schema.
+
+The expandable local `.bin` picker accepts a development build directly; it checks the vector table and size, but has no release manifest against which to verify a checksum. To test the published-download flow locally, put **both** `fanadapter-stm32.json` and its matching `fanadapter-stm32.bin` in `webconfig/public/firmware/` (gitignored). Download the pair from the same firmware release; a lone binary does not enable the published-image button.
+
+On Windows the bootloader must have **WinUSB** bound. Use STM32CubeProgrammer's driver installer or Zadig, then verify the binding; dfu-util working with another backend does not establish WebUSB compatibility.
 
 ---
 
-### 3. Cross-File Code Invariants
+### Cross-File Code Invariants
 
 The web app shares four strict boundaries with the STM32 C code in `firmware-stm32/src/`. If a change is made to one, its firmware and SimHub counterparts must be updated in the same commit:
 
@@ -172,6 +178,8 @@ The web app shares four strict boundaries with the STM32 C code in `firmware-stm
 
 - Ensure you are running Chrome, Edge, or Brave. Safari and Firefox are incompatible.
 - Ensure the adapter's serial port is not occupied by another utility, such as a serial monitor, SimHub, or another open WebSerial browser tab.
+- A fresh board's stock firmware is not a selectable Fanadapter port. Use **Flash** and the [BOOT0/RST first-install procedure](../firmware-stm32/README.md#entering-dfu).
+- After repeated command timeouts, disconnect/reconnect before retrying edits; this resets the browser's reply queue.
 
 ### The preview bars move in the UI, but the wheelbase does not react
 

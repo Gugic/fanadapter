@@ -11,8 +11,8 @@ Prebuilt images and their SHA-256 manifests are published as **firmware-vX.Y.Z**
 the SimHub plugin. Firmware source/build changes trigger its own CI; webconfig
 and plugin changes never rebuild it. Bump `FW_VER` in `src/firmware_info.h` for
 each firmware release. That one value also supplies the JSON version, boot banner,
-USB product and CDC interface labels (**Fanadapter vX.Y.Z**). USB identity stays
-`1209:FA00`, preserving existing COM numbers and browser grants. Clients filter
+USB product and CDC interface labels (**Fanadapter vX.Y.Z**). USB VID/PID stays
+`1209:FA00`, and the serial string/device revision stay stable so a version-label change alone does not invalidate existing COM assignments or browser grants. Clients filter
 connections by that identity, so the name is for display rather than matching.
 
 ---
@@ -68,7 +68,7 @@ bootloader enumerates through it, and precisely why **a USB hub plugged into it 
 attach** — both ends present as devices, CC negotiation never completes, and the board never sees
 a D+ pull-up. No adapter or "OTG cable" fixes this; the board has no CC or role-switch logic.
 
-Happy side effect: DFU is fixed to OTG_FS in silicon, so flashing no longer shares a port with the
+The tested ROM DFU path uses the on-board USB-C, so flashing does not share a port with the
 hub — **you never have to unplug the wheels to re-flash.**
 
 ### Wheelbase outputs
@@ -90,7 +90,7 @@ DAC outputs, not filtered PWM. A capacitor on a DAC output buffer can oscillate.
 
 **The handbrake PWM on PC8 is a fallback, not the primary path.** On a modern base the handbrake
 rides the pedal UART stream; leave the dedicated handbrake RJ12 unplugged. PC8 (plus an RC filter)
-is only for a rig with no pedal port. The firmware writes both, so the wiring stays
+is an alternative for a rig not using the pedal-stream handbrake. The firmware writes both, so the wiring stays
 forward-compatible.
 
 ### Console / misc
@@ -100,6 +100,7 @@ forward-compatible.
 | USART1 console fallback | PA9 (TX) / PA10 (RX) | **8E1**, 115200. Needs a USB-UART bridge. Unused in a normal build. |
 | User LED | PE3 | Active-high. Heartbeat blinks at ~0.5 Hz when the firmware is running. |
 | User button | PC13 | Unused by the firmware. |
+| Additional heartbeat outputs | PB7, PB0, PB1, PE1, PD13 | Still toggled alongside PE3 by the bring-up heartbeat implementation; reserve these pins. |
 
 ---
 
@@ -126,8 +127,9 @@ Wire a USB breakout (or a cut-open USB-A cable) to the **PB14/PB15 header**:
 
 ⚠️ **The VBUS wire is not optional.** A hub needs to *see* VBUS on its upstream port to detect
 that a host is present. Without it the hub silently never attaches and the console just sits at
-`waiting for devices on the hub...` forever. Feeding it from the board's 5 V rail is safe — a
-self-powered hub only senses that line, it doesn't draw from it.
+`waiting for devices on the hub...` forever. Feed upstream VBUS from the board's 5 V rail;
+the hub's own supply powers its downstream devices. Verify that the chosen hub does not
+backfeed its supply into the board through upstream VBUS.
 
 Then: **powered hub → the breakout**, and your shifters / handbrake / pedals → the hub.
 
@@ -172,13 +174,13 @@ uses) and the board reboots into the ROM bootloader on the same USB-C port. No b
 swapping. `reboot` restarts the app the same way.
 
 **No toolchain? Update from the browser.** webconfig's header has a **Flash** button opening a
-one-click updater: the deployed site carries the latest firmware build, and one press reboots the
+one-click updater: the deployed site mirrors the released firmware selected by `FW_VER` on `main`, and one press reboots the
 adapter into the bootloader, flashes over **WebUSB**, boots the result and reconnects — no
 PlatformIO, no dfu-util, no buttons after the initial installation. Chromium remembers the
 separate bootloader and serial permissions per browser/origin. CI also publishes the image as the `fanadapter-stm32-firmware`
 artifact on the *Verify STM32 firmware* workflow for manual flashing. Windows caveat: WebUSB needs
 the WinUSB driver bound to `STM32 BOOTLOADER` — installing STM32CubeProgrammer (or a one-time
-Zadig run) sets that up; machines that have used dfu-util already have it.
+Zadig run) can set that up. Check that the bound driver is **WinUSB**: dfu-util also supports other driver backends, so dfu-util working alone does not prove WebUSB/SimHub compatibility.
 
 (Mechanism, because the obvious version does not work: the ROM serves **no** interfaces when an
 app branches to it directly — the command instead parks a magic token in DTCM, does a real
@@ -199,7 +201,8 @@ is the exception: the older blob is rejected and the firmware boots with default
 ## 5. First connect
 
 Plug the USB-C into the PC. The board appears as a CDC serial port:
-**VID `1209` / PID `FA00`**, "Fanadapter STM32 enumerator".
+**VID `1209` / PID `FA00`**, **Fanadapter vX.Y.Z** on firmware 0.6.1 and later.
+Older native builds may show "Fanadapter STM32 enumerator"; clients still recognize the USB IDs.
 
 **webconfig:** open the UI and hit Connect — it talks straight to that port, no bridge, no
 adapter. See [`webconfig/README.md`](../webconfig/README.md).
@@ -208,16 +211,13 @@ adapter. See [`webconfig/README.md`](../webconfig/README.md).
 attach/detach log for every device on the hub, and a tiny CLI: `dfu`, `reboot`, `?`. The banner
 reprints when a terminal asserts DTR, so a late connection isn't left staring at a blank screen.
 
-⚠️ **webconfig and a terminal can't both hold the port**, and neither can share it with the
-flasher. Disconnect webconfig before flashing or opening a terminal.
+⚠️ **webconfig, SimHub and a terminal cannot share the serial port.** Close other serial clients before connecting. The built-in updaters send `dfu` and release their own serial connection automatically; a manual flashing procedure must release it too.
 
 ### Working checklist
 
 1. **LED blinks** ~0.5 Hz → firmware is running.
 2. **Banner prints** on the console → USB device side is up.
-3. **Devices log as they attach** → USB host side and the hub are up. Each physical device should
-   claim exactly one slot; `list_devices` in webconfig should show *your* device count, no
-   phantoms.
+3. **Devices log as they attach** → USB host side and the hub are up. Slots represent usable HID interfaces, so a composite device can use more than one. Input-less interfaces are excluded; the tested four-device rig claims four slots. `list_devices` includes empty slots, marked `connected:false`.
 4. **Live input moves in webconfig** → HID decode is up. Now bind and calibrate exactly as in the
    [firmware reference](PROTOCOL.md#calibration).
 5. **Pedals enumerate on the base as "ClubSport Pedals V3"** → the pedal UART is up. This is the
@@ -236,20 +236,17 @@ Direct-output overrides are **sticky with no firmware-side timeout**, so clients
 ## 7. Troubleshooting
 
 **Dark LED, no console, 0 V on the USB pins — but DFU works.**
-You almost certainly have an **STM32H723VGT6**, not an H743. See §1. Check the chip before
-touching anything else.
+Check for an **STM32H723VGT6** before debugging firmware; it caused this exact symptom during bring-up. See §1. If the chip is H743, also verify the image target and board power/clock configuration.
 
 **Board powers up but enumerates nothing.**
-Charge-only USB-C cable. Swap it — this one wastes a lot of time.
+Try a known data-capable USB-C cable and another PC port. A charge-only cable powers the LED but carries no data. If ROM DFU enumerates but the application does not, verify the board and firmware target.
 
 **The hub never attaches; console sits at `waiting for devices on the hub...`.**
 Missing **VBUS** on the breakout's upstream (§3), or you plugged the hub into the on-board USB-C
 (§2 — it can't host, ever).
 
 **webconfig connects but every command times out.**
-Firmware predating the CDC fixes. Current firmware gates CDC output on `tud_mounted()`, not
-`tud_cdc_connected()` — the latter also requires the host to assert DTR, and webconfig
-deliberately *deasserts* DTR. Re-flash.
+First disconnect and reconnect to reset the client session. If the problem persists, check the firmware version and logs. Builds predating the CDC fixes gated replies on `tud_cdc_connected()` (which requires DTR); current firmware uses `tud_mounted()`, because webconfig deasserts DTR. Update an affected old build.
 
 **More devices listed than you own (e.g. 4 devices filling 7 slots).**
 Also fixed. Composite controllers (the Logitech RS Shifter & Handbrake and RS H-Shifter) expose a
@@ -258,9 +255,7 @@ second HID interface with no axes, buttons, hat or keys; those are now rejected 
 **Pedals show on the base for ~2 s, then drop to analog and jitter — repeating.**
 ⚠️ **Suspect the wiring before the firmware.** The pedal port is unforgiving about line integrity.
 A marginal jumper — especially **ground**, or TX (PA2 → pedal pin 5) — CRC-corrupts the 100 Hz
-frames; the base rejects them and falls back to analog sensing. This has been a re-seated wire
-every time, never a code change. The `[pedals]` console trace is the diagnostic: if it reaches
-`STREAMING` and stays there, the drop is base-side, i.e. electrical.
+frames; the base rejects them and falls back to analog sensing. Re-seating a wire fixed this during bring-up. Also inspect the `[pedals]` trace: a `stream gap` before an `RX error burst` points to an adapter polling/streaming stall, as described below. Remaining in `STREAMING` alone does not prove every frame reached the wheelbase intact.
 
 **Pedals appear as ClubSport Pedals V3, but values stay at 0%.**
 Check live inputs, channel bindings and output values in webconfig or SimHub, then query
@@ -283,14 +278,14 @@ gaps for long enough — so the burst means "the base gave up on the stream", no
 the plug". The log now says why: the burst line breaks down error types (`fe=` wrong-baud traffic
 from the re-handshaking base, `ore=` the adapter's own UART overran), and a preceding
 `[pedals] stream gap N ms — main loop stalled` line means the adapter caused it (e.g. `save_config`
-blocks on a flash erase for a few seconds — a re-handshake right after hitting Save is expected).
+blocks interrupts for roughly 1 s during the flash erase — a re-handshake right after hitting Save is possible).
 A burst with *no* gap line before it points at the base side or the wiring instead.
 
 **One device's inputs freeze at their last values, but it's still listed as connected.**
-Root-caused and fixed in current firmware — re-flash if you see this. The Simnet pedal's own
+The investigation reproduced a device-side hang and fixed adapter-side stalls; a final long driving soak is still unrecorded (see [remaining validation](PORT-STATUS.md#remaining-validation-and-known-limitations)). The Simnet pedal's own
 firmware hangs its USB endpoint if the adapter stops polling it for ~2 s mid-stream (measured:
 survives 1.6 s, dies at 2.0 s), and older adapter firmware really did create such gaps under
-load; current firmware keeps the worst gap ~120 ms. Full record in PORT-STATUS. Mid-session
+load; the post-fix bench measured a worst gap of ~120 ms during connection, excluding Save. Full record in PORT-STATUS. Mid-session
 recovery if it ever recurs: **replug the frozen device at the hub** (no reboot needed). One
 known residual near-miss: **Save to adapter** pauses polling ~1 s for the flash write — a pedal
 stutter right after a Save is that, and it recovers by itself.

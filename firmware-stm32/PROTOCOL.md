@@ -5,7 +5,7 @@ The STM32 firmware is the source of truth for the line-based JSON protocol used 
 ## Internal Software Design
 
 ### 1. Channel Model
-The firmware manages **14 virtual output channels**, plus a bindable `gear_N` (neutral) for the H-pattern:
+The protocol exposes **15 binding channel keys**: 14 active outputs plus `gear_N` (neutral) for the H-pattern:
 * **Gears (8 + Neutral):** `gear_R`, `gear_1` .. `gear_7`, and `gear_N` — 9 gear binding slots in total. `gear_N` is a panic-neutral override in `hold` mode and the explicit shift-to-neutral input in `latch` mode.
 * **Sequential (2):** `shift_up`, `shift_down`
 * **Analog (4):** `handbrake`, `throttle`, `brake`, `clutch`
@@ -26,7 +26,7 @@ Each channel is an array of four bindings. Clearing a slot sets its `type` to `"
 | `rawMin`, `rawMax` | Native axis values defining the captured input range. |
 | `threshold` | Post-scale axis-as-button cutoff, 0..65535. |
 | `deadzoneLow`, `deadzoneHigh` | Post-scale output endpoints, 0..65535. |
-| `invert` | Boolean; reverses the scaled axis direction. |
+| `invert` | Boolean; reverses the scaled axis direction, or negates a button/hat/key match. |
 
 `get_config` returns `version`, `pulseMs`, `gearMode`, `max_bindings_per_channel`, `gear` (channel-keyed binding arrays), `gearOut` (channel-keyed `{x,y}` DAC codes), and binding arrays for `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, and `clutch`. Internal magic, padding and CRC fields are not exposed over JSON. Both clients also accept legacy single-binding objects when reading older configuration data.
 
@@ -46,7 +46,7 @@ When switching between non-neutral gears, the firmware inserts a `NEUTRAL_TRANSI
 A successful upshift or downshift triggers a brief pull-to-ground pulse (using GPIO open-drain mode to avoid fighting the wheelbase's 3.3V internal pull-ups). The duration is defined by `pulseMs` (default 50 ms).
 
 ### 4. Axis Channels
-`eval_axis` linearly remaps a raw axis from its captured `[rawMin, rawMax]` to `[0, 65535]`, applies `invert`, then snaps values inside the deadzone bands flat. Threshold and deadzone are compared against the **post-scale** value, so `32768` always means 50% regardless of the source device's native bit depth. Raising `deadzoneLow` a couple percent is what kills the at-rest brake jitter.
+`scale_axis`, called by `eval_axis`, linearly remaps a raw axis from its captured `[rawMin, rawMax]` to `[0, 65535]`, applies `invert`, then snaps values at or below `deadzoneLow` to 0 and at or above `deadzoneHigh` to 65535. The middle interval is not stretched. When both raw endpoints are zero, the raw value passes through before inversion/deadzones. Axis-as-button bindings compare the result with `>= threshold`; threshold and deadzone values use **post-scale** units, so `32768` means approximately 50% regardless of native bit depth. Raising `deadzoneLow` a couple percent removes at-rest brake jitter.
 
 ### 5. Flash Storage and Versioning
 Configuration is stored in bank 2, sector 0 at `0x08100000`; application code and firmware updates use bank 1. The configuration layout is locked by a static assert to exactly **1132 bytes** (current schema `CONFIG_VERSION` 3).
@@ -66,17 +66,17 @@ Send single-line JSON objects over USB CDC or the USART1 console. Responses and 
 
 | Request Shape | Response / Effect |
 |---|---|
-| `{"cmd":"version"}` | `{"fw":"fanadapter-stm32","ver":"0.6.1","protocol":6,"max_bindings_per_channel":4}` |
-| `{"cmd":"list_devices"}` | Returns a list of active USB host devices, showing VID, PID, the `manufacturer` / `product` USB string descriptors (empty string when the device reports none), and button/axis counts and `has_hat` / `has_keyboard` capabilities parsed from the HID report descriptor. |
+| `{"cmd":"version"}` | `{"fw":"fanadapter-stm32","ver":"0.6.2","protocol":6,"max_bindings_per_channel":4}` |
+| `{"cmd":"list_devices"}` | Returns `{"devices":[...]}` for all eight pool slots, including disconnected slots. Each has `slot`, `connected`, VID/PID, `manufacturer` / `product` strings, descriptor-derived `axis_count`, `button_count`, `has_hat` and `has_keyboard`. Filter by `connected` to count attached interfaces. |
 | `{"cmd":"get_config"}` | Returns the full `Config` JSON object (bindings, deadzones, gear DAC configurations, and `gearMode` = `"hold"` or `"latch"`). Each binding's `type` is one of `"none"`, `"button"`, `"axis"`, `"hat"`, `"key"`. For `"hat"`, `index` is the strict direction (`0`=N, `1`=NE, `2`=E, `3`=SE, `4`=S, `5`=SW, `6`=W, `7`=NW); for `"key"`, `index` is the HID Keyboard/Keypad scancode. |
 | `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Sets a specific binding slot. Channel keys: `gear_R`, `gear_1`..`gear_7`, `gear_N`, `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, `clutch`. Binding matches the `InputBinding` shape, including the `"hat"` and `"key"` types. |
-| `{"cmd":"set_gear_dac","channel":"gear_3","x":2163,"y":3430}` | Calibrates the X/Y 12-bit DAC targets for a specific gear. `gear_N` sets the Neutral column target. |
+| `{"cmd":"set_gear_dac","channel":"gear_3","x":2163,"y":3430}` | Calibrates the X/Y 12-bit DAC targets for a specific gear. Use 0..4095; `gear_N` sets both neutral X and Y targets. |
 | `{"cmd":"set_pulse_ms","value":50}` | Configures the sequential gear shift pull pulse duration. |
 | `{"cmd":"set_gear_mode","value":"hold"\|"latch"}` | Selects the H-pattern shifter mode. `hold` = gear active only while its binding is held (real shifter); `latch` = a rising edge switches gear until another gear / Neutral fires (keyboard / gamepad friendly). |
 | `{"cmd":"save_config"}` | Commits active RAM configuration to flash bank 2. |
 | `{"cmd":"reset_config"}` | Reloads compiled default values into RAM (does not touch flash until `save_config`). |
 | `{"cmd":"reboot"}` | Acks, then soft-reboots the adapter. |
-| `{"cmd":"live_inputs","on":true}` | Enables continuous streaming of `live` input events when axes or buttons change state. |
+| `{"cmd":"live_inputs","on":true}` | Enables on-change `live` input events (axes, buttons, hat or keys) and device attach/detach events. Does not request a full initial snapshot; use `list_devices` for the current pool. |
 | `{"cmd":"live_outputs","on":true}` | Enables continuous streaming of `outputs` events summarizing active virtual channels (~30 Hz). |
 | `{"cmd":"test_axis","channel":"throttle","value":12345}` | Forces a specific axis channel to a value for 500 ms, then reverts. |
 | `{"cmd":"test_pulse","direction":"up"}` | Triggers a sequential up/down pulse using the configured `pulseMs`. |
@@ -87,7 +87,7 @@ Send single-line JSON objects over USB CDC or the USART1 console. Responses and 
 
 | Request | Response / effect |
 |---|---|
-| `{"cmd":"set_gear","channel":"gear_3"}` | Direct output: force the H-pattern gear, overriding the USB-device mapping. Sticky until `release_outputs`. Channels `gear_R`, `gear_1`..`gear_7`, `gear_N`. |
+| `{"cmd":"set_gear","gear":"gear_3"}` | Direct output: force the H-pattern gear, overriding the USB-device mapping. Sticky until `release_outputs`. Values: `gear_R`, `gear_1`..`gear_7`, `gear_N`. Unlike `test_gear`, this command uses the field **`gear`**. |
 | `{"cmd":"set_outputs","throttle":40000,"brake":0,...}` | Direct output: set any subset of the four pedal axes (0..65535). Acked. Absent channels keep their current override. |
 | `{"cmd":"stream_axes","throttle":40000,...}` | **No reply.** The pedal hot path (protocol ≥ 6): identical effect to `set_outputs`' axis half, but answers nothing, so a client streams it at rate without a round-trip and it never touches FIFO reply matching. |
 | `{"cmd":"pulse_shift","direction":"up"\|"down"}` | Direct output: one sequential shift pulse. |
@@ -96,11 +96,13 @@ Send single-line JSON objects over USB CDC or the USART1 console. Responses and 
 | `{"cmd":"dfu"}` | Acks, then reboots into the ROM bootloader for a hands-free reflash ([build guide](README.md#4-build--flash)). The CDC port disappears and a DFU device takes its place. |
 | `{"cmd":"usb_status"}` | USB-host diagnostics: per claimed slot `{mounted,busy,reports,age_ms,idle_rearms,da}`, plus a raw dwc2 host-channel dump and request-queue counters. See the [input-freeze troubleshooting guide](README.md#7-troubleshooting). |
 | `{"cmd":"usb_kick"}` | Aborts + re-arms every claimed HID pipe; returns the aborted-slot bitmask. Measured NOT to revive a wedged pipe — a diagnostic, not a fix. |
-| `{"cmd":"usb_stall","ms":2000}` | Skips USB-host servicing for `ms` while everything else runs — the freeze reproducer. Diagnostic only. |
+| `{"cmd":"usb_stall","ms":2000}` | Skips `tuh_task()` for `ms` (default 1000, clamped to 1..10000), while the rest of the loop and interrupts continue. Returns `{"ok":true,"ms":2000}`. Diagnostic reproducer; a 2 s gap can leave the tested pedal unresponsive until replugged. |
 
 Direct-output overrides are **sticky with no firmware-side timeout**. The PC command wins over the adapter's USB-device mapping for each channel it touches until `release_outputs`; clients must release when stopping or disconnecting. `stream_axes` is the only no-reply command: never send a replying command through a fire-and-forget transport, or its reply will desynchronize FIFO matching. Older protocol versions need the acknowledged `set_outputs` path.
 
 ### Asynchronous Events
+
+`device_attached`, `device_detached` and `live` require `live_inputs` to be enabled. A client connecting after enumeration must call `list_devices`; enabling events does not replay earlier attachments. `outputs` requires `live_outputs`. The `live`/`outputs` streams may drop whole frames when console buffers are congested.
 
 * **`{"event":"device_attached","slot":0,"vid":1133,"pid":49771,"manufacturer":"Logitech","product":"G29 Driving Force","axis_count":...,"button_count":...,"has_hat":false,"has_keyboard":false}`** — Sent when a USB device is enumerated. `manufacturer` / `product` are the device's USB string descriptors (sanitised to printable ASCII; empty string when the device reports none).
 * **`{"event":"device_detached","slot":0}`** — Sent when a device is disconnected.
@@ -129,8 +131,8 @@ Calibration coordinates the adapter's input mappings (configured on the adapter 
 
 ### Pedals & Handbrake Calibration
 1. In webconfig, map your USB pedals to **throttle**, **brake**, **clutch**, and **handbrake**.
-2. Select **Capture min/max** for each pedal. Fully actuate each pedal so the UI observes the maximum and minimum raw values.
-3. If a pedal sits at 1% when released, increment **Deadzone low** until the processed preview bar rests flat at 0%. Click **Save to adapter**.
+2. Use **Listen** (or **Remap** for an existing binding), hold still through the baseline, then fully press and release the pedal. For an existing axis binding, its expanded editor also offers **Recalibrate from live (4 s)** to resample `rawMin`/`rawMax`; this resampling preserves the current Invert setting.
+3. If a pedal sits at 1% when released, raise the lower handle of **Deadzone** until the processed preview bar rests flat at 0%. Click **Save to adapter**.
 4. Open the Fanatec Control Panel (which sees the emulated device as **ClubSport Pedals V3**).
 5. Toggle **Manual Calibration** in the Fanatec UI, depress each pedal fully, and click **Set Max** / **Set Min** to finalize the wheelbase range.
 

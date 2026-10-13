@@ -63,7 +63,7 @@ typedef struct {
 } GearOutputCalibration;
 _Static_assert(sizeof(GearOutputCalibration) == 4, "GearOutputCalibration layout locked");
 
-// H-pattern shifter mode (see the M3 updateShifter port).
+// H-pattern shifter mode, applied by update_shifter().
 enum {
   GEAR_MODE_HOLD  = 0, // gear active only while its binding is held
   GEAR_MODE_LATCH = 1, // rising edge switches gear; stays until the next edge
@@ -160,8 +160,8 @@ bool     eval_channel_button(const ChannelBindings *cb); // OR across the 4 slot
 
 // ---------------- Per-tick application ----------------
 
-// Read inputs, evaluate bindings, drive outputs. Wired into the main loop. (M3 drives the H-pattern
-// gears; sequential/handbrake/pedals join in M5/M6.)
+// Read inputs, evaluate bindings and refresh DAC, sequential, handbrake and pedal outputs.
+// Called on every main-loop iteration before protocol telemetry and pedals_update().
 void                  mapping_tick(void);
 const OutputSnapshot *mapping_outputs(void);
 

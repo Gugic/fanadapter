@@ -16,7 +16,8 @@ namespace Fanadapter.SimHub.UI
     /// even on the first run. The cycle: get the image (a picked local .bin, else the published
     /// build) → {"cmd":"dfu"} → release the COM port → open the ROM bootloader over WinUSB →
     /// erase/write/leave → wait for the COM port to re-enumerate → reconnect → confirm the version.
-    /// The local-file path is what works before a public Pages deploy exists.
+    /// Published images come from firmware-v GitHub Releases (or an explicit mirror override).
+    /// Local .bin selection supports development and offline recovery.
     /// </summary>
     public class FirmwareUpdateViewModel : INotifyPropertyChanged
     {
@@ -44,7 +45,7 @@ namespace Fanadapter.SimHub.UI
 
         public RelayCommand UpdateCommand { get; }
 
-        /// <summary>Pick a local .bin — the path that works before/without a Pages deploy.</summary>
+        /// <summary>Pick a local development/recovery .bin without downloading a release.</summary>
         public RelayCommand BrowseCommand { get; }
 
         private FirmwareManifest _manifest;
@@ -88,7 +89,7 @@ namespace Fanadapter.SimHub.UI
             _localFileName != null
                 ? "file: " + _localFileName
                 : _manifest == null
-                    ? (_checked ? "latest: unavailable (repo private / offline)" : "latest: checking…")
+                    ? (_checked ? "latest: unavailable (offline / release unavailable)" : "latest: checking…")
                     : string.Format("latest: {0} · {1}", _manifest.Version, _manifest.Commit);
 
         /// <summary>"Flash <file>" vs "Update firmware" so the button says which source it will use.</summary>

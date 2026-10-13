@@ -7,8 +7,10 @@
   on the board. It auto-detects the ROM bootloader (--wait), flashes + verifies over the S3,
   then Go's into the freshly-flashed app. No CubeProgrammer, no DTR juggling, no USB-C swap.
 
-  (Full hands-free isn't possible on this board: the H7 ROM only serves USART over the
-  hardware boot path, the option-byte trick is banned, and BOOT0 has no pad to wire the S3 to.)
+  This UART recovery path uses manual BOOT0/RST. Normal WeAct updates use USB-C DFU
+  through webconfig or SimHub and do not require this bridge. The default bank-1 erase
+  preserves config, but the underlying tool falls back to a global wipe if that erase
+  is rejected. -MassErase explicitly wipes both banks.
 
 .EXAMPLE
   .\tools\flash.ps1                 # build + flash on COM16, press BOOT0+RST when prompted
@@ -18,7 +20,7 @@
 param(
   [string]$Port = "COM16",
   [switch]$NoBuild,
-  [switch]$MassErase,   # wipe the saved config too (default: bank-1 erase, config preserved)
+  [switch]$MassErase,   # force a config wipe; normal bank-1 erase also has a global-wipe fallback
   [int]$Wait = 30
 )
 $ErrorActionPreference = "Stop"

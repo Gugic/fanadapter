@@ -11,23 +11,17 @@ extern int console_printf(const char *fmt, ...);
 //
 // MUST be a DIFFERENT bank than the code. The H7 forbids reading a flash bank while it is being
 // erased/programmed (read-while-write works only ACROSS the two banks). The firmware executes from
-// bank 1 (image @ 0x08000000, ~55 KB), so the config sector MUST live in bank 2 — otherwise the
+// bank 1 (image @ 0x08000000), so the config sector MUST live in bank 2 — otherwise the
 // CPU's instruction fetch during the 128 KB sector erase hits a busy bank and HARD-FAULTS. (An
 // earlier bank-1 sector-3 placement did exactly that: every save_config froze the board.) With the
 // sector in bank 2, instruction fetch from bank 1 continues throughout the erase.
 //
-// WHY bank-2 SECTOR 0 specifically:
-//   * The chip is the 1 MB STM32H743VG, but the board json / linker declare the 2 MB VI part. The
-//     CMSIS header hardcodes FLASH_BANK2_BASE = 0x08100000 (independent of size). On the VG, bank 2
-//     is the 512 KB block 0x08100000..0x0817FFFF (sectors 0..3); sectors >= 4 (e.g. 0x08180000+,
-//     the naive "top sector") do NOT exist on the VG. Sector 0 @ 0x08100000 is the FIRST, always-
-//     present sector of bank 2 — the safe choice, verified live by reading 0x08100000 over the ROM
-//     bootloader (distinct from the bank-1 image at 0x08000000, i.e. not aliased) before trusting it.
-//   * Cross-bank from the image, so no overlap and no fetch stall.
+// Bank 2 starts at 0x08100000 on the current 2 MB H743VI target. Sector 0 also worked on the
+// older H743VG bring-up board; that historical board is not the current linker/board target.
 //
-// NOTE: the erase still BUSY-WAITS (FLASH_WaitForLastOperation), pausing the main loop for the erase
-// duration — but the CPU keeps fetching, so it completes cleanly. save_config is rare/user-initiated;
-// the wheelbase tolerates the few pedal frames skipped during it (measured erase ~ see PORT-STATUS).
+// The erase busy-waits with interrupts disabled for roughly 1 s in recorded measurements.
+// This pauses host polling and the pedal stream and can trigger a wheelbase re-handshake.
+// It remains a known limitation; see PORT-STATUS.md before changing the flash/IRQ policy.
 #define CONFIG_FLASH_ADDR   0x08100000u
 #define CONFIG_FLASH_BANK   FLASH_BANK_2
 #define CONFIG_FLASH_SECTOR FLASH_SECTOR_0

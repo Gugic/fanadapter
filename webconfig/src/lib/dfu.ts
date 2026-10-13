@@ -98,8 +98,8 @@ export function isWebUsbSupported(): boolean {
 /**
  * Prompt the user to pick the bootloader. Must be called from a user gesture (Chromium requires
  * transient activation for requestDevice) — which is why the picker lives on its own button.
- * Needed exactly ONCE per machine+origin: the grant persists, and every later update finds the
- * device silently via waitForDfuDevice().
+ * Grants belong to a browser profile, origin and device. While a grant remains available,
+ * waitForDfuDevice() can find it silently; cleared/revoked permissions need another picker.
  */
 export async function requestDfuDevice(): Promise<USBDevice> {
   return navigator.usb.requestDevice({ filters: [{ vendorId: DFU_VID, productId: DFU_PID }] })
@@ -107,8 +107,8 @@ export async function requestDfuDevice(): Promise<USBDevice> {
 
 /**
  * Wait for a previously-granted bootloader to appear on the bus, polling getDevices(). Resolves
- * null on timeout — either the board didn't make it into the bootloader, or this machine has
- * never granted it (first update: fall back to requestDfuDevice from a fresh gesture).
+ * null on timeout — either the board did not enter the bootloader, or no permission remains
+ * for this profile/origin/device (fall back to requestDfuDevice from a fresh gesture).
  */
 export async function waitForDfuDevice(timeoutMs: number): Promise<USBDevice | null> {
   const deadline = Date.now() + timeoutMs

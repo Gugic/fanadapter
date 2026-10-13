@@ -1,7 +1,7 @@
 // Line-based JSON protocol over the console (USART1 + CDC) — the WebSerial contract. See protocol.h.
 //
-// M2 scope adds the config command set on top of M1's device/live machinery: get_config (streamed),
-// set_binding, set_gear_dac, set_pulse_ms, set_gear_mode, save_config, reset_config. Command/event
+// Implements config, input/output telemetry, bench tests, direct output, DFU and USB diagnostics.
+// get_config is streamed in chunks. Command/event
 // shapes match webconfig/src/lib/{serial.ts,types.ts} and Fanadapter.Core/Protocol.cs.
 #include "protocol.h"
 
@@ -110,8 +110,8 @@ static void cmd_list_devices(void) {
 
 // get_config is ~8 KB of JSON — far larger than any single console buffer — so it is STREAMED as
 // many small console_printf() chunks (each well under the 256-byte sink buffer). The USART1 leg
-// blocks-until-sent and the CDC leg drains with backpressure (see console_printf), so nothing is
-// truncated. Each binding/gearOut entry is one chunk.
+// waits for room only when USB is unmounted; with USB mounted it is a best-effort mirror.
+// The CDC reply path drains with bounded backpressure (see console_printf).
 static void emit_binding(const InputBinding *b) {
   console_printf("{\"vid\":%u,\"pid\":%u,\"type\":\"%s\",\"index\":%u,\"threshold\":%u,\"rawMin\":%u,"
                  "\"rawMax\":%u,\"deadzoneLow\":%u,\"deadzoneHigh\":%u,\"invert\":%s}",
@@ -293,8 +293,8 @@ static void cmd_test_gear(const json_kv *kv, int n) {
 // --- direct output control --------------------------------------------------------------------
 // The PC (SimHub / the web app) computes its own mapping and commands the adapter's outputs. These
 // override the USB-device mapping for the channels they touch (sticky until release_outputs). set_gear
-// + set_outputs are the live drive path (set_outputs is the 100 Hz pedal/handbrake hot path); the PC
-// streams them fire-and-forget — the ok reply can be ignored.
+// and set_outputs are acknowledged and must consume their replies. Only stream_axes is no-reply
+// and may use a fire-and-forget write for the protocol-6 pedal/handbrake hot path.
 static void cmd_set_gear(const json_kv *kv, int n) {
   char gear[16];
   if (!json_get_str(kv, n, "gear", gear, sizeof(gear))) {

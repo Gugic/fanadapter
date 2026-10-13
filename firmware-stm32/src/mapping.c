@@ -328,8 +328,7 @@ static void update_sequential(void) {
 }
 
 // ---------------- Per-tick application ----------------
-// Gears drive the DAC (M3); sequential drives the open-drain pins. Handbrake PWM (M5) and the pedal
-// stream (M6) consume the axis snapshot values once those sinks land.
+// Drive DAC gears, sequential open-drain pins and both handbrake/pedal axis sinks every tick.
 void mapping_tick(void) {
   update_shifter();
   update_axes();

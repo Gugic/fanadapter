@@ -9,18 +9,22 @@ Why this exists instead of STM32CubeProgrammer:
   and RTS deasserted, opens the port once, waits out the (one) S3 reboot the open still causes, then
   speaks AN3155 directly. It controls every byte, so timing/parity are predictable.
 
-Bootloader entry (pick one):
+Bootloader entry:
   --enter manual   You put the STM32 in the ROM bootloader yourself (hold BOOT0, tap NRST) BEFORE
-                   running this. Use this to PROVE the bridge+protocol path works end to end.
-  --enter dfu      We send "dfu\n" on the console first so the firmware jumps to the bootloader
-                   itself (hands-free). Only works once the programmatic jump is reliable.
+                   running this, or use --wait to enter it after launching the tool.
+  --enter dfu      Historical diagnostic: sends the app console command before attempting UART
+                   autobaud. Current software entry is verified for USB DFU, not UART.
+                   Use manual BOOT0/RST for this UART flasher.
 
 Wire format is fixed by the ROM: 8 data bits, EVEN parity, 1 stop bit. The S3 bridge mirrors that.
 
 Usage:
-  python stm32_uart_flash.py --port COM16 --bin .pio/build/weact_h743/firmware.bin --enter manual --go
-  python stm32_uart_flash.py --port COM16 --bin firmware.bin --enter dfu --go     # after jump is fixed
+  python stm32_uart_flash.py --port COM16 --bin .pio/build/weact_h743/firmware_raw.bin --enter manual --go
   python stm32_uart_flash.py --port COM16 --probe                                 # just sync + Get + Get-ID
+
+Use flash.ps1 to build a raw image without PlatformIO's DFU suffix. The default bank-1 erase
+preserves config, but a rejected bank-1 erase falls back to a global wipe; --mass-erase also
+wipes bank 2. See PORT-STATUS.md for this recovery tool's limitations.
 
 Requires: pyserial  (pip install pyserial)
 """
@@ -307,7 +311,7 @@ def main():
     ap.add_argument("--bin", help="firmware .bin to flash (omit with --probe)")
     ap.add_argument("--enter", choices=["manual", "dfu"], default="manual",
                     help="manual: you entered the bootloader by hand (BOOT0+RST). "
-                         "dfu: send 'dfu' console line to jump programmatically.")
+                         "dfu: historical software-entry diagnostic; current UART recovery uses manual entry.")
     ap.add_argument("--settle", type=float, default=1.5,
                     help="seconds to wait after opening the port for the S3 bridge to reboot")
     ap.add_argument("--probe", action="store_true",
@@ -319,7 +323,7 @@ def main():
     ap.add_argument("--go", action="store_true", help="issue Go to 0x08000000 after flashing")
     ap.add_argument("--mass-erase", action="store_true",
                     help="force a global mass erase (wipes the saved config in bank 2). Default erases "
-                         "bank 1 only, preserving config across reflashes.")
+                         "bank 1, but falls back to a global wipe if that erase is rejected.")
     ap.add_argument("--wait", type=float, default=0.0,
                     help="poll for the bootloader up to N seconds — launch the command, THEN press "
                          "BOOT0+RST on the board (the middle-ground hands-free-ish flow)")
@@ -335,9 +339,9 @@ def main():
 
         if args.enter == "dfu":
             bl.send_console_line("dfu")
-            # Firmware programs BOOT_ADD0 -> system memory then resets; the boot ROM re-enters via the
-            # hardware path. Give the option-byte write + reset time to land (sync() also retries).
-            log("[enter] waiting 1.5s for the option-byte reset to re-enter the ROM bootloader...")
+            # Current firmware uses a DTCM token + reset + early branch, not option-byte writes.
+            # USB DFU is verified on that path; UART may not answer here.
+            log("[enter] waiting 1.5s after dfu; UART entry is unverified — use BOOT0/RST if sync fails...")
             time.sleep(1.5)
 
         if not bl.sync(wait_s=args.wait):

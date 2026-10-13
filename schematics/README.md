@@ -3,7 +3,7 @@
 This directory contains the physical, mechanical, and electrical details for constructing the `fanadapter` hardware.
 
 > [!NOTE]
-> **Contributions Welcome:** A structured PCB layout (KiCad project and Gerber files) and a 3D-printable enclosure are planned for the future, but are not yet available. If you design a custom PCB or enclosure for this project, contributions and pull requests are highly encouraged!
+> **Contributions Welcome:** This directory currently contains wiring documentation, not a KiCad project, Gerbers or enclosure models. PCB and enclosure designs are unscheduled ideas; contributions are welcome.
 
 ---
 
@@ -36,7 +36,7 @@ The board's on-board USB-C is a device port; the hub must use the PB14/PB15 head
 
 ## Fanatec Port Protocols & Pinouts
 
-The adapter connects to the wheelbase using three 6P6C RJ12 cables. Each port operates under a distinct hardware protocol.
+The usual build uses three 6P6C RJ12 cables: Shifter 1, Shifter 2 and Pedals. The separate Handbrake port is an optional alternative to the pedal-stream handbrake. Each port operates under a distinct hardware protocol.
 
 ### 1. Shifter 1 Port (H-Pattern, Analog)
 Encodes the X (column) and Y (row) position of the gear lever using analog voltages.
@@ -112,9 +112,9 @@ Expects an analog voltage. The wheelbase normalizes this range in calibration, b
 > [!WARNING]
 > **Handbrake Connection Routing Choice:** On modern Fanatec firmware (CSL Elite V2 era onwards including DD+), the wheelbase listens to the digital CSL Elite V2 pedal UART protocol stream, which carries its own handbrake field. The firmware writes the handbrake channel value to **both** the PWM pin (for dedicated setups) and the pedal stream's handbrake field.
 > 
-> *However*, if the wheelbase detects a cable plugged into the dedicated handbrake port (by sensing Pin 1 + Pin 2 tied to ground), **it will override the pedal-stream values** and lock the handbrake to whatever is measured on that physical port. Therefore, **if you are using the pedal port emulation, leave the dedicated handbrake RJ12 cable unplugged from the wheelbase.** The handbrake will route digitally and perfectly over the pedal stream.
+> *However*, if the wheelbase detects a cable plugged into the dedicated handbrake port (by sensing Pin 1 + Pin 2 tied to ground), **it will override the pedal-stream values** and lock the handbrake to whatever is measured on that physical port. Therefore, **if you are using the pedal port emulation, leave the dedicated handbrake RJ12 cable unplugged from the wheelbase.** On the tested DD+, the handbrake then uses the digital pedal stream.
 
-**Output level (this build):** PC8 drives 0–3.3 V (PWM + RC filter), not the native 0–5 V. After handbrake calibration the wheelbase normalizes that reduced swing to full range; until you recalibrate, the Fanatec app may cap the handbrake at ~65% (3.3 V / 5 V ≈ 66% of the rail). For a native 0–5 V swing without recalibration, add an op-amp scaler stage (see the root [Roadmap](../README.md#project-roadmap)).
+**Output level (this build):** PC8 drives 0–3.3 V (PWM + RC filter), not the native 0–5 V. After handbrake calibration the wheelbase normalizes that reduced swing to full range; until you recalibrate, the Fanatec app may cap the handbrake at ~65% (3.3 V / 5 V ≈ 66% of the rail). A 0–5 V op-amp scaler is an [unimplemented extension](../README.md#implemented-features-and-possible-extensions), not part of the wiring below.
 
 > [!NOTE]
 > **Oakheart guide pin numbering.** This pinout was verified empirically — a potentiometer on the port while watching the Fanatec app's handbrake indicator move. The Oakheart handbrake guide in [References](../README.md#references-and-acknowledgments) describes the same wiring correctly in its text but uses an **inverted** pin-numbering convention vs. this README (and the Fanashifter / DIY-Sim / Yin Zhong sources): their "Pin 1" is our Pin 6, etc. The physical wire mapping is identical — only the labels differ.
@@ -127,8 +127,8 @@ Speaks a digital UART protocol to emulate a Fanatec **CSL Elite V2 pedal control
 **Advantages over analog pedal emulators:**
 * **Simple Hardware:** Requires only 3 wires (TX, RX, GND) directly connected to PA2/PA3 and GND. No DAC, level-shifter, or RC filters needed. (The wheelbase data lines operate at 3.3V TTL logic, matching the STM32).
 * **Load Cell Features:** Enriches the software interface by unlocking load-cell specific calibration settings in the Fanatec Control Panel.
-* **No EMI Noise:** Immunity to motor EMI, thermal drift, and PWM ripple.
-* **Full Bit Depth:** The digital protocol carries full per-axis resolution end-to-end — no ADC quantization loss (the analog path is limited by the wheelbase's ~10–12 effective bits).
+* **Digital transport:** Avoids an extra analog conversion and PWM-filter ripple on the pedal path. UART still depends on signal integrity and grounding; interference can corrupt frames and drop the link.
+* **16-bit axis fields:** The packet carries each mapped axis as a 0–65535 value. Effective resolution still depends on the source controller, calibration and wheelbase processing.
 
 **RJ12 Pinout:**
 | Pin | Function (Control Board PoV) | STM32 Connection | Notes |
@@ -147,7 +147,7 @@ Speaks a digital UART protocol to emulate a Fanatec **CSL Elite V2 pedal control
 > **DD+ handshake ordering quirk.** The [GeekyDeaks Go reference](https://github.com/GeekyDeaks/fanatec-pedal-emulator) expects the wheelbase to send three Step-2 query packets in a strict `0x02 → 0x00 → 0x03` order and replies once after collecting all three. The DD+ firmware tested here (base FW `2.11.0.2`, Fanatec Control Panel `1.4.2.3`) does **not** behave that way — it sends `0x00` and `0x03` repeatedly (sometimes 30+ times each) before `0x02`, so strict-linear matching never completes. This firmware instead follows the [community sketch in GeekyDeaks#4](https://github.com/GeekyDeaks/fanatec-pedal-emulator/issues/4): collect 12-byte framed packets in any order, validate CRC, and reply per query immediately; the handshake completes on the `0x03` ack regardless of whether `0x00` / `0x02` have been seen yet.
 
 > [!NOTE]
-> **Analog pedal mode (not used here).** The DD+ also supports an older analog pedal identity ("CSL Pedals with Clutch Kit") that some third-party control boxes (e.g. the Simsonn SP Pro) drive. In that mode the pedal RJ12 carries three analog signals — **Pin 3 = Clutch, Pin 4 = Brake, Pin 5 = Throttle**, each idling ~4.1 V and dropping when pressed. This adapter targets the UART path instead; an analog output stage is future work (see the root [Roadmap](../README.md#project-roadmap)).
+> **Analog pedal mode (not used here).** The DD+ also supports an older analog pedal identity ("CSL Pedals with Clutch Kit") that some third-party control boxes (e.g. the Simsonn SP Pro) drive. In that mode the pedal RJ12 carries three analog signals — **Pin 3 = Clutch, Pin 4 = Brake, Pin 5 = Throttle**, each idling ~4.1 V and dropping when pressed. This adapter targets the UART path instead; an analog output stage is an [unimplemented extension](../README.md#implemented-features-and-possible-extensions).
 
 ---
 
@@ -199,8 +199,8 @@ Sequential connections are purely digital. No filters are needed.
 
 ### Step 4: Wire the Pedal UART
 No filters are needed. Tie the serial lines directly:
-* STM32 **PA2 (USART2 TX)** → Pedal Breakout **Pin 5 (RX/TX line)**
-* STM32 **PA3 (USART2 RX)** → Pedal Breakout **Pin 4 (RX/TX line)**
+* STM32 **PA2 (USART2 TX)** → Pedal Breakout **Pin 5 (wheelbase RX)**
+* STM32 **PA3 (USART2 RX)** → Pedal Breakout **Pin 4 (wheelbase TX)**
 * Common GND rail → Pedal Breakout **Pins 1, 2, and 3**
 
 ### Step 5: Multimeter Pre-Flight Checks (Power Unplugged!)
@@ -208,7 +208,7 @@ Perform these safety checks with your multimeter before connecting the adapter t
 1. **GND Check:** Check continuity between STM32 GND and Pin 1 on all RJ12 breakouts. It should beep.
 2. **Select/Detect Check:** Check continuity between Shifter 1 Breakout Pin 2, Pin 3, and GND. All three must be connected.
 3. **Shorts Check:** Check that there is no continuity (no short) between board 3.3 V / 5 V and any RJ12 output pins.
-4. **Adjacent Pin Check:** Verify there are no adjacent shorts on any of the RJ12 breakout terminals.
+4. **Adjacent Pin Check:** Verify there are no unintended shorts. The ground/select/detect connections listed above intentionally join adjacent pins; signal and supply pins must remain separate.
 5. **Signal Check:** PA4/PA5 connect directly to Shifter 1 Pins 4/5. If the handbrake fallback is installed, PC8 to its Pin 5 should read ~1 kΩ.
 
 ### Step 6: Output Voltage Verification
@@ -218,7 +218,7 @@ Before plugging the cables into the wheelbase:
 3. In the **Outputs** tab, trigger the test voltages for the gears (or use the JSON command `{"cmd":"test_gear","channel":"gear_3"}`).
 4. Measure the Shifter 1 X/Y pins with a DC voltmeter against the [target table](#1-shifter-1-port-h-pattern-analog). Allow the near-rail DAC buffer clamp described above for Reverse; adjust other mismatches with the per-gear DAC controls, then calibrate the shifter on the wheelbase.
 
-If everything checks out, it is safe to plug the cables into the Fanatec wheelbase.
+If the wiring and voltage checks pass, power down before connecting the RJ12 cables to the wheelbase.
 
 ---
 
@@ -256,4 +256,4 @@ If everything checks out, it is safe to plug the cables into the Fanatec wheelba
 
 ## License
 
-The hardware design is licensed under the **CERN Open Hardware Licence Version 2 — Permissive (CERN-OHL-P v2)**. Full terms and the project's dual-license details are in [LICENSE.md](../LICENSE.md); the root [README](../README.md#license) covers the commercial-reuse invitation.
+The hardware design is licensed under the **CERN Open Hardware Licence Version 2 — Permissive (CERN-OHL-P v2)**. License details and the link to the full terms are in [LICENSE.md](../LICENSE.md); the root [README](../README.md#license) covers the commercial-reuse invitation.

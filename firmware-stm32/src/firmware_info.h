@@ -3,7 +3,7 @@
 #pragma once
 
 #define FW_NAME "fanadapter-stm32"
-#define FW_VER  "0.6.1"
+#define FW_VER  "0.6.2"
 #define USB_PRODUCT_NAME "Fanadapter v" FW_VER
 #define USB_VID 0x1209
 #define USB_PID 0xFA00

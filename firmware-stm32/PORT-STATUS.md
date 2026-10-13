@@ -9,7 +9,7 @@ there. This file deliberately doesn't repeat them.
 
 ## Status
 
-**DONE — hardware-validated end to end**, including a
+**M0–M7 implemented and hardware-validated end to end**, including a
 real driving session on a ClubSport DD+. USB-host HID decode, mapping, DAC H-pattern gears,
 sequential, handbrake, and the CSL Elite pedal-UART stream all drive the wheelbase, with webconfig
 on the board's native USB CDC.
@@ -18,13 +18,16 @@ Current hardware: **WeAct MiniSTM32H743VITX** (STM32H743VIT6, 2 MB flash / 1 MB 
 LDO VCORE), both USB controllers live at once. Bring-up happened on a different board — see
 [Historical](#historical-fk743m3-bring-up) at the end.
 
-The long-standing input-freeze field bug is **root-caused and closed** (pending final field
-confirmation): the Simnet pedal's own firmware hangs its USB endpoint when it goes unpolled
+The input-freeze investigation has a **bench-reproduced cause and shipped mitigations**. The final long driving soak requested in [PR #33](https://github.com/Gugic/fanadapter/pull/33) is not recorded as completed: the Simnet pedal's own firmware hangs its USB endpoint when it goes unpolled
 mid-stream for ~2 s (measured threshold: survives 1.6 s, dies at 2.0 s), and older firmware
 really did create such gaps — console starvation, the 720 ms connect stall, CDC interrupt
-pressure. Current firmware keeps the worst polling gap at ~120 ms (13× margin). Full
+pressure. The post-fix bench measured a worst connection-time polling gap of ~120 ms, excluding Save. Full
 investigation record, the measured threshold sweep, and the one remaining >0.5 s gap
 (`save_config`) in [the freeze sections](#verdict-2026-07-21-threshold-sweep-the-terminal-mechanism-is-the-pedals-own-firmware).
+
+The investigation below is chronological: hypotheses and measurements describe the builds tested at each step. The **VERDICT** and [remaining limitations](#remaining-validation-and-known-limitations) give the latest recorded conclusion. Earlier claims that the console alone explained every freeze were superseded.
+
+Later work is merged: protocol 6 uses no-reply `stream_axes` for PC pedals ([#35](https://github.com/Gugic/fanadapter/pull/35)); releases are independent of Pages and USB labels include the version ([#42](https://github.com/Gugic/fanadapter/pull/42)); browser first-flash serial setup preserves programming success ([#44](https://github.com/Gugic/fanadapter/pull/44)). These PRs do not establish completion of the long hardware soak above.
 
 ## Milestones (M0–M7, all hardware-validated)
 
@@ -38,14 +41,13 @@ investigation record, the measured threshold sweep, and the one remaining >0.5 s
   `scaleAxis` maps `[rawMin,rawMax]` → 0..65535 at eval time.
 - **M2 — Config + flash + get/set/save/reset:** `mapping.{c,h}` (Config **1132 B, CONFIG_VERSION 3**, `_Static_assert`-locked; `crc32` verbatim from
   `webconfig/src/lib/crc32.ts`), `json_min.{c,h}` (zero-alloc JSON reader),
-  `config_store.{c,h}`. `get_config` streams in small chunks (USART1 blocks until sent, so no
-  truncation). **Two flash bugs here cost a bench session — see below.**
+  `config_store.{c,h}`. `get_config` streams in small chunks. Current console policy preserves the authoritative reply path; when USB is mounted, the UART mirror may truncate instead of blocking it (see the later mirror fix). **Two flash bugs here cost a bench session — see below.**
 - **M3 — DAC H-pattern:** `outputs.{c,h}` — **DAC1 ch1 = PA4 (X), ch2 = PA5 (Y)**, codes map 1:1
   to the schematics voltage table (output buffer on). Non-blocking neutral-transit FSM inserts a 50 ms release between gears. Sequential pulse landed here too: open-drain **PC6/PC7**, idle HIGH,
   non-blocking FSM.
 - **M4 — direct output control** (replaced an earlier "serial virtual-device inject" design): the
   PC (SimHub / the web app) owns the mapping and commands outputs directly. `set_gear`,
-  `set_outputs` (the 100 Hz hot path), `pulse_shift`, `release_outputs`. Semantics = **command
+  `set_outputs` (the original acknowledged axis path; protocol 6 later added no-reply `stream_axes` for the 100 Hz path), `pulse_shift`, `release_outputs`. Semantics = **command
   override**: a PC-set channel wins over the USB mapping, sticky until `release_outputs`. State in
   `mapping.c` (`g_ovr_*`). Standalone mode is unchanged.
 - **M5 — handbrake PWM fallback:** TIM3_CH3 on **PC8** (AF2), ARR=4095 / PSC=0 → ~15.6 kHz for an
@@ -83,8 +85,7 @@ that `while` loop forever, before USB ever inits. There's now a timeout that cal
    enables it). That faulted the core right after a clean erase+program. Removed — with D-cache off,
    memory-mapped flash reads are already coherent. If D-cache is ever enabled, re-add it guarded.
 
-The flash op is wrapped in `__disable_irq()`/`__enable_irq()` — defensive; `save_config` is rare so
-the ~1 s USB/console pause is fine.
+The flash op is still wrapped in `__disable_irq()`/`__enable_irq()`. Its roughly 1 s USB/console pause is a known limitation during driving; see the remaining polling-gap item below.
 
 ### Four latent USB bugs, all invisible until a board with two working USB controllers existed
 
@@ -136,15 +137,13 @@ wheelbase keeps receiving it — gear changes arrive up to a minute late, and th
 `RX error burst` → re-handshake. Rebooting fixes it for a few minutes. Devices stay listed as
 connected throughout, which is what makes it read as a stuck HID pipe.
 
-It is not. `live` and `outputs` events are emitted through `console_printf`, which does a
+In that build, `live` and `outputs` events were emitted through `console_printf`, which did a
 **blocking** `HAL_UART_Transmit` on the USART1 leg for every line, whether or not anything is
 attached to USART1. Do the arithmetic at 115200 8E1 (11 bits/char): a `live` line is ~58 chars ≈
 **5.5 ms**; an `outputs` line ~110 chars ≈ **10.5 ms**. Inputs stream at up to ~30 Hz and outputs
 stream *continuously*, so with both enabled **over half of every second is spent blocked in the
 console** — in a loop where `pedals_update()` runs last and needs a 10 ms cadence. The pedal stream
-collapses, the wheelbase falls back to analog, and mapping evaluation crawls. Both clients enable
-both streams on connect, and neither disables them if the tab or app disappears, which is why it
-always crept up minutes into a session. The CDC leg has the same shape: it spins up to 1000
+collapses, the wheelbase falls back to analog, and mapping evaluation crawls. At that time both clients enabled both streams on connect without tying them to pane visibility. SimHub now ties input telemetry to its settings pane. The old CDC leg had the same shape: it spun up to 1000
 `tud_task()` pumps per line when the host has stopped draining (port closed while still enumerated
 — exactly what a closed browser tab or a capture script leaves behind).
 
@@ -222,8 +221,7 @@ plugin's Devices tab (results land in its Logs tab):
   on that evidence. If it stays silent, the device itself stopped talking and the next lever is a
   hub port reset (SetPortFeature(PORT_RESET)), not anything channel-level.
 
-Run `usb_status` WHILE frozen, note the numbers, then kick and watch. Until that experiment has
-data, resist "fixing" this blind — that is exactly how failed attempts 1 and 2 happened.
+The planned experiment was to run `usb_status` while frozen, then kick and watch. It was completed as recorded next; it is not an outstanding TODO.
 
 **UPDATE (2026-07-21, the experiment ran):** caught live. `usb_status` while frozen: the pedal
 slot read `busy:true, reports:57705, age_ms:70900+` and growing, `idle_rearms:0` — armed forever,
@@ -250,7 +248,7 @@ reaches 16. The `CFG_TUH_TASK_QUEUE_SZ 512` bump ships anyway as free headroom �
 nothing, and the lesson is the method one: "every fact checks out" is not the same as "the
 mechanism can occur". Model the system's dynamics, not just its lines.
 
-### The freeze: three surviving candidate causes in the dwc2 host driver (open, instrumented)
+### Historical hypotheses: three candidate causes in the dwc2 host driver (superseded by the verdict below)
 
 An 18-agent adversarial review of the vendored TinyUSB 0.18 dwc2 host driver (11 hypotheses, 5
 refuted with reasons worth reading in the session record) left three mechanisms standing — all in
@@ -296,15 +294,13 @@ device's intrinsic death threshold.
 
 The FIELD bug was our firmware actually creating such gaps: the console-starvation era stalled
 the loop >50% of every second, and the pre-mirror-fix connect sequence held it ~720 ms with CDC
-interrupt pressure on top. Current firmware's worst measured gap is ~120 ms (connect) — 13×
-margin. The three dwc2 patches (token-post propagation, queue-full counters, alloc-race masking)
+interrupt pressure on top. The post-fix bench's worst measured gap was ~120 ms during connection, excluding Save. The three dwc2 patches (token-post propagation, queue-full counters, alloc-race masking)
 stay: each is a real latent bug, and the counters/alloc_mask remain live diagnostics.
 
 **The rule this leaves behind: never let host polling gaps approach 1 second.** Anything added to
 the main loop that can block must stay well under that. Known remaining offender: `save_config`'s
 defensive `__disable_irq()` flash erase (~1 s — inside the sluggish zone, near the cliff). Rare
-and user-initiated; if pedals stutter right after a Save, that's why. Candidate future fix: drop
-the IRQ masking around the erase (bank-2 erase doesn't require it) so SOF polling continues.
+and user-initiated; if pedals stutter right after a Save, that's why. A possible change would remove IRQ masking, but that alone does not guarantee continuous report polling: completed transfers also require main-loop `tuh_task()` service. No fix has been validated.
 
 Two smaller finds from the same session: the `~+` line-noise burst on every port open used to
 start an unterminated console line that SWALLOWED the first command sent after connect (fixed:
@@ -334,14 +330,13 @@ absorbs, as before.
 
 ### "RX error burst — wheelbase restart?" with no power cycle: the USART1 mirror was starving the loop (fixed 2026-07-21)
 
-The user was right to be suspicious: no one power-cycled anything. The chain, confirmed by
-arithmetic that matches a previous measurement exactly:
+The user was right to be suspicious: no one power-cycled anything. The observed chain:
 
 1. Every console write is mirrored to USART1 — **including the ~8.3 KB `get_config` response,
    even when nobody is on USART1** — and the non-lossy path applied backpressure: wait for TX-ring
-   room. The ring drains at 115200 ≈ 11.5 KB/s, so `get_config` held the main loop **~720 ms**
-   (8332 B / 11.5 KB/s = 723 ms — the mysterious "get_config takes 720 ms" measured earlier was
-   never CDC speed; it was the dead mirror's baud rate).
+   room. At 115200 baud, 8E1 uses 11 bits per byte: about 10.5 KB/s, or ~0.8 s to transmit
+   8332 bytes. Some bytes can remain queued when the call returns; the measured main-loop stall
+   was **~720 ms**. The mirror's backpressure, not CDC speed, caused that delay.
 2. `pedals_update()` therefore missed ~70 consecutive frames on every client connect.
 3. The wheelbase's own link watchdog declared the stream dead and re-initiated its handshake —
    sending 0x0A at **250000** baud into our 115200 receiver, which manifests as a framing-error
@@ -349,7 +344,7 @@ arithmetic that matches a previous measurement exactly:
 4. Our auto-recovery re-armed and completed the handshake, so it looked like a spontaneous
    wheelbase restart. It was us all along.
 
-Fix: when `tud_mounted()` (a CDC client exists and is the authoritative copy), the non-lossy
+Fix: when `tud_mounted()` (USB is enumerated, even if no serial application is reading), the non-lossy
 USART1 leg mirrors what fits and drops the rest — it never blocks the loop. When no CDC client is
 enumerated, USART1 *is* the console and keeps the full wait-for-room semantics. Two forensic aids
 were added so the next anomaly explains itself in the client's timestamped log: the burst line now
@@ -357,7 +352,7 @@ breaks down error types (`fe=` wrong-baud traffic from a re-handshaking base, `o
 late), and STREAMING logs `[pedals] stream gap N ms — main loop stalled` whenever 10+ frames were
 missed — a gap line printed *before* a burst line pins the causality on us.
 
-Related, still true: `save_config` blocks on a bank-2 flash erase (seconds), which will gap the
+Related, still true: `save_config` blocks interrupts during a bank-2 flash erase (roughly 1 s in the recorded bench test), which will gap the
 stream and provoke exactly this base-side re-handshake. Rare and user-initiated; the gap sentinel
 now makes it visible rather than mysterious.
 
@@ -384,18 +379,17 @@ now makes it visible rather than mysterious.
   this firmware. Verify the chip before debugging a "dead" board — full detail in the README.
 - **DAC gear outputs take no RC filter.** A cap on the DAC output buffer can oscillate.
 
-## Remaining
+## Remaining validation and known limitations
 
 - **Input-freeze: field-confirm the fix.** Bench verdict is in (device hangs past ~2 s unpolled;
-  firmware now keeps gaps ≤~120 ms — see the VERDICT section). Remaining proof: a SimHub-connected
+  the measured connection-time gap was ~120 ms, excluding Save — see the VERDICT section). Remaining proof: a SimHub-connected
   drive-mode session, the scenario that used to freeze the pedal within minutes. If it EVER
   freezes again, `usb_stall` re-measures the threshold and `usb_status` (counters + alloc_mask +
   channel dump) says which side failed.
 - **`save_config` polling gap.** The defensive `__disable_irq()` around the ~1 s flash erase
-  stops SOF polling — inside the pedal's sluggish zone. Candidate fix: drop the masking (bank-2
-  erase doesn't need it) so host polling continues through a Save.
-- Polish: **DAC gear recalibration** against a specific wheelbase if any column reads off
-  (`set_gear_dac` per gear, then `save_config`). The defaults engaged every gear cleanly here.
+  stops SOF polling — inside the pedal's sluggish zone. Removing IRQ masking is an unimplemented candidate, not a proven fix: host completions are one-shot and `tuh_task()` must also keep running to re-arm them. Any change needs polling-gap measurements and config-integrity tests.
+
+Per-wheelbase DAC calibration is a supported user operation (`set_gear_dac`, then `save_config`), not unfinished firmware. The defaults engaged every gear on the tested DD+.
 
 ## Historical: FK743M3 bring-up
 
@@ -408,11 +402,7 @@ bring-up unnoticed.** On that board the USB-C was OTG_FS (PA11/PA12, also mirror
 header) — the "B15" silkscreen near it was a red herring.
 
 `tools/flash.ps1` + `tools/stm32_uart_flash.py` date from there: a DTR-safe AN3155 UART flasher that
-flashes over the bridge (build → flash → Go), prompting you to hold BOOT0 + tap RST. Still useful on
-any board without a usable second USB controller. Full hands-free UART entry is **not** possible on
-these boards: the H7 ROM serves USART only via the *hardware* boot path, the option-byte `BOOT_ADD0`
-trick is banned (it strands the board into the bootloader, DFU-only recovery), and BOOT0 has no pad
-to wire to.
+flashes over the bridge (build → flash → Go), prompting you to hold BOOT0 + tap RST. The tools remain for UART recovery with compatible H743 hardware and the documented bridge wiring; they do not make an H723 compatible. Use hardware BOOT0/RST for UART entry. The tested software-entry path is USB DFU; hands-free USART entry was not validated. Do not revive the old `BOOT_ADD0` experiment: it stranded the board in the bootloader.
 
 ### Hands-free DFU entry: only the token + reset + early-branch works (July 2026)
 
@@ -438,7 +428,6 @@ all hub devices re-enumerate. `check_bootloader_request()` / `request_bootloader
 
 The flasher's **bank-1-only erase** (AN3155 special code `0xFFFE`) is what preserves saved config
 across reflashes — the ~58 KB app lives entirely in bank 1, so bank 2 @ `0x08100000` survives.
-`flash.ps1 -MassErase` forces the old full wipe (use after a `CONFIG_VERSION` bump). The flasher
-auto-falls back to a global erase if a bootloader ever rejects `0xFFFE`, so flashing can't break.
+`flash.ps1 -MassErase` explicitly wipes both banks. The UART flasher also falls back to a global erase if `0xFFFE` is rejected, **which loses saved configuration**. A `CONFIG_VERSION` bump needs no mass erase: the application rejects the old blob itself. The browser and SimHub DfuSe flashers erase only the bank-1 sectors covered by the image and do not have this global-erase fallback.
 
-CherryUSB was briefly explored (`lib/cherryusb`) and abandoned — TinyUSB is fine.
+CherryUSB was briefly explored and removed; no `lib/cherryusb` directory remains. TinyUSB is fetched by PlatformIO and patched at build time.

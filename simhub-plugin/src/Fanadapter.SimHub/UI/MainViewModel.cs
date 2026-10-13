@@ -1273,7 +1273,7 @@ namespace Fanadapter.SimHub.UI
         /// simply switched on with the connection — the plugin's own
         /// auto-connect doesn't enable it (so after a SimHub restart the Devices
         /// tab would sit empty forever), and a moving pedal streams events at up
-        /// to 50 Hz, which is traffic worth not putting on the link while nobody
+        /// to about 30 Hz, which is traffic worth not putting on the link while nobody
         /// is looking. Output telemetry is the opposite case and stays on for
         /// the whole connection: the exposed dash properties feed on it.
         /// </summary>

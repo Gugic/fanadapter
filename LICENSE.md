@@ -1,15 +1,15 @@
 # Licenses
 
-`fanadapter` is **dual-licensed** — the software and the hardware-design files carry different (both permissive) licenses. The [README](README.md#license) explains *why* these were chosen and openly invites building on and commercializing the project; this file holds the formal terms.
+The software and hardware-design files in `fanadapter` carry different permissive licenses, as listed below. This is not a choice between two licenses for the same file. The [README](README.md#license) explains the commercial-reuse invitation; this file identifies the applicable terms.
 
 | Part | Covers | License | SPDX |
 |---|---|---|---|
-| **Software** | firmware (`firmware-stm32/`), the webconfig app (`webconfig/`), sketches, and configuration utilities | Apache License 2.0 | `Apache-2.0` |
+| **Software** | firmware (`firmware-stm32/`), webconfig (`webconfig/`), SimHub plugin (`simhub-plugin/`), and development/configuration utilities | Apache License 2.0 | `Apache-2.0` |
 | **Hardware design** | schematics, pinouts, Bill of Materials, and any PCB layouts / enclosure models added later | CERN Open Hardware Licence Version 2 — Permissive | `CERN-OHL-P-2.0` |
 
 ## Provenance
 
-This project was built from scratch. The protocol documentation, pinouts, and voltage tables cited in the README's [References](README.md#references-and-acknowledgments) section informed the design, but no code or schematic files were copied from prior projects. Attribution — to this repository and to that prior reverse-engineering work — is the only obligation; no copyleft inheritance applies.
+The protocol documentation, pinouts, voltage tables and handshake references cited in the README's [References](README.md#references-and-acknowledgments) section informed this implementation. Third-party libraries, toolchains and host applications retain their own licenses; the project licenses do not relicense those dependencies. Redistribution must follow the applicable license terms, including license copies, retained notices and notices of modifications where required.
 
 ---
 
@@ -229,6 +229,4 @@ Copyright 2026 Evgenii Shingarev (https://github.com/Gugic) and fanadapter contr
 
 The hardware design files — schematics, pinouts, the Bill of Materials, and any PCB layouts or enclosure models added in the future — are licensed under the **CERN Open Hardware Licence Version 2 — Permissive (CERN-OHL-P v2)**.
 
-Full licence text: <https://ohwr.org/project/cernohl/wikis/Documents/CERN-OHL-version-2>
-
-The full CERN-OHL-P v2 text will be bundled in this repository once hardware design files are added.
+The existing pinouts and wiring documentation in `schematics/` are already covered by this license; PCB layouts and enclosure models are not currently included. Full licence text and guides are available from the [Open Hardware Repository](https://ohwr.org/licences/).

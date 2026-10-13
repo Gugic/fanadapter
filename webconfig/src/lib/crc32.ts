@@ -1,5 +1,5 @@
 // CRC-32/ISO-HDLC (zlib/PNG). Matches the firmware implementation in
-// mapping.cpp so the web app can validate preset payloads locally.
+// firmware-stm32/src/mapping.c. Currently unused by the UI; preset import/export is not implemented.
 // Polynomial 0xEDB88320 reflected, init 0xFFFFFFFF, final XOR 0xFFFFFFFF.
 
 let TABLE: Uint32Array | null = null

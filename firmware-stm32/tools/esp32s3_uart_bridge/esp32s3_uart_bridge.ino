@@ -1,35 +1,19 @@
-// ESP32-S3 USB <-> UART bridge for the STM32H743 port — console AND hands-free re-flashing.
+// ESP32-S3 UART bridge retained for STM32H743 recovery and historical FK743M3 bring-up.
+// The current WeAct build exposes native CDC + ROM DFU on USB-C and needs no bridge.
+// This sketch forwards bytes in both directions between its CH340 port and USART1:
+//   STM32 PA9  (TX) -> S3 RX_PIN
+//   STM32 PA10 (RX) <- S3 TX_PIN
+//   common GND
+// Both links use 115200 8E1, matching the fallback app console and ROM USART bootloader.
 //
-// The STM32 (firmware-stm32/) prints/receives its console on USART1 (PA9=TX, PA10=RX). Its only
-// usable USB controller (OTG_FS) is taken by the USB host, so the console rides USART1, bridged to
-// a PC COM port by this sketch. This is a fully transparent byte pipe in BOTH directions, so the
-// same COM port also carries:
-//   1. the line-JSON / CLI console (the device list, live inputs, config), and
-//   2. UART-bootloader FLASHING — send the CLI command `dfu` to the STM32 and it jumps to its ROM
-//      bootloader (AN2606), then STM32CubeProgrammer/stm32flash re-flashes over THIS bridge with no
-//      BOOT0/RST buttons and without unplugging the hub from OTG_FS.
-//
-// 8E1, NOT 8N1: the STM32 ROM bootloader's USART1 format is fixed at 8 data bits / EVEN parity / 1
-// stop. So the STM32 app console ALSO runs 8E1 (parity is transparent to the byte stream) and this
-// bridge runs 8E1 on both links — one config serves console + flashing. Open the PC COM port at
-// 115200 8E1 (PowerShell: `Parity=Even, DataBits=8, StopBits=One`).
-//
-// Wiring (BOTH directions are required now — the inbound leg carries commands + the flash stream):
-//   STM32 PA9  (USART1 TX) -> ESP32-S3 RX_PIN   (board -> PC)
-//   STM32 PA10 (USART1 RX) <- ESP32-S3 TX_PIN   (PC -> board: CLI + bootloader flashing)
-//   GND <-> GND                                  (required common ground)
-//   The S3's 5V can power the STM32 board's 5V rail.
-//
-// Flash THIS sketch onto the S3 over its CH340 UART port (default config: `Serial` = UART0 = CH340):
+// From firmware-stm32/:
 //   arduino-cli compile --fqbn esp32:esp32:esp32s3 tools/esp32s3_uart_bridge
-//   arduino-cli upload  --fqbn esp32:esp32:esp32s3 -p COMxx tools/esp32s3_uart_bridge
+//   arduino-cli upload --fqbn esp32:esp32:esp32s3 -p COMxx tools/esp32s3_uart_bridge
 //
-// Hands-free STM32 re-flash (once this sketch + a `dfu`-capable STM32 firmware are installed):
-//   1) write "dfu\n" to the COM port (115200 8E1)               -> STM32 enters ROM bootloader
-//   2) STM32_Programmer_CLI -c port=COMxx br=115200 P=EVEN -w firmware.bin 0x08000000 -v -g 0x08000000
-// (Note: opening the CH340 COM port asserts DTR, which resets the S3; harmless — the bridge resumes
-//  in a few hundred ms before the flasher's autobaud retries. If a tool's reset sequence is too
-//  aggressive, switch the S3 to its NATIVE USB port and mirror CDC line coding instead.)
+// For STM32 UART recovery, use tools/flash.ps1 and hardware BOOT0/RST entry. The current
+// token/reset software-entry path is validated for USB DFU, not hands-free UART flashing.
+// Some flash tools assert DTR/RTS and reset the S3 bridge; stm32_uart_flash.py avoids that.
+// Modern webconfig/SimHub port pickers intentionally exclude this generic UART bridge.
 
 // Pick two FREE GPIOs on your S3 board — avoid the USB D+/D- pins (19/20), the strapping pins
 // (0, 3, 45, 46) and anything wired to onboard peripherals. 17/18 are free on most S3 devkits.

@@ -7,8 +7,7 @@ over WebSerial.
 The plugin exists because the adapter can be driven two different ways, and the
 split follows where a device is physically plugged in:
 
-- **Devices plugged into the PC** — SimHub already enumerates, captures and maps
-  every controller attached to the PC, so the plugin reuses all of it. You bind
+- **Devices plugged into the PC** — The plugin reuses SimHub's input and Control Mapper support for controllers that SimHub recognizes. You bind
   a shifter or pedal set with SimHub's own "click to configure" flow, and the
   plugin translates the result into the firmware's direct-output commands. The
   adapter's own mapping is bypassed for those channels.
@@ -17,15 +16,13 @@ split follows where a device is physically plugged in:
   plugin mirrors the webconfig UI for that: live device view, input capture,
   axis calibration, gear voltages, bench tests.
 
-Those two halves are independent. Adapter-side mappings keep working with the PC
-switched off; SimHub-side mappings only apply while SimHub is running and
-driving.
+Adapter-side mappings run without SimHub, provided the adapter and hub remain powered and no sticky PC override is left active. SimHub-side mappings apply while SimHub is connected and driving; see the override behavior below.
 
 ## Requirements
 
 - **SimHub 9.11.21** (the version pinned in [`.simhub-version`](.simhub-version)
   and used by CI). Other 9.x releases will probably work; that one is tested.
-- **.NET SDK 8.0+** to build. The plugin targets .NET Framework 4.8 — SimHub's
+- **.NET SDK 8.0+** to build. Build and run the full solution on Windows. The plugin targets .NET Framework 4.8 — SimHub's
   requirement — but the reference assemblies come from a NuGet package, so no
   Developer Pack install is needed.
 - **[STM32 firmware](../firmware-stm32/README.md)** on the adapter. The plugin detects firmware capabilities before offering direct output or updates.
@@ -43,8 +40,7 @@ From a build tree:
 dotnet build simhub-plugin/src/Fanadapter.SimHub/Fanadapter.SimHub.csproj -c Release -p:InstallToSimHub=true
 ```
 
-**Close SimHub first** — it loads plugin assemblies at startup and holds them
-open, so installing over a running SimHub fails with a file lock.
+**Close SimHub before a manual copy/build install.** The in-app updater has a separate staged replacement/rollback path and asks for a restart after installation.
 
 ## Using it
 
@@ -57,8 +53,7 @@ Unrelated serial devices and USB-UART bridges are excluded. Connect, and
 the header shows which firmware answered. The chosen port is remembered and
 reconnected on the next start.
 
-If the port opens but nothing answers, something else is holding it — webconfig
-in a browser tab is the usual culprit, and it holds the port exclusively.
+If the port cannot open, close webconfig, serial terminals or another SimHub instance holding it exclusively. If it opens but requests time out, inspect the logs and firmware version and reconnect; an already-open port is not evidence that another client owns it.
 
 ### SimHub drive — for controllers on the PC
 
@@ -113,7 +108,7 @@ On current firmware (protocol 6+) the pedal stream is **fire-and-forget at a
 fixed 100 Hz**: each update is one-way with no acknowledgement round-trip in
 the hot path and no change-suppression dead-band, so PC-attached pedals get
 the same cadence the wheelbase itself is fed at. On older firmware the plugin
-falls back to acknowledged commands (~8 ms per update, still ~100 Hz-class).
+falls back to acknowledged commands with change suppression and a 1 s keep-alive. The recorded round-trip was 7.9 ms after the console fixes (13 ms before); actual cadence also depends on scheduling and link load.
 
 **Start driving pedals sticks.** The choice is saved and re-applied on every
 connect, so it survives a SimHub restart — and, just as importantly, a game
@@ -145,9 +140,7 @@ The Start/Stop button also follows automatic pedal-stream resume.
 
 ### Devices, Mappings, Outputs — for the adapter's own hardware
 
-**Devices** shows every slot of the adapter's device pool live. Values stay at
-zero until something moves: the firmware only reports inputs when they change,
-so an idle rig reading all zeros is correct, not broken.
+**Devices** shows the connected interfaces from the adapter's eight-slot pool. Live values update on change, up to ~30 Hz, and may remain at their initial display until a new input event arrives. An idle device need not emit a fresh frame; move it when checking reception.
 
 Next to the slot count are **USB status** and **Kick USB pipes** diagnostics.
 If a device freezes while still listed, run USB status while moving it; results
@@ -167,8 +160,7 @@ MAX'd by the firmware, so one gear can be reachable from two shifters.
 
 *Shifter mode* switches between hold (a gear is engaged only while its binding
 is held, like a real H-shifter) and latch (a press switches gear and stays).
-Neutral is only bindable in latch mode — in hold mode it is simply the absence
-of an engaged gear.
+The UI shows Neutral bindings only in latch mode. The firmware also honors a saved `gear_N` binding as a panic-neutral override in hold mode; hiding that editor does not clear an existing binding.
 
 **Outputs** shows what the adapter is currently sending, exposes the H-pattern
 gear voltages, and provides bench tests. The gear voltages are the thing to
@@ -185,15 +177,9 @@ is what makes them survive a power cycle.
 downloads the latest **firmware-v** GitHub release directly, verifies its size
 and SHA-256 (webconfig mirrors the identical release on Pages), reboots the adapter into its ROM bootloader,
 flashes it over WinUSB, waits for the serial port to come back and reconnects.
-No buttons on the board, no device picker, no toolchain — saved mappings live
-in a separate flash bank and survive. Also works with no connection when the
-board is stuck in bootloader mode from an interrupted update — running the
-update again is the recovery.
+With working firmware already connected, no board buttons, browser picker or toolchain are needed. Saved mappings live in bank 2 and survive flashing unless the new firmware changes the configuration schema. The updater also works while disconnected if the board is already in ROM DFU: for a fresh board or recovery, connect USB-C, hold BOOT0, tap RST, then release BOOT0 before starting the update. Automatic recovery reconnect selects the sole detected Fanadapter; if multiple adapters are attached, reconnect the intended one manually.
 
-Windows needs the WinUSB driver bound to `STM32 BOOTLOADER` (installing
-STM32CubeProgrammer or one Zadig run does it; any machine where `dfu-util`
-works already has it). Forks hosting their own Pages deploy can point the
-updater elsewhere via the `FirmwareUrl` plugin setting. The update button requires firmware that supports ROM DFU entry.
+Windows needs **WinUSB** bound to `STM32 BOOTLOADER`; use STM32CubeProgrammer's driver installer or Zadig and verify the binding. dfu-util can use other backends, so its success alone does not prove compatibility. `FirmwareUrl` is an optional mirror **base URL** containing `firmware/fanadapter-stm32.{json,bin}`; the default reads GitHub Releases directly. While connected, Update requires firmware supporting ROM DFU entry. While disconnected, a valid image source and a board already in DFU suffice. A picked local `.bin` is checked for plausible vectors and size but has no release checksum to compare against.
 
 ### Plugin updates
 
@@ -208,13 +194,13 @@ An unwritable plugin folder requires a manual install or an elevated SimHub proc
 The first installation of this updater is manual, using the release ZIP above.
 
 Firmware and plugin versions are independent. Their workflows publish on `main`
-only after the component's build/tests pass, using immutable tags and assets:
+only after the firmware build or plugin build/tests pass, using version tags and assets that the workflows never overwrite:
 
 - Firmware: bump `FW_VER` in `firmware-stm32/src/firmware_info.h` when changing firmware.
 - Plugin: bump `VersionPrefix` in `simhub-plugin/Directory.Build.props` when changing the plugin.
 
 Existing version tags are never overwritten; CI rejects changed production code
-without its component version bump. Documentation/test changes can keep the version.
+without its component version bump. Markdown documentation and test changes outside production source paths can keep the version; the guards compare file contents, so even comment-only edits inside guarded source paths currently require a bump.
 A plugin-only change triggers no
 firmware build; app changes only rebuild Pages and reuse the released binary.
 Release packages contain the two DLLs plus README/license, with standalone DLLs
@@ -268,13 +254,15 @@ Changing anything that mirrors a firmware contract — the config schema, the
 and this plugin together. See the cross-file invariants table in
 [`AGENTS.md`](../AGENTS.md).
 
-## Not done yet
+## Feature limits
 
 - The guided setup wizard from webconfig. Per-slot capture works; the wizard is
   a convenience that walks the same flow across a whole shifter.
-- Preset import/export. Neither client has it — see the CRC-32 note in
-  `AGENTS.md` if you add one.
+- Webconfig's timed live-range resampling control is absent; use Listen capture or edit raw endpoints in the plugin.
+- Preset import/export is not implemented in either client. The unused web CRC-32 helper does not constitute a preset feature.
+
+These are current omissions, not scheduled work. The custom PC property detector from [#36](https://github.com/Gugic/fanadapter/pull/36) was removed by the native axis picker in [#40](https://github.com/Gugic/fanadapter/pull/40); its pending Detect validation no longer applies. Current native-picker tests cover simulated inputs and lifecycle behavior, not physical pedal travel or wheelbase output.
 
 ## License
 
-MIT, same as the rest of the repo.
+Apache License 2.0 for the plugin, consistent with the repository's software license. See [LICENSE.md](../LICENSE.md).

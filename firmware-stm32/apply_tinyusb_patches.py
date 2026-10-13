@@ -4,18 +4,20 @@
 # and `pio pkg update` or a wiped .pio/ regenerates it — an in-place edit would silently vanish.
 # This script runs as `extra_scripts = pre:` on every build: it verifies the patches are present
 # (marker string) and applies them if not. If upstream code drifts so a pattern no longer matches
-# AND its marker is absent, the build FAILS LOUDLY — a silently unpatched firmware would bring
-# back a hardware-validated field bug, which is strictly worse than a broken build.
+# AND its marker is absent, the build fails rather than silently losing the driver hardening
+# and diagnostic counters used by usb_status.
 #
-# THE PATCH (single-device input-freeze fix; full story in PORT-STATUS.md):
+# Driver hardening (full investigation and verdict in PORT-STATUS.md):
 # In hcd_dwc2.c, channel_send_in_token() asserts on the 8-deep periodic request queue; in a
 # release build a full queue makes it silently return false. channel_xfer_start() ignored that and
 # returned true unconditionally, and edpt_xfer_kickoff() believed it — leaving the channel
 # allocated but never enabled: no IN token ever reaches the bus, no interrupt fires, the endpoint
-# stays busy forever, and one hub device freezes until re-enumeration. Reproduced on demand
-# (usb_stall) and confirmed by register dump (frozen slot's channel: CHENA=0). The fix propagates
-# the failure and deallocates, so the SOF re-kick (ISR path) or usbh busy-clear + the idle
-# watchdog (thread path) retries instead of wedging.
+# could remain busy. The patch propagates failure and deallocates so callers can retry. Other
+# patches avoid dropping disable operations and preserve interrupt masking during allocation.
+# These were real latent bugs, but did NOT cause the observed pedal freeze: usb_stall reproduced
+# the pedal's own firmware hanging after a long polling gap, with no request-queue failures.
+# A stale CHENA=0 register alone was not evidence of an allocated channel. Keep that distinction
+# when interpreting the counters and allocation mask added here.
 
 Import("env")  # noqa: F821 — provided by SCons
 import os
@@ -151,7 +153,7 @@ REPLACEMENTS = [
         "}\n",
         "  xfer->result = XFER_RESULT_INVALID;\n"
         "\n"
-        "  // FANADAPTER PATCH — the single-device input-freeze fix (see PORT-STATUS.md).\n"
+        "  // FANADAPTER PATCH — token-post failure hardening (see PORT-STATUS.md).\n"
         "  // channel_xfer_start can fail when the periodic request queue is momentarily full;\n"
         "  // swallowing that left the channel allocated-but-never-enabled = endpoint busy\n"
         "  // forever = one hub device frozen until re-enumeration. Dealloc and report failure\n"
@@ -170,7 +172,7 @@ REPLACEMENTS = [
 def fail(msg):
     print("\n" + "=" * 78)
     print("TINYUSB PATCH FAILURE: " + msg)
-    print("Refusing to build unpatched firmware — the input-freeze bug would return.")
+    print("Refusing to build without verified TinyUSB hardening and diagnostics.")
     print("See firmware-stm32/apply_tinyusb_patches.py and PORT-STATUS.md.")
     print("=" * 78 + "\n")
     env.Exit(1)  # noqa: F821

@@ -125,15 +125,13 @@ export class SerialClient {
   }
 
   private async openPort(port: SerialPort): Promise<void> {
-    // 8E1: the STM32 USART1 console runs 8-data / EVEN-parity / 1-stop (it shares the format with the
-    // ROM bootloader so one bridge config carries both console + flashing). Parity is ignored by a
-    // native USB CDC (STM32-CDC), so this is harmless there and required over the UART bridge.
+    // Retain the historical 8E1 console settings. The selected native USB CDC transport ignores
+    // baud/parity; UART bridges are excluded by the connection filter above.
     await port.open({ baudRate: 115200, dataBits: 8, parity: 'even', stopBits: 1 })
     this.port = port
 
-    // A USB-UART bridge (CH340) auto-resets the downstream MCU-facing side when the port opens; some
-    // bridges (the ESP32-S3 one) also reboot themselves. Deassert DTR/RTS and let it settle so the
-    // first command isn't swallowed during the ~1.5s bridge reset. No-op / harmless on native CDC.
+    // Preserve the deasserted DTR/RTS and settling delay inherited from the UART-bridge client.
+    // Only native CDC is selected now; firmware replies must not depend on DTR being asserted.
     try {
       await port.setSignals({ dataTerminalReady: false, requestToSend: false })
     } catch {

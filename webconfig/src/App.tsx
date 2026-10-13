@@ -1902,10 +1902,8 @@ function MappingsView({
   onStartWizard: (title: string, steps: WizardStep[]) => void
 }) {
   const gearMode = config.gearMode ?? 'hold'
-  // Neutral is only bindable in latch mode — there it's the explicit "shift to
-  // neutral" key. In hold mode neutral is implicit (no gear held), so binding
-  // gear_N has no effect; hide it. Applies to both the channel list and the
-  // wizard, which derive their steps from these keys.
+  // Show the Neutral editor/wizard step only in latch mode. Hold mode normally returns to
+  // neutral when no gear is held, but a saved gear_N binding still forces panic-neutral.
   const hpatternKeys: ChannelKey[] = [
     'gear_R',
     'gear_1',
