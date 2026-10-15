@@ -152,7 +152,7 @@ jobs:
             "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
           } | Set-Content -LiteralPath artifacts/SHA256SUMS -Encoding utf8
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: fanadapter-simhub-plugin
           path: |
