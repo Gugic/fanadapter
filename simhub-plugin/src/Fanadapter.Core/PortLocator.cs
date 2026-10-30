@@ -115,6 +115,8 @@ namespace Fanadapter.Core
             }
             catch (ManagementException) { return null; }
             catch (UnauthorizedAccessException) { return null; }
+            // USB identity was already verified; a missing display name must not hide the port.
+            catch (InvalidOperationException) { return null; }
         }
 
         internal static string AdapterDescription(string portName, string friendlyName, string busName)
