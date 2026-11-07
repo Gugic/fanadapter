@@ -62,11 +62,13 @@ _Static_assert(sizeof(Config) == 1132, "Config layout locked — bump CONFIG_VER
 
 Send single-line JSON objects over USB CDC or the USART1 console. Responses and events arrive as single-line JSON objects. Commands reply in FIFO order with a payload, `{"ok":true}`, or `{"err":"reason"}`; `stream_axes` sends no reply. Input events are emitted on change, up to ~30 Hz; output events stream at ~30 Hz while enabled. Non-JSON lines are console logs.
 
+`version` also replays the saved startup `[last reset report]` diagnostic as a separate non-JSON log line after its JSON response. It uses nonblocking, whole-line output; repeat the request if the console was congested. See [reset diagnostics](README.md#reset-diagnostics).
+
 ### Commands
 
 | Request Shape | Response / Effect |
 |---|---|
-| `{"cmd":"version"}` | `{"fw":"fanadapter-stm32","ver":"0.6.2","protocol":6,"max_bindings_per_channel":4}` |
+| `{"cmd":"version"}` | `{"fw":"fanadapter-stm32","ver":"0.6.3","protocol":6,"max_bindings_per_channel":4}` |
 | `{"cmd":"list_devices"}` | Returns `{"devices":[...]}` for all eight pool slots, including disconnected slots. Each has `slot`, `connected`, VID/PID, `manufacturer` / `product` strings, descriptor-derived `axis_count`, `button_count`, `has_hat` and `has_keyboard`. Filter by `connected` to count attached interfaces. |
 | `{"cmd":"get_config"}` | Returns the full `Config` JSON object (bindings, deadzones, gear DAC configurations, and `gearMode` = `"hold"` or `"latch"`). Each binding's `type` is one of `"none"`, `"button"`, `"axis"`, `"hat"`, `"key"`. For `"hat"`, `index` is the strict direction (`0`=N, `1`=NE, `2`=E, `3`=SE, `4`=S, `5`=SW, `6`=W, `7`=NW); for `"key"`, `index` is the HID Keyboard/Keypad scancode. |
 | `{"cmd":"set_binding","channel":"throttle","slot":0,"binding":{...}}` | Sets a specific binding slot. Channel keys: `gear_R`, `gear_1`..`gear_7`, `gear_N`, `shift_up`, `shift_down`, `handbrake`, `throttle`, `brake`, `clutch`. Binding matches the `InputBinding` shape, including the `"hat"` and `"key"` types. |

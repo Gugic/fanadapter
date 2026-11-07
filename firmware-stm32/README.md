@@ -213,6 +213,35 @@ reprints when a terminal asserts DTR, so a late connection isn't left staring at
 
 ⚠️ **webconfig, SimHub and a terminal cannot share the serial port.** Close other serial clients before connecting. The built-in updaters send `dfu` and release their own serial connection automatically; a manual flashing procedure must release it too.
 
+### Reset diagnostics
+
+The banner and each `{"cmd":"version"}` request include a plain-text `[last reset report]` log line. Webconfig and SimHub request `version` on connect, so they receive it even with DTR disabled. For example, a software reset can report:
+
+```text
+[last reset report] report_uptime_ms=2100 RCC_RSR=0x01420000 flags: SFT(software) PIN(shared) CPU
+```
+
+`RCC_RSR` is the raw STM32H743 register captured at application startup, before HAL/clock initialization, then cleared with HAL's RMVF operation. The saved copy remains in RAM for the current boot. `report_uptime_ms` is uptime when the line is printed, **not** the time of the reset; it wraps after about 49.7 days. Clients can also timestamp receipt on the host.
+
+Interpretation follows ST's [RM0433](https://www.st.com/resource/en/reference_manual/rm0433-stm32h742-stm32h743753-and-stm32h750-value-line-advanced-armbased-32bit-mcus-stmicroelectronics.pdf), "Reset source identification" (Table 56) and "RCC reset status register":
+
+| Log flag | Meaning / limits |
+|---|---|
+| `POR(power-on/down)` | POR/PDR evidence. A normal USB power cycle is expected, not a fault. |
+| `BOR(with-POR)` | Power-on also sets BOR; this does **not** establish a separate brownout. |
+| `BOR(brownout)` | BOR without POR indicates a brownout reset. It does not identify why voltage fell. |
+| `SFT(software)` | Software system-reset flag asserted. |
+| `IWDG1(watchdog)`, `WWDG1(watchdog)` | Independent / window watchdog reset flag asserted. |
+| `LPWR(low-power)` | Low-power security reset (disallowed Stop/Standby entry), not normal sleep. |
+| `PIN(shared)` | PIN also accompanies internal system resets; not independent evidence of an external reset. |
+| `PIN(external?)` | External NRST is a candidate when no internal system-reset flag is present. |
+| `CPU`, `D1`, `D2` | CPU/domain reset evidence. D1/D2 also occur at power-on or domain Standby exit; CPU alone does not identify a system-reset source. |
+| `none(unknown)` | No documented reset flags remain; the cause is unknown. |
+
+All asserted flags are shown, including combinations; they do not record event order or prove which was most recent. Neither these flags nor the log distinguish intentional power removal from unexpected power loss. A bootloader/debugger can affect the evidence before application entry. Diagnostics use no carrier identification, EEPROM or persistent storage.
+
+The line uses the existing nonblocking console path: congestion drops the whole line, never waits for a reader. Send `?` or `{"cmd":"version"}` again to replay the same saved register. Opening the console or replaying the report does not capture/clear the hardware flags again.
+
 ### Working checklist
 
 1. **LED blinks** ~0.5 Hz → firmware is running.
@@ -300,7 +329,7 @@ low is expected (DAC output-buffer clamp) — the base normalizes it during shif
 
 | File | Purpose |
 |---|---|
-| `main.c` | Clocks, USB hardware init, both TinyUSB stacks, console + CLI, main loop |
+| `main.c` | Clocks, startup reset diagnostics, USB hardware init, both TinyUSB stacks, console + CLI, main loop |
 | `usb_input.{c,h}` | 8-slot HID device pool (the `InputSource` implementation) |
 | `hid_parse.{c,h}` | Generic HID report-descriptor walker + report decode |
 | `input_source.{c,h}` | `InputSource` vtable — the abstraction the mapping layer binds against |

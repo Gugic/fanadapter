@@ -358,6 +358,14 @@ now makes it visible rather than mysterious.
 
 ## Gotchas — don't re-derive
 
+- **Startup reset evidence:** `main.c` snapshots `RCC_RSR` after the first-statement DFU check,
+  before HAL/clock init, then clears reset flags with `__HAL_RCC_CLEAR_RESET_FLAGS()` (RMVF).
+  The framework startup/SystemInit path does not clear RSR; recheck that on framework changes.
+  The RAM snapshot is replayed by the banner and after `version`, which reaches DTR-disabled
+  clients without USB lifecycle changes. Output drops whole lines on congestion and never
+  waits; `?` / `version` can retry. RM0433's reset-source table matters: POR includes BOR/PIN,
+  and software/watchdog resets include PIN/CPU. See the [reset flag
+  interpretation](README.md#reset-diagnostics).
 - **rhport numbers are FIXED BY HARDWARE; roles are not.** OTG_FS is *always* rhport 0, OTG_HS
   *always* rhport 1, so the ISRs must pass those literals — which is why `main.c` keeps
   `OTGFS_RHPORT`/`OTGHS_RHPORT` separate from the role aliases `DEVICE_RHPORT`/`HOST_RHPORT`.

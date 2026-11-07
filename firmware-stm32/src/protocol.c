@@ -17,6 +17,7 @@
 #include "usb_input.h"     // usb_status / usb_kick diagnostics
 
 extern int console_printf(const char *fmt, ...);
+extern void console_print_reset_status(void);
 // Droppable variants — for the streaming telemetry events only. See console_emit() in main.c.
 extern int console_event_printf(const char *fmt, ...);
 extern int console_event_write(const char *s);
@@ -82,6 +83,7 @@ static void apply_u16(const json_kv *kv, int n, const char *key, uint16_t *dst) 
 static void cmd_version(void) {
   console_printf("{\"fw\":\"%s\",\"ver\":\"%s\",\"protocol\":%u,\"max_bindings_per_channel\":%u}\r\n",
                  FW_NAME, FW_VER, PROTO_VERSION, MAX_BINDINGS_PER_CHANNEL);
+  console_print_reset_status(); // replay saved startup evidence even when the client leaves DTR low
 }
 
 static void cmd_list_devices(void) {

@@ -47,6 +47,7 @@ static const heartbeat_pin_t HEARTBEAT_PINS[] = {
 #define LANGUAGE_ID 0x0409
 
 static UART_HandleTypeDef huart1; // fallback console on USART1 (PA9/PA10)
+static uint32_t s_boot_reset_status; // RCC_RSR snapshot retained for late console connections
 
 // USART1 RX ring — filled by USART1_IRQHandler (RXNE), drained in the main loop. This is the
 // inbound half of the console: typed/sent bytes (from the S3 bridge's PC->board direction, via
@@ -286,8 +287,8 @@ static void led_init(void) {
 // Shared sink. `lossy` selects the policy when a sink is congested:
 //   false (responses, CLI, banners) — wait for room. These are low-rate and must arrive intact;
 //          get_config alone is ~8 KB streamed in chunks and truncating it breaks every client.
-//   true  (live/outputs events)     — drop. They are superseded ~30 times a second, so a dropped
-//          frame costs nothing, while blocking for one costs the pedal stream its cadence.
+//   true  (live/outputs events, reset diagnostic) — drop whole lines. Telemetry is superseded
+//          ~30 times a second; the retained reset diagnostic can be requested again.
 // Waiting is bounded either way: a host that stopped reading must never wedge the loop.
 static int console_emit(const char *buf, uint32_t len, bool lossy) {
   // 1) USART1 — always present (the universal fallback console), now interrupt-driven.
@@ -395,7 +396,7 @@ int console_event_write(const char *s) {
   return console_emit(s, (uint32_t)strlen(s), true);
 }
 
-// Same sink, drop-on-congestion. For the telemetry events ONLY (protocol.c) — see console_emit.
+// Same sink, drop-on-congestion. Telemetry and replayable diagnostics — see console_emit.
 int console_event_printf(const char *fmt, ...) {
   if (__get_IPSR() != 0u) return 0;
   char    buf[256];
@@ -407,9 +408,39 @@ int console_event_printf(const char *fmt, ...) {
   return console_emit(buf, (n < (int)sizeof(buf)) ? (uint32_t)n : (sizeof(buf) - 1), true);
 }
 
+// RM0433, "Reset source identification" (Table 56) and "RCC reset status register".
+// All asserted flags are reported: they are sticky and do not establish an event order.
+// In particular POR also sets BOR, and internal system resets also set PIN/CPU.
+// Nonblocking and whole-line: a slow/closed console must not delay boot or USB servicing.
+// Replayed by the banner and version command (including clients that leave DTR low).
+void console_print_reset_status(void) {
+  uint32_t rsr = s_boot_reset_status;
+  uint32_t system_causes = rsr & (RCC_RSR_LPWRRSTF | RCC_RSR_WWDG1RSTF |
+                                RCC_RSR_IWDG1RSTF | RCC_RSR_SFTRSTF |
+                                RCC_RSR_PORRSTF | RCC_RSR_BORRSTF);
+  uint32_t known_flags = system_causes | (rsr & (RCC_RSR_PINRSTF | RCC_RSR_CPURSTF |
+                                                RCC_RSR_D1RSTF | RCC_RSR_D2RSTF));
+  // Even with every flag and a 10-digit tick, this fits console_event_printf's 256-byte buffer.
+  console_event_printf(
+      "[last reset report] report_uptime_ms=%lu RCC_RSR=0x%08lX flags:%s%s%s%s%s%s%s%s%s%s%s\r\n",
+      (unsigned long)HAL_GetTick(), (unsigned long)rsr,
+      (rsr & RCC_RSR_PORRSTF) ? " POR(power-on/down)" : "",
+      (rsr & RCC_RSR_BORRSTF) ? ((rsr & RCC_RSR_PORRSTF) ? " BOR(with-POR)" : " BOR(brownout)") : "",
+      (rsr & RCC_RSR_SFTRSTF) ? " SFT(software)" : "",
+      (rsr & RCC_RSR_IWDG1RSTF) ? " IWDG1(watchdog)" : "",
+      (rsr & RCC_RSR_WWDG1RSTF) ? " WWDG1(watchdog)" : "",
+      (rsr & RCC_RSR_LPWRRSTF) ? " LPWR(low-power)" : "",
+      (rsr & RCC_RSR_PINRSTF) ? (system_causes ? " PIN(shared)" : " PIN(external?)") : "",
+      (rsr & RCC_RSR_CPURSTF) ? " CPU" : "",
+      (rsr & RCC_RSR_D1RSTF) ? " D1" : "",
+      (rsr & RCC_RSR_D2RSTF) ? " D2" : "",
+      known_flags ? "" : " none(unknown)");
+}
+
 static void print_banner(void) {
   console_printf("\r\n========================================\r\n");
   console_printf("  " USB_PRODUCT_NAME " (STM32H743)\r\n");
+  console_print_reset_status();
   console_printf("  host    = OTG_HS / rhport1 (PB14/PB15 header -> powered hub -> devices)\r\n");
   console_printf("  console = USB CDC on OTG_FS (on-board USB-C, also DFU)  +  USART1 PA9/PA10 8E1\r\n");
   console_printf("  CLI: 'dfu' -> ROM bootloader (hands-free flash) | 'reboot' | '?'\r\n");
@@ -692,6 +723,10 @@ uint32_t tusb_time_millis_api(void) { return HAL_GetTick(); }
 //--------------------------------------------------------------------+
 int main(void) {
   check_bootloader_request(); // MUST be first: branches to the ROM bootloader on a 'dfu' reboot
+  // Startup/SystemInit leave RSR intact. Capture before HAL/clock/peripheral initialization;
+  // keep the ROM handoff first so a DFU request neither clears flags nor emits diagnostics.
+  s_boot_reset_status = RCC->RSR;
+  __HAL_RCC_CLEAR_RESET_FLAGS(); // RMVF: subsequent resets start with independent evidence
   HAL_Init();
   led_init();           // configure heartbeat pins first so Error_Handler can signal a clock failure
   SystemClock_Config();
