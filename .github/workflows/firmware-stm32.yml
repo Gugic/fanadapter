@@ -99,7 +99,7 @@ jobs:
           PY
 
       - name: Upload flashable image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fanadapter-stm32-firmware
           path: |
