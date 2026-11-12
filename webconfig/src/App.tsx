@@ -1145,7 +1145,7 @@ function Header({
   onFlash: () => void
 }) {
   return (
-    <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur-sm supports-[backdrop-filter]:bg-background/60">
       <div className="container mx-auto flex max-w-5xl items-center gap-3 px-4 py-3">
         <div className="flex flex-col">
           <span className="text-lg font-semibold leading-none">fanadapter</span>
@@ -1848,7 +1848,7 @@ function DeviceCard({
 
         {axisCount > 0 && (
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">axes</Label>
+            <Label className="block text-xs leading-6 text-muted-foreground">axes</Label>
             {Array.from({ length: axisCount }, (_, i) => {
               const v = live?.axes[i] ?? 0
               const seen = axisMax.get(`${dev.slot}:${i}`)
@@ -2459,7 +2459,7 @@ function AxisCalibration({
       </div>
 
       <div className="space-y-2">
-        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+        <Label className="block text-xs leading-6 uppercase tracking-wide text-muted-foreground">
           Range — auto
         </Label>
         <Button
@@ -2532,7 +2532,7 @@ function NumberField({
   const [local, setLocal] = useDraft(value, () => String(value))
   return (
     <div className="space-y-1">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Label className="block text-xs leading-6 text-muted-foreground">{label}</Label>
       <Input
         type="number"
         value={local}
@@ -2800,7 +2800,7 @@ function OutputsView({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Gear</Label>
+            <Label className="block text-xs leading-6 text-muted-foreground">Gear</Label>
             <div className="flex flex-wrap gap-1">
               {GEAR_KEYS.map((g) => (
                 <Button
@@ -2815,7 +2815,7 @@ function OutputsView({
             </div>
           </div>
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Sequential</Label>
+            <Label className="block text-xs leading-6 text-muted-foreground">Sequential</Label>
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={() => onPulseShift('up')}>
                 <Play className="h-4 w-4" /> Shift up
@@ -2892,7 +2892,9 @@ function OutputsView({
         </CardHeader>
         <CardContent className="flex items-end gap-3">
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Pulse width (ms)</Label>
+            <Label className="block text-xs leading-6 text-muted-foreground">
+              Pulse width (ms)
+            </Label>
             <PulseMsField value={config.pulseMs} onCommit={onPushPulseMs} />
           </div>
           <Button variant="outline" onClick={() => onTestPulse('up')}>

@@ -19,49 +19,73 @@ release also redeploys it. Pages copies the immutable release manifest and binar
 without compiling firmware. Plugin changes trigger neither Pages nor firmware builds.
 
 > [!NOTE]
-> **Browser Compatibility:** WebSerial is currently only supported in desktop Chromium-based browsers (Google Chrome, Microsoft Edge, Brave, Opera). It will not work on mobile browsers or on desktop Firefox/Safari.
+> **Browser Compatibility:** Use a current desktop Chromium browser (Google Chrome, Microsoft Edge, Brave, Opera). Tailwind 4 and Vite 8 require Chromium 111 or newer. WebSerial is unavailable on mobile browsers and desktop Firefox/Safari.
 
 ---
 
 ## Local Development & Commands
 
-### Prerequisites
+### Docker workflow
 
-- **Node.js:** 20.19+, 22.13+, or 24+ (the installed ESLint toolchain's supported ranges; CI uses Node 20)
-- **Package Manager:** `npm` (comes bundled with Node)
-
-### Workflow Commands
-
-Execute all commands from the `webconfig/` subdirectory:
+Install Docker Desktop (or Docker Engine with Compose) and `make`. From the repository root:
 
 ```sh
-# 1. Install dependencies
-npm ci
-
-# 2. Start the local Vite development server
-npm run dev
-
-# 3. Create an optimized static production build (includes TypeScript checking)
-npm run build
-
-# 4. Run ESLint rules check
-npm run lint
-
-# 5. Run regression tests and formatting checks
-npm test
-npm run format:check
-
-# 6. Run the CI dependency audit
-npm run audit
+make -C webconfig check    # npm ci, format, lint, types, unit tests, build, audit
+make -C webconfig dev      # http://localhost:5173/fanadapter/ with live reload
+make -C webconfig preview  # production build at http://localhost:4173/fanadapter/
+make -C webconfig stop     # stop this project's containers
 ```
 
-The audit fails on high and critical advisories. `audit-ci.jsonc` scopes one exception to
-[GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) through Tailwind 3:
-its `braces` glob parser has no patched release and only processes this repo's fixed content
-globs in `tailwind.config.js`. It is absent from the static browser bundle. Remove the exception
-when an upstream patch or a Tailwind migration removes that dependency; keep content patterns
-under repository control. `npm audit` shows the full unfiltered report; other high/critical
-advisories still fail CI.
+Docker uses the Node version in `.node-version`, installs the committed lockfile with `npm ci`,
+and runs the same `npm run check` command as GitHub Actions. CI uses native Ubuntu Node;
+Docker supplies a Debian Linux environment locally, so this reproduces the toolchain and checks,
+not the entire Actions runner. The separate browser suite below runs natively and in CI.
+
+Open the URL in your **host** browser. The browser owns WebSerial/WebUSB permissions and accesses
+the adapter directly; Docker needs no USB forwarding or privileged access. Ports bind only to
+loopback. Source edits appear in the container, and production builds write `dist/` to the host.
+Each service has its own dependency volume, so a check can run alongside the dev server without
+replacing its packages. The services share an npm download cache.
+
+`make -C webconfig reset` removes this Compose project's containers and dependency/cache volumes;
+it leaves source, host `node_modules/`, and `dist/` in place. Use a distinct project and port for
+another checkout, for example:
+
+```sh
+make -C webconfig dev COMPOSE_PROJECT_NAME=fanadapter-experiment DEV_PORT=15173
+```
+
+### Native Node workflow and browser checks
+
+Use **Node 26.12.0**, pinned in `.node-version`, and its bundled **npm 11.20.0**. Execute these
+commands from `webconfig/`:
+
+```sh
+npm ci
+npm run check            # the complete CI gate except browser tests
+npm run dev              # Vite development server
+npm run build            # type checking + static production bundle in dist/
+
+npx playwright install chromium  # one-time browser download; Linux may need --with-deps
+npm run test:browser             # build, then test the production bundle in Chromium
+```
+
+`npm test` covers axis scaling, serial filtering, firmware image handling and update reconnection.
+The browser suite exercises the actual bundled React app, Radix controls, Tailwind styles, tab
+switching and serial command encoding through a simulated adapter. It cannot validate physical
+USB permissions, firmware flashing or wheelbase behavior. Browser traces and screenshots are
+saved under `test-results/` on failure. Port 4173 must be free for browser tests.
+
+Individual commands remain available: `npm run format:check`, `npm run lint`, `npm run typecheck`,
+`npm test`, `npm run audit`, and `npm run test:watch`.
+
+TypeScript 6 is intentional: the typed ESLint stack needs its compiler API. Review compiler and
+lint compatibility together before upgrading to TypeScript 7.
+
+The audit fails on high and critical advisories with no exceptions. Tailwind 4 removed the old
+`braces` dependency and its scoped allowlist. `npm audit` shows the complete report, including
+moderate advisories. The November 2026 upgrade's dependency review, compatibility decisions and
+manual validation record are in [PR #65](https://github.com/Gugic/fanadapter/pull/65).
 
 When running `npm run dev`, Vite will serve the application at `http://localhost:5173/fanadapter/`. Open this URL in Chrome, Edge, or Brave, click **Connect**, and choose the adapter's USB serial (CDC) device from the browser permission pop-up.
 

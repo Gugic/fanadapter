@@ -1,12 +1,18 @@
 import js from '@eslint/js'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
-import reactRefresh from 'eslint-plugin-react-refresh'
+import { reactRefresh } from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import eslintConfigPrettier from 'eslint-config-prettier'
 
 export default tseslint.config(
   { ignores: ['dist'] },
+  {
+    files: ['e2e/**/*.mjs', 'playwright.config.mjs'],
+    extends: [js.configs.recommended],
+    // Playwright runs in Node; addInitScript/evaluate callbacks run in Chromium.
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+  },
   {
     extends: [
       js.configs.recommended,
@@ -24,7 +30,7 @@ export default tseslint.config(
     },
     plugins: {
       'react-hooks': reactHooks,
-      'react-refresh': reactRefresh,
+      'react-refresh': reactRefresh.plugin,
     },
     rules: {
       ...reactHooks.configs.recommended.rules,

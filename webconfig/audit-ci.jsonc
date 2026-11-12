@@ -1,15 +1,4 @@
 {
   "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
   "high": true,
-  "allowlist": [
-    // braces <=3.0.3 has no patched release (GHSA-vfj7-8cjw-p6xm).
-    // Tailwind 3 only evaluates the fixed, repository-owned content globs in
-    // tailwind.config.js; braces is a Node build tool, absent from the static site.
-    // npm's audit metadata reports these paths (npm ls confirms their only
-    // caller is Tailwind). Limit the exception to the reported paths and advisory;
-    // new advisory IDs and dependency paths must still fail. Remove when patched.
-    "GHSA-vfj7-8cjw-p6xm|fast-glob>micromatch>braces",
-    "GHSA-vfj7-8cjw-p6xm|micromatch>braces>",
-    "GHSA-vfj7-8cjw-p6xm|tailwindcss-animate>tailwindcss>chokidar>braces",
-  ],
 }

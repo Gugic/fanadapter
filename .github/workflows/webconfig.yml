@@ -9,11 +9,13 @@ on:
     paths:
       - 'webconfig/**'
       - '.github/workflows/webconfig.yml'
+      - '.github/workflows/pages.yml'
   pull_request:
     branches: [main]
     paths:
       - 'webconfig/**'
       - '.github/workflows/webconfig.yml'
+      - '.github/workflows/pages.yml'
 
 concurrency:
   group: webconfig-${{ github.ref }}
@@ -30,18 +32,12 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version-file: webconfig/.node-version
           cache: npm
           cache-dependency-path: webconfig/package-lock.json
 
       - run: npm ci
-      - run: npm run format:check
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-
-      # High/critical advisories fail. audit-ci.jsonc documents the one scoped
-      # exception for the unpatched build-only Tailwind glob-parser advisory.
-      - name: Audit dependencies
-        run: npm run audit
+      # The same gate runs locally with npm run check or make check (Docker).
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser

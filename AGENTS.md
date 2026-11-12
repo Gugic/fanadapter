@@ -38,7 +38,7 @@ npm run lint        # ESLint
 
 Base path defaults to `/fanadapter/` (override with `VITE_BASE=/path/`). WebSerial only works in Chromium-based browsers on desktop.
 
-Use Node 20.19+, 22.13+, or 24+ for the current toolchain. `npm test` covers axis scaling, native-port filtering and firmware-update reconnection. CI also runs `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run build` and `npm run audit`.
+Use the Node 26 version pinned in `webconfig/.node-version`; CI and local Docker use the same version. `npm run check` runs formatting, lint, types, unit tests, build and the high/critical dependency audit. `make -C webconfig check` runs that gate with Docker; `make -C webconfig dev` serves the app to a host Chromium browser without forwarding USB into Docker. `npm run test:browser` builds and checks the production UI in Playwright Chromium with a simulated serial device (install Chromium first with `npx playwright install chromium`); CI runs it too. Physical WebSerial/WebUSB permission and flashing checks remain manual. The November 2026 upstream compatibility review and TypeScript 7 deferral are recorded in [PR #65](https://github.com/Gugic/fanadapter/pull/65).
 
 ### SimHub plugin
 

@@ -1,0 +1,53 @@
+x-tooling: &tooling
+  build:
+    context: .
+    args:
+      NODE_VERSION: ${NODE_VERSION:?Use make to load .node-version}
+  user: '${LOCAL_UID:-1000}:${LOCAL_GID:-1000}'
+  init: true
+  working_dir: /app
+  environment:
+    npm_config_cache: /npm-cache
+    VITE_BASE: ${VITE_BASE:-/fanadapter/}
+
+services:
+  check:
+    <<: *tooling
+    command: ['sh', '-c', 'npm ci && npm run check']
+    volumes:
+      - .:/app
+      - check-dependencies:/app/node_modules
+      - npm-cache:/npm-cache
+
+  dev:
+    <<: *tooling
+    profiles: [dev]
+    command: ['sh', '-c', 'npm ci && exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort']
+    ports:
+      - '127.0.0.1:${DEV_PORT:-5173}:5173'
+    volumes:
+      - .:/app
+      - dev-dependencies:/app/node_modules
+      - npm-cache:/npm-cache
+
+  preview:
+    <<: *tooling
+    profiles: [preview]
+    command:
+      [
+        'sh',
+        '-c',
+        'npm ci && npm run build && exec npm run preview -- --host 0.0.0.0 --port 4173 --strictPort',
+      ]
+    ports:
+      - '127.0.0.1:${PREVIEW_PORT:-4173}:4173'
+    volumes:
+      - .:/app
+      - preview-dependencies:/app/node_modules
+      - npm-cache:/npm-cache
+
+volumes:
+  check-dependencies:
+  dev-dependencies:
+  preview-dependencies:
+  npm-cache:

@@ -517,8 +517,10 @@ declare global {
     setSignals(signals: { dataTerminalReady?: boolean; requestToSend?: boolean }): Promise<void>
     getInfo(): { usbVendorId?: number; usbProductId?: number }
     close(): Promise<void>
-    readable: ReadableStream<Uint8Array> | null
-    writable: WritableStream<Uint8Array> | null
+    // WebSerial byte streams use ordinary ArrayBuffers, as required by the
+    // TextDecoderStream/BufferSource DOM types (not SharedArrayBuffers).
+    readable: ReadableStream<Uint8Array<ArrayBuffer>> | null
+    writable: WritableStream<Uint8Array<ArrayBuffer>> | null
   }
   interface Serial {
     requestPort(options?: {

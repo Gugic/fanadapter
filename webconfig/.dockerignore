@@ -1,0 +1,3 @@
+# The development image only provides Node and writable volume mountpoints.
+**
+!Dockerfile

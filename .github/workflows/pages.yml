@@ -40,7 +40,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version-file: webconfig/.node-version
           cache: npm
           cache-dependency-path: webconfig/package-lock.json
 
