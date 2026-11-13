@@ -8,6 +8,7 @@ on:
       - 'firmware-stm32/include/**'
       - 'firmware-stm32/platformio.ini'
       - 'firmware-stm32/apply_tinyusb_patches.py'
+      - 'firmware-stm32/tests/**'
       - '.github/workflows/firmware-stm32.yml'
   pull_request:
     branches: [main]
@@ -16,6 +17,7 @@ on:
       - 'firmware-stm32/include/**'
       - 'firmware-stm32/platformio.ini'
       - 'firmware-stm32/apply_tinyusb_patches.py'
+      - 'firmware-stm32/tests/**'
       - '.github/workflows/firmware-stm32.yml'
   workflow_dispatch:
 
@@ -76,6 +78,11 @@ jobs:
 
       - name: Build (weact_h743)
         run: platformio run -d firmware-stm32 -e weact_h743
+
+      - name: Verify TinyUSB patches and USB receive regression
+        env:
+          HOST_CFLAGS: -fsanitize=address,undefined
+        run: python3 -m unittest discover -s firmware-stm32/tests -v
 
       - name: Package the image and manifest
         env:

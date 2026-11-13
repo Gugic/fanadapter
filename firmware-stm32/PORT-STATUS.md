@@ -66,6 +66,95 @@ Later work is merged: protocol 6 uses no-reply `stream_axes` for PC pedals ([#35
 
 ## Bugs already fixed — do not reintroduce
 
+### CDC command corruption at 64-byte boundaries (2026-11-12)
+
+A ClubSport V3 throttle binding appeared to work in the browser's Mappings preview, but Outputs
+stayed at zero and Disconnect/Connect removed the binding. Captured traffic showed a valid
+206-byte `set_binding` request (including LF) receiving `{"err":"bad_json"}`. The browser had
+treated that error reply as success and displayed the requested binding without firmware readback.
+This also happened with the upstream webconfig, independently of the dependency updates.
+
+Read-only probes on the diagnostic 0.6.3 build isolated the transport: the same 206-byte `version`
+request passed whole and in chunks of 63, 65 or 100 bytes; chunks of 64 or 128 bytes failed with
+`bad_json`, three repetitions each. Flat JSON also failed in 64-byte chunks, while an 18-byte
+request split into 8-byte chunks passed. A complete 64-byte `version` request produced **two**
+version replies, whereas 63- and 65-byte requests produced one each, twice per case. Config
+readback remained unchanged. USB packets themselves were not captured.
+
+TinyUSB 0.18.0's `dcd_dwc2.c` accounted for short OUT packets only inside `if (byte_count)`.
+A zero-length packet therefore retained the requested transfer length (64 bytes), and CDC copied
+that many stale bytes from its endpoint buffer into the command stream. This explains both
+corrupted fragmented requests and duplicate complete commands. An offline register model using
+the actual receive/completion handlers reproduces the stale-byte delivery; moving the short-packet
+accounting outside the nonzero-byte guard fixes it. The firmware's JSON parser accepts the intact
+request, and the 256-byte console line buffer is large enough.
+
+`apply_tinyusb_patches.py` backports only the driver change from
+[TinyUSB PR #3293](https://github.com/hathach/tinyusb/pull/3293) onto pinned commit
+`86ad6e56c1700e85f1c5678607a762cfe3aa2f47`; the existing host patches remain intact. Builds verify
+complete replacement blocks, rejecting partial patches or drift even when marker comments remain.
+`tests/test_tinyusb_patches.py` compiles the fetched receive handlers, proves the unpatched version
+fails, and checks zero/short/full/fragmented packets plus EP0 accounting after patching. It also
+checks fresh/repeated application, CRLF, damaged patches and preservation of the host patches.
+Bench results and coverage limits are recorded below.
+
+Local validation on 2026-11-12: firmware 0.6.4 built with PlatformIO 6.1.19; all six offline
+tests passed with ASan/UBSan. Webconfig rejects firmware error replies and passed 29 unit tests
+plus production-browser checks for rejected capture, same-session retry, failed Save retaining
+unsaved state and successful retry/readback. The web checks also passed against the dependency
+set proposed in PR #65. The unchanged main lockfile still has high audit findings addressed by
+that separate dependency PR.
+
+Hardware follow-up on 2026-11-12: the contributor selected the locally built 0.6.4 image in
+upstream GitHub Pages' local-file flasher and reported that throttle settings persisted, including
+across restarts. This was the local image, not an upstream 0.6.4 release. After reverting to
+official 0.6.2, the patched local webconfig displayed the rejected-mapping error, but its original
+page-top banner was easy to miss while scrolled down. The error presentation now uses an immediate
+dialog with reviewable diagnostics, Copy details and an editable upstream GitHub issue draft.
+The later bench report confirmed all three mapped USB pedals in Live outputs after mapping
+throttle, Save and Reboot on local 0.6.4 through upstream Pages. Downgrading to official 0.6.2
+retained working stored mappings, but edits still failed intermittently: deleting throttle
+(`set_binding`, slot 0, `type:"none"`) received `bad_json`, captured by the local dialog at
+2026-11-12T20:46:10.668Z. A retry on 0.6.2 succeeded and remained deleted after Save/browser refresh;
+that refresh is RAM readback, not a power-cycle persistence test. Re-adding throttle on local
+0.6.4 restored all three Live outputs. The earlier suspected brake-axis change was not reproduced
+and the contributor withdrew it as a confirmed defect. That round checked Live outputs only;
+the end-to-end follow-up is recorded below.
+
+Read-only hardware validation on local 0.6.4 then passed all 33 queries: initial version/config,
+whole 63/64/65-byte requests twice each, eight whole/fragmented cases three times each, and final
+config. The matrix included 206-byte nested requests split into 63/64/65/100/128-byte writes,
+flat JSON split at 64 bytes and a short request split at 8 bytes. Every query produced exactly
+one valid reply, with no `bad_json` or duplicate reply in the observation windows. Full config
+readback was identical before/after; throttle/brake/clutch remained axes 0/1/2. The port was
+closed and termios restored. These are serial write/reply observations, not a USB packet capture.
+
+The error-dialog follow-up passed 39 unit tests, formatting, lint, type checking and production
+builds with both main's dependencies and PR #65's proposed dependencies. Mock-serial Chromium
+checks on both production builds covered errors while scrolled down, request/firmware diagnostics,
+copy success/failure, the prefilled issue URL, repeated errors, narrow viewports, keyboard dismissal
+and focus restoration, Save failure/retry, picker cancellation and setup-wizard capture pausing
+behind the error dialog and resuming on dismissal.
+The GitHub draft navigation was intercepted locally; no issue was submitted. PR #65's audit gate
+also passed (zero high/critical findings; ten moderate development-dependency findings remain).
+
+The connection-troubleshooting follow-up passed 53 unit tests, lint, formatting, type checking
+and production builds on both dependency sets. Expected serial opening/access failures now show
+recovery steps and Copy details without an issue shortcut; firmware rejections and unexpected
+errors still offer reporting. The README carries the corresponding connection runbook. Runtime
+firmware metadata is guarded so a malformed version reply cannot crash error reporting itself.
+
+End-to-end bench follow-up reported on 2026-11-13: with local 0.6.4 and the local webconfig,
+both **Remove → Save → Reboot → check** and **Add → Save → Reboot → check** succeeded.
+After reconfiguring the hardware, the contributor confirmed that the mapped ClubSport V3 pedals
+registered correctly through the wheelbase in the Fanatec Windows application. GT7 gameplay also
+worked with only power to the WeAct and no PC connection, with no gameplay issues or perceived
+lag/delay reported. This validates saved mapping edits and autonomous wheelbase operation for
+the tested setup. The persistence procedure explicitly used Reboot; a separate delete/re-add
+sequence across full power removal was not recorded. No session duration or instrumented latency
+measurement was supplied. This ClubSport V3 result does not close the separate Simnet/SimHub soak
+item below.
+
 ### The clock bug that ate the first session
 
 `SystemClock_Config` **must** call `HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY)` **before**
@@ -381,6 +470,11 @@ now makes it visible rather than mysterious.
 
 ## Remaining validation and known limitations
 
+- **USB CDC receive backport:** functional validation passed on local 0.6.4 with ClubSport V3
+  pedals: boundary/fragmentation probes, removal/re-addition with Save/Reboot readback, Live
+  outputs, the Fanatec Windows app and GT7 with no PC connection. Coverage limits: the explicit
+  deletion/re-addition sequence used Reboot rather than full power removal; gameplay duration
+  and quantitative latency were not recorded. Other peripheral models were not validated here.
 - **Input-freeze: field-confirm the fix.** Bench verdict is in (device hangs past ~2 s unpolled;
   the measured connection-time gap was ~120 ms, excluding Save — see the VERDICT section). Remaining proof: a SimHub-connected
   drive-mode session, the scenario that used to freeze the pedal within minutes. If it EVER

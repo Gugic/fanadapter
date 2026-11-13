@@ -69,6 +69,28 @@ Connect and saved-grant reconnection accept only USB identity `1209:FA00`.
 Firmware 0.6.1+ advertises **Fanadapter vX.Y.Z**, using its actual version.
 Older native firmware works too; unrelated COM devices and USB-UART bridges are hidden.
 
+### Reporting an error
+
+Failed operations open a dialog immediately, including when the affected mapping is below the
+top of the page. Expand **Diagnostic details** to review the error, firmware and protocol versions,
+browser, active tab, deployment URL and relevant fields from the rejected command. Binding errors
+include the channel, device VID/PID, input index and calibration values.
+Input capture pauses while the error dialog is open. Dismissing it lets an active setup wizard
+start a fresh capture for its current step.
+
+**Copy details** copies that report; if clipboard access fails, the dialog exposes selectable text.
+Recognized serial-port opening, permission and browser-support failures show connection recovery
+steps instead of **Report issue**. These failures do not establish whether the cause is another
+application, device availability, access restrictions or webconfig; details remain available for
+troubleshooting. See [connection troubleshooting](#configurator-refuses-to-connect).
+
+For rejected firmware commands and unexpected errors, **Report issue** opens an editable issue
+draft in `Gugic/fanadapter` with those details prefilled.
+Add reproduction steps and review the report before submitting it on GitHub. Opening the dialog
+does not send a report. Diagnostics exclude full configurations, logs, USB serial numbers and URL
+credentials, query parameters and fragments. An oversized report must be copied into the draft
+manually, as explained in the draft.
+
 ### Custom Subfolder Deployment
 
 By default, the Vite config maps assets to the base path `/fanadapter/`. If you are hosting the configurator elsewhere, override this base path during building:
@@ -85,9 +107,12 @@ VITE_BASE=/custom-path/ npm run build
 webconfig/
   src/
     App.tsx               # Entry point, top-level state, connection lifecycle, and tab routing
-    components/ui/        # UI primitives (buttons, cards, sliders, inputs) via shadcn/ui
+    components/
+      ErrorDialog.tsx     # Immediate error dialog, copy and editable GitHub issue draft
+      ui/                 # UI primitives (buttons, cards, sliders, inputs) via shadcn/ui
     lib/
       serial.ts           # WebSerial client containing the FIFO request/response queue
+      errorReport.ts      # Bounded diagnostic snapshot and prefilled issue URL
       types.ts            # TypeScript mirror of the firmware's Config schema
       scaleAxis.ts        # Client-side replica of the firmware's scaleAxis() math
       crc32.ts            # Client-side CRC-32/ISO-HDLC encoder (matches firmware)
@@ -125,6 +150,7 @@ The following contracts and connection rules keep the configurator aligned with 
 Because multiple UI modules can request details from the adapter simultaneously, `SerialClient` (`webconfig/src/lib/serial.ts`) implements a FIFO queue over WebSerial:
 
 - Writes enter the serial stream in order; multiple requests can be outstanding at once. Each non-event JSON reply is matched with the oldest pending promise.
+- Firmware error replies such as `{"err":"bad_json"}` reject that request with a `FirmwareCommandError` containing the error code and a snapshot of the command as serialized onto the wire. The error dialog presents the failure and reviewable diagnostics. A rejected binding is not accepted into the local configuration or marked as an unsaved change; a failed Save leaves existing changes unsaved.
 - `streamAxes` is the no-reply exception: it writes without adding a pending request. Replies from acknowledged commands must never be ignored.
 - **Known limitation:** a browser request timeout removes its pending entry. A late reply can then be assigned to the next request; disconnect/reconnect resets the session. The C# client's abandoned-reply absorption and resync probe are not implemented in this client.
 - Event packages (`{"event":"..."}`) are intercepted, bypassed, and fanned out to active UI subscribers.
@@ -176,10 +202,30 @@ The web app shares four strict boundaries with the STM32 C code in `firmware-stm
 
 ### Configurator refuses to connect
 
-- Ensure you are running Chrome, Edge, or Brave. Safari and Firefox are incompatible.
-- Ensure the adapter's serial port is not occupied by another utility, such as a serial monitor, SimHub, or another open WebSerial browser tab.
-- A fresh board's stock firmware is not a selectable Fanadapter port. Use **Flash** and the [BOOT0/RST first-install procedure](../firmware-stm32/README.md#entering-dfu).
-- After repeated command timeouts, disconnect/reconnect before retrying edits; this resets the browser's reply queue.
+For **Could not open the adapter** / `Failed to open serial port`:
+
+1. Disconnect the adapter in other webconfig tabs and close serial monitors or SimHub sessions
+   that use it. Only one application can own the port at a time.
+2. Check the USB connection and select the Fanadapter device. A board in ROM DFU exposes a
+   bootloader rather than the normal serial interface; leave DFU before using Connect.
+3. Reconnect USB, wait for the adapter to appear, then retry Connect.
+
+For **Access to the adapter was denied**, check this site's serial-port permission and any
+operating-system or managed-browser restrictions. Use the Connect button to request access
+again. Permission belongs to the browser profile and site; upstream Pages and localhost have
+separate grants.
+
+For **This browser cannot connect to the adapter**, use a current desktop Chrome, Edge or Brave
+on HTTPS or a local development address. Safari and Firefox do not provide the required
+WebSerial API. Browser permission and stream-lifecycle behavior are described in
+[Chrome's Web Serial guide](https://developer.chrome.com/docs/capabilities/serial).
+
+A fresh board's stock firmware is not a selectable Fanadapter port. Use **Flash** and the
+[BOOT0/RST first-install procedure](../firmware-stm32/README.md#entering-dfu).
+After repeated command timeouts, disconnect/reconnect before retrying edits; this resets the
+browser's reply queue. Check readback before repeating an operation whose result is uncertain.
+If connection checks do not resolve the problem, include **Copy details** and the steps already
+tried when asking for help; an opening failure alone does not prove user error or a firmware bug.
 
 ### The preview bars move in the UI, but the wheelbase does not react
 

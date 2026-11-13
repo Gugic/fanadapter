@@ -45,7 +45,44 @@ export type ProtocolEvent =
 
 export type EventListener = (event: ProtocolEvent) => void
 
+export class FirmwareCommandError extends Error {
+  readonly code: string
+  readonly command: Record<string, unknown>
+
+  constructor(code: string, command: Record<string, unknown>) {
+    super(`Firmware error: ${code}`)
+    this.name = 'FirmwareCommandError'
+    this.code = code
+    this.command = command
+  }
+}
+
+export class SerialConnectionError extends Error {
+  readonly reason: 'open-failed' | 'permission-denied' | 'unsupported'
+  readonly cause: unknown
+
+  constructor(reason: SerialConnectionError['reason'], message: string, cause?: unknown) {
+    super(message)
+    this.name = 'SerialConnectionError'
+    this.reason = reason
+    this.cause = cause
+  }
+}
+
+function classifyConnectionError(error: unknown, openingPort = false): unknown {
+  if (error instanceof DOMException) {
+    if (error.name === 'SecurityError' || error.name === 'NotAllowedError') {
+      return new SerialConnectionError('permission-denied', error.message, error)
+    }
+    if (openingPort && error.name === 'NetworkError') {
+      return new SerialConnectionError('open-failed', error.message, error)
+    }
+  }
+  return error
+}
+
 interface PendingRequest {
+  command: Record<string, unknown>
   resolve: (msg: Record<string, unknown>) => void
   reject: (err: Error) => void
   timer: ReturnType<typeof setTimeout>
@@ -99,11 +136,17 @@ export class SerialClient {
 
   async connect(): Promise<void> {
     if (!this.isSupported()) {
-      throw new Error(
+      throw new SerialConnectionError(
+        'unsupported',
         'WebSerial is not supported in this browser. Use Chrome, Edge, or Brave on desktop.',
       )
     }
-    const port = await navigator.serial.requestPort({ filters: [ADAPTER_FILTER] })
+    let port: SerialPort
+    try {
+      port = await navigator.serial.requestPort({ filters: [ADAPTER_FILTER] })
+    } catch (error) {
+      throw classifyConnectionError(error)
+    }
     if (!isAdapterPort(port)) throw new Error('The selected port is not a Fanadapter.')
     await this.openPort(port)
   }
@@ -117,7 +160,12 @@ export class SerialClient {
    */
   async connectGranted(): Promise<boolean> {
     if (!this.isSupported()) return false
-    const ports = await navigator.serial.getPorts()
+    let ports: SerialPort[]
+    try {
+      ports = await navigator.serial.getPorts()
+    } catch (error) {
+      throw classifyConnectionError(error)
+    }
     const port = ports.find(isAdapterPort)
     if (!port) return false
     await this.openPort(port)
@@ -127,7 +175,11 @@ export class SerialClient {
   private async openPort(port: SerialPort): Promise<void> {
     // Retain the historical 8E1 console settings. The selected native USB CDC transport ignores
     // baud/parity; UART bridges are excluded by the connection filter above.
-    await port.open({ baudRate: 115200, dataBits: 8, parity: 'even', stopBits: 1 })
+    try {
+      await port.open({ baudRate: 115200, dataBits: 8, parity: 'even', stopBits: 1 })
+    } catch (error) {
+      throw classifyConnectionError(error, true)
+    }
     this.port = port
 
     // Preserve the deasserted DTR/RTS and settling delay inherited from the UART-bridge client.
@@ -243,7 +295,11 @@ export class SerialClient {
     const pend = this.pending.shift()
     if (pend) {
       clearTimeout(pend.timer)
-      pend.resolve(msg)
+      if (typeof msg.err === 'string') {
+        pend.reject(new FirmwareCommandError(msg.err, pend.command))
+      } else {
+        pend.resolve(msg)
+      }
     } else {
       // Unsolicited response (e.g. error from a malformed command we
       // didn't enqueue). Surface as a log.
@@ -314,17 +370,21 @@ export class SerialClient {
     const writer = this.writer
     if (!writer) return Promise.reject(new Error('not connected'))
     return new Promise<T>((resolve, reject) => {
+      // Keep the JSON wire representation, independently of later caller mutations.
+      const serialized = JSON.stringify(cmd)
+      const command = JSON.parse(serialized) as Record<string, unknown>
       const timer = setTimeout(() => {
         const idx = this.pending.findIndex((p) => p.timer === timer)
         if (idx >= 0) this.pending.splice(idx, 1)
         reject(new Error(`command timeout: ${String(cmd.cmd)}`))
       }, timeoutMs)
       this.pending.push({
+        command,
         resolve: (msg) => resolve(msg as T),
         reject,
         timer,
       })
-      writer.write(JSON.stringify(cmd) + '\n').catch((err: unknown) => {
+      writer.write(serialized + '\n').catch((err: unknown) => {
         clearTimeout(timer)
         const idx = this.pending.findIndex((p) => p.timer === timer)
         if (idx >= 0) this.pending.splice(idx, 1)

@@ -157,6 +157,18 @@ python -m platformio run -d firmware-stm32 -e weact_h743
 python -m platformio run -d firmware-stm32 -e weact_h743 -t upload
 ```
 
+The build applies and verifies the TinyUSB host patches and the USB CDC receive fix in
+`apply_tinyusb_patches.py`. After the first build has fetched TinyUSB, run the offline regression
+tests with Python and a native C11 compiler (`cc`, or set `HOST_CC`):
+
+```sh
+python3 -m unittest discover -s firmware-stm32/tests -v
+```
+
+These tests use temporary copies of the fetched driver and simulated registers; they do not
+connect to hardware. They cover patch integrity and zero-length USB packets, including commands
+split at 64-byte boundaries. Hardware flashing and mapping checks remain separate validation.
+
 ### Entering DFU
 
 **First flash — the button dance.** Hold **BOOT0**, tap **RST**, release **BOOT0**. The board

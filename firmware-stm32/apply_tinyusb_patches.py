@@ -2,10 +2,14 @@
 #
 # Why patch at build time: TinyUSB is pulled from upstream git (pinned by SHA in platformio.ini),
 # and `pio pkg update` or a wiped .pio/ regenerates it — an in-place edit would silently vanish.
-# This script runs as `extra_scripts = pre:` on every build: it verifies the patches are present
-# (marker string) and applies them if not. If upstream code drifts so a pattern no longer matches
-# AND its marker is absent, the build fails rather than silently losing the driver hardening
-# and diagnostic counters used by usb_status.
+# This script runs as `extra_scripts = pre:` on every build: it verifies the complete replacement
+# blocks and applies them if absent. Partial patches and upstream drift fail the build. Both
+# drivers are validated before either is written, so a failed check cannot leave a half-patched pair.
+#
+# Device receive fix: backport TinyUSB PR #3293's dcd_dwc2.c change. A zero-length OUT packet
+# must reduce the reported transfer length to zero; otherwise CDC replays the previous endpoint
+# buffer into its RX FIFO. This corrupts fragmented JSON or executes a 64-byte command twice.
+# Only the driver fix is carried here; TinyUSB remains pinned to 0.18.0.
 #
 # Driver hardening (full investigation and verdict in PORT-STATUS.md):
 # In hcd_dwc2.c, channel_send_in_token() asserts on the 8-deep periodic request queue; in a
@@ -19,15 +23,9 @@
 # A stale CHENA=0 register alone was not evidence of an allocated channel. Keep that distinction
 # when interpreting the counters and allocation mask added here.
 
-Import("env")  # noqa: F821 — provided by SCons
 import os
 
 MARKER = "FANADAPTER PATCH"
-
-HCD = os.path.join(
-    env.subst("$PROJECT_DIR"), ".pio", "libdeps", env.subst("$PIOENV"),  # noqa: F821
-    "TinyUSB", "src", "portable", "synopsys", "dwc2", "hcd_dwc2.c",
-)
 
 # (old, new, expected occurrence count when unpatched)
 # NOTE: channel_send_in_token has SIX call sites; only the two inside channel_xfer_start are
@@ -169,41 +167,97 @@ REPLACEMENTS = [
 ]
 
 
-def fail(msg):
-    print("\n" + "=" * 78)
-    print("TINYUSB PATCH FAILURE: " + msg)
-    print("Refusing to build without verified TinyUSB hardening and diagnostics.")
-    print("See firmware-stm32/apply_tinyusb_patches.py and PORT-STATUS.md.")
-    print("=" * 78 + "\n")
-    env.Exit(1)  # noqa: F821
+# Exact driver-only backport of https://github.com/hathach/tinyusb/pull/3293.
+# Keep the packet copy guarded, but account for short packets even when byte_count is zero.
+DCD_REPLACEMENTS = [(
+    """          xfer->buffer += byte_count;
+        }
+
+        // short packet, minus remaining bytes (xfer_size)
+        if (byte_count < xfer->max_size) {
+          xfer->total_len -= epout->tsiz_bm.xfer_size;
+          if (epnum == 0) {
+            xfer->total_len -= _dcd_data.ep0_pending[TUSB_DIR_OUT];
+            _dcd_data.ep0_pending[TUSB_DIR_OUT] = 0;
+          }
+        }
+      }
+      break;
+""",
+    """          xfer->buffer += byte_count;
+        }
+      }
+
+      // FANADAPTER PATCH: TinyUSB #3293 — account for zero-length OUT packets.
+      // short packet (including ZLP when byte_count == 0), minus remaining bytes (xfer_size)
+      if (byte_count < xfer->max_size) {
+        xfer->total_len -= epout->tsiz_bm.xfer_size;
+        if (epnum == 0) {
+          xfer->total_len -= _dcd_data.ep0_pending[TUSB_DIR_OUT];
+          _dcd_data.ep0_pending[TUSB_DIR_OUT] = 0;
+        }
+      }
+
+      break;
+""",
+    1,
+)]
 
 
-if not os.path.isfile(HCD):
-    fail("hcd_dwc2.c not found at %s (libdeps not installed yet?)" % HCD)
+class PatchError(RuntimeError):
+    pass
 
-with open(HCD, "r", encoding="utf-8", newline="") as f:
-    src = f.read()
 
-# PlatformIO's git checkout can materialize with CRLF on Windows; normalize so the patterns
-# (written with \n) match. Written back as LF — the compiler doesn't care, and the file is
-# generated, never committed.
-src = src.replace("\r\n", "\n")
+def patched_source(src, replacements, filename):
+    # Windows checkouts can use CRLF. Generated sources are written back with LF.
+    src = src.replace("\r\n", "\n")
+    expected_markers = sum(new.count(MARKER) * count for _, new, count in replacements)
+    present = src.count(MARKER)
+    if present and present != expected_markers:
+        raise PatchError("%s: partial patch state: %d of %d markers present"
+                         % (filename, present, expected_markers))
+    if not present:
+        for old, new, count in replacements:
+            found = src.count(old)
+            if found != count:
+                raise PatchError("%s: pattern expected %dx but found %dx — upstream drift?\n%s"
+                                 % (filename, count, found, old))
+            src = src.replace(old, new)
+    # Markers alone cannot establish that a patch is intact: verify its complete code too.
+    for _, new, count in replacements:
+        if src.count(new) != count:
+            raise PatchError("%s: patched block is missing or changed — refusing to build"
+                             % filename)
+    return src
 
-expected_markers = sum(new.count(MARKER) for _, new, _ in REPLACEMENTS)
-present = src.count(MARKER)
 
-if present == expected_markers:
-    print("TinyUSB patches: already applied (%d markers) — OK" % present)
-elif present != 0:
-    fail("partial patch state: %d of %d markers present" % (present, expected_markers))
-else:
-    for old, new, count in REPLACEMENTS:
-        found = src.count(old)
-        if found != count:
-            fail("pattern expected %dx but found %dx — upstream drift? Pattern:\n%s"
-                 % (count, found, old))
-        src = src.replace(old, new)
-    with open(HCD, "w", encoding="utf-8", newline="") as f:
-        f.write(src)
-    print("TinyUSB patches: applied to hcd_dwc2.c (%d replacements)"
-          % sum(c for _, _, c in REPLACEMENTS))
+def apply_patches(tinyusb_dir):
+    driver_dir = os.path.join(tinyusb_dir, "src", "portable", "synopsys", "dwc2")
+    updates = []
+    for filename, replacements in (("hcd_dwc2.c", REPLACEMENTS),
+                                   ("dcd_dwc2.c", DCD_REPLACEMENTS)):
+        path = os.path.join(driver_dir, filename)
+        if not os.path.isfile(path):
+            raise PatchError("%s not found (libdeps not installed yet?)" % path)
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            original = f.read()
+        updates.append((path, original, patched_source(original, replacements, filename)))
+    for path, original, patched in updates:
+        if original != patched:
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(patched)
+        print("TinyUSB patches: %s — verified" % os.path.basename(path))
+
+
+# SCons provides Import; normal Python imports expose the patcher to the offline tests.
+if "Import" in globals():
+    Import("env")  # noqa: F821
+    tinyusb_dir = os.path.join(env.subst("$PROJECT_DIR"), ".pio", "libdeps",  # noqa: F821
+                              env.subst("$PIOENV"), "TinyUSB")  # noqa: F821
+    try:
+        apply_patches(tinyusb_dir)
+    except (PatchError, OSError) as exc:
+        print("\nTINYUSB PATCH FAILURE: %s" % exc)
+        print("Refusing to build without verified TinyUSB patches.")
+        print("See firmware-stm32/apply_tinyusb_patches.py and PORT-STATUS.md.\n")
+        env.Exit(1)  # noqa: F821

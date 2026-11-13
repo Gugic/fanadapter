@@ -11,7 +11,6 @@ import {
   Loader2,
   CheckCircle2,
   Cable,
-  X,
   Power,
   Wand2,
   Check,
@@ -29,6 +28,7 @@ import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { ErrorDialog } from '@/components/ErrorDialog'
 import {
   Dialog,
   DialogContent,
@@ -72,6 +72,8 @@ import {
   type VersionInfo,
 } from '@/lib/types'
 import { scaleAxisJS } from '@/lib/scaleAxis'
+import { createErrorReport } from '@/lib/errorReport'
+import type { ErrorReport } from '@/lib/errorReport'
 
 // ------------------ Helpers ------------------
 
@@ -269,6 +271,7 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [supported] = useState(() => typeof navigator !== 'undefined' && 'serial' in navigator)
   const [version, setVersion] = useState<VersionInfo | null>(null)
+  const firmwareRef = useRef<VersionInfo | null>(null)
   const [devices, setDevices] = useState<DeviceSlot[]>([])
   const [config, setConfig] = useState<Config | null>(null)
   // Mirror of `config` for non-render code paths (capture/commit handlers).
@@ -290,9 +293,26 @@ export default function App() {
   const [wizard, setWizard] = useState<WizardState | null>(null)
   const baselineRef = useRef<Map<number, SlotBaseline>>(new Map())
   const trackingRef = useRef<TrackingState | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorReport | null>(null)
   const [status, setStatus] = useState<string>('')
   const [tab, setTab] = useState<string>('devices')
+
+  const reportError = useCallback(
+    (failure: unknown) => {
+      // Physical input must not commit another mapping behind the error dialog.
+      trackingRef.current = null
+      setCapturing(null)
+      setError(
+        createErrorReport(failure, {
+          firmware: firmwareRef.current,
+          tab,
+          browser: navigator.userAgent,
+          page: window.location.href,
+        }),
+      )
+    },
+    [tab],
+  )
 
   // ------------------ Connection lifecycle ------------------
 
@@ -301,6 +321,7 @@ export default function App() {
     setConnected(true)
     setStatus('Reading firmware…')
     const v = await client.version()
+    firmwareRef.current = v
     setVersion(v)
     const devs = await client.listDevices()
     setDevices(devs)
@@ -316,6 +337,8 @@ export default function App() {
   // Let the caller report errors: the flash dialog must preserve a completed flash.
   const handleConnectPicked = useCallback(async (): Promise<VersionInfo> => {
     try {
+      firmwareRef.current = null
+      setVersion(null)
       setError(null)
       setStatus('Opening port…')
       await client.connect()
@@ -336,15 +359,19 @@ export default function App() {
     try {
       await handleConnectPicked()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      // requestPort rejects with NotFoundError when the user dismisses its picker.
+      if (e instanceof DOMException && e.name === 'NotFoundError') return
+      reportError(e)
     }
-  }, [handleConnectPicked])
+  }, [handleConnectPicked, reportError])
 
   // Picker-free reconnect over a persisted port grant — the firmware-update flow's way back after
   // the flash reboot. Null = no granted port attached yet (the caller polls); throws only on a
   // real session failure after the port opened.
   const handleConnectGranted = useCallback(async (): Promise<VersionInfo | null> => {
     try {
+      firmwareRef.current = null
+      setVersion(null)
       if (!(await client.connectGranted())) return null
       return await initSession()
     } catch (e) {
@@ -377,6 +404,7 @@ export default function App() {
     setAxisMax(new Map())
     setOutputs(null)
     setDirty(false)
+    firmwareRef.current = null
     setVersion(null)
     setCapturing(null)
     trackingRef.current = null
@@ -708,7 +736,7 @@ export default function App() {
   // step. Starting a capture flips `capturing` non-null, so this won't
   // double-fire mid-capture.
   useEffect(() => {
-    if (!wizard) return
+    if (!wizard || error) return
     if (wizard.index >= wizard.steps.length) return // finished — awaiting close
     if (capturing) return
     const step = wizard.steps[wizard.index]
@@ -717,7 +745,7 @@ export default function App() {
       setWizard((w) => (w ? { ...w, index: w.index + 1 } : w))
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wizard, capturing])
+  }, [wizard, capturing, error])
 
   // ------------------ Tracking commit ------------------
   // Build the binding from the data accumulated in trackingRef and push it.
@@ -796,7 +824,7 @@ export default function App() {
       setConfigBinding(channel, slot, b)
       setDirty(true)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      reportError(e)
     }
   }
 
@@ -822,7 +850,7 @@ export default function App() {
     try {
       await client.setGearDac(gear, x, y)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      reportError(e)
     }
   }
 
@@ -832,7 +860,7 @@ export default function App() {
     try {
       await client.setPulseMs(v)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      reportError(e)
     }
   }
 
@@ -842,7 +870,7 @@ export default function App() {
     try {
       await client.setGearMode(mode)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      reportError(e)
     }
   }
 
@@ -908,7 +936,7 @@ export default function App() {
       setStatus('Saved')
       setTimeout(() => setStatus(''), 1500)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      reportError(e)
       setStatus('')
     }
   }
@@ -920,7 +948,7 @@ export default function App() {
       setConfig(cfg)
       setDirty(true)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      reportError(e)
     }
   }
 
@@ -946,6 +974,7 @@ export default function App() {
     setAxisMax(new Map())
     setOutputs(null)
     setDirty(false)
+    firmwareRef.current = null
     setVersion(null)
     setCapturing(null)
     trackingRef.current = null
@@ -976,6 +1005,7 @@ export default function App() {
     setAxisMax(new Map())
     setOutputs(null)
     setDirty(false)
+    firmwareRef.current = null
     setVersion(null)
     setCapturing(null)
     trackingRef.current = null
@@ -1011,19 +1041,6 @@ export default function App() {
       />
 
       <main className="container mx-auto max-w-5xl px-4 py-6">
-        {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Error</AlertTitle>
-            <AlertDescription className="flex items-center justify-between">
-              <span>{error}</span>
-              <Button size="sm" variant="ghost" onClick={() => setError(null)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </AlertDescription>
-          </Alert>
-        )}
-
         {!connected ? (
           <ConnectGate supported={supported} onConnect={handleConnect} />
         ) : !config ? (
@@ -1087,11 +1104,11 @@ export default function App() {
                   outputs={outputs}
                   onPushGearDac={pushGearDac}
                   onPushPulseMs={pushPulseMs}
-                  onTestGear={(g) => client.testGear(g).catch((e) => setError(String(e)))}
-                  onTestPulse={(d) => client.testPulse(d).catch((e) => setError(String(e)))}
-                  onTestAxis={(c, v) => client.testAxis(c, v).catch((e) => setError(String(e)))}
-                  onResetPedals={() => client.resetPedals().catch((e) => setError(String(e)))}
-                  onSetGear={(g) => client.setGear(g).catch((e) => setError(String(e)))}
+                  onTestGear={(g) => client.testGear(g).catch(reportError)}
+                  onTestPulse={(d) => client.testPulse(d).catch(reportError)}
+                  onTestAxis={(c, v) => client.testAxis(c, v).catch(reportError)}
+                  onResetPedals={() => client.resetPedals().catch(reportError)}
+                  onSetGear={(g) => client.setGear(g).catch(reportError)}
                   onSetOutputs={(c, v) => {
                     const o: {
                       throttle?: number
@@ -1100,10 +1117,10 @@ export default function App() {
                       handbrake?: number
                     } = {}
                     o[c] = v
-                    client.setOutputs(o).catch((e) => setError(String(e)))
+                    client.setOutputs(o).catch(reportError)
                   }}
-                  onPulseShift={(d) => client.pulseShift(d).catch((e) => setError(String(e)))}
-                  onReleaseOutputs={() => client.releaseOutputs().catch((e) => setError(String(e)))}
+                  onPulseShift={(d) => client.pulseShift(d).catch(reportError)}
+                  onReleaseOutputs={() => client.releaseOutputs().catch(reportError)}
                 />
               </TabsContent>
               <TabsContent value="logs">
@@ -1113,6 +1130,7 @@ export default function App() {
           </>
         )}
       </main>
+      <ErrorDialog report={error} onClose={() => setError(null)} />
     </div>
   )
 }
