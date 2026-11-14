@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Keep the one live telemetry panel in view without changing the page's scroll container. */
+.live-outputs {
+  position: sticky;
+  top: calc(var(--outputs-header-height, 4rem) + 0.5rem);
+  z-index: 5;
+  box-shadow: 0 4px 8px hsl(var(--foreground) / 0.12);
+}
+
+/* Leave room above controls when keyboard focus or scrollIntoView scrolls them into view. */
+.outputs-view :is(button, input, [role='slider']) {
+  scroll-margin-top: calc(
+    var(--outputs-header-height, 4rem) + var(--live-outputs-height, 10rem) + 1rem
+  );
+  scroll-margin-bottom: 1rem;
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;

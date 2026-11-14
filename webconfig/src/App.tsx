@@ -1145,7 +1145,10 @@ function Header({
   onFlash: () => void
 }) {
   return (
-    <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <header
+      data-app-header
+      className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60"
+    >
       <div className="container mx-auto flex max-w-5xl items-center gap-3 px-4 py-3">
         <div className="flex flex-col">
           <span className="text-lg font-semibold leading-none">fanadapter</span>
@@ -2767,16 +2770,47 @@ function OutputsView({
   onPulseShift: (d: 'up' | 'down') => void
   onReleaseOutputs: () => void
 }) {
+  const viewRef = useRef<HTMLDivElement>(null)
+  const liveRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const view = viewRef.current
+    const live = liveRef.current
+    const header = document.querySelector('[data-app-header]')
+    if (!view || !live || !header) return
+    // CSS handles scrolling. Only size changes need measurement, including zoom
+    // and wrapping header status text; telemetry updates do not create new observers.
+    const updateSizes = () => {
+      view.style.setProperty(
+        '--outputs-header-height',
+        `${header.getBoundingClientRect().height}px`,
+      )
+      view.style.setProperty('--live-outputs-height', `${live.getBoundingClientRect().height}px`)
+    }
+    updateSizes()
+    const observer = new ResizeObserver(updateSizes)
+    observer.observe(header, { box: 'border-box' })
+    observer.observe(live, { box: 'border-box' })
+    return () => observer.disconnect()
+  }, [])
+
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Live outputs</CardTitle>
-          <CardDescription>
+    <div ref={viewRef} className="outputs-view space-y-4">
+      <Card
+        ref={liveRef}
+        className="live-outputs"
+        role="region"
+        aria-labelledby="live-outputs-title"
+      >
+        <CardHeader className="p-3 pb-2">
+          <CardTitle id="live-outputs-title" className="text-base">
+            Live outputs
+          </CardTitle>
+          <CardDescription className="text-xs">
             What the firmware is currently driving to the wheelbase.
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-2 sm:grid-cols-2">
+        <CardContent className="grid grid-cols-3 gap-2 p-3 pt-0 sm:grid-cols-6">
           <Field label="Gear" value={outputs?.gear ?? '—'} />
           <Field
             label="Sequential"
@@ -3008,9 +3042,9 @@ function GearDacRow({
 
 function Field({ label, value }: { label: string; value: string | number | undefined }) {
   return (
-    <div className="flex items-baseline justify-between rounded-md border bg-muted/30 px-3 py-2">
+    <div className="flex min-w-0 flex-col gap-1 rounded-md border bg-muted/30 px-2 py-1.5">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="font-mono text-sm">{value ?? '—'}</span>
+      <span className="font-mono text-sm tabular-nums">{value ?? '—'}</span>
     </div>
   )
 }

@@ -69,6 +69,10 @@ Connect and saved-grant reconnection accept only USB identity `1209:FA00`.
 Firmware 0.6.1+ advertises **Fanadapter vX.Y.Z**, using its actual version.
 Older native firmware works too; unrelated COM devices and USB-UART bridges are hidden.
 
+In **Outputs**, the compact **Live outputs** panel stays below the app header as you scroll to
+the lower controls, including Sequential and Test axes. It displays the same firmware telemetry
+throughout; scrolling does not send commands to the adapter.
+
 ### Custom Subfolder Deployment
 
 By default, the Vite config maps assets to the base path `/fanadapter/`. If you are hosting the configurator elsewhere, override this base path during building:
